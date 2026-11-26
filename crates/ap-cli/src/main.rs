@@ -67,7 +67,7 @@ fn run(args: &[String]) -> Result<i32, String> {
             "--tier" => {
                 tier = Some(
                     args.get(i + 1)
-                        .ok_or("antipythony: --tier requires a mode (0 | adaptive)")?
+                        .ok_or("antipythony: --tier requires a mode (0 | adaptive | bytecode)")?
                         .clone(),
                 );
                 i += 2;
@@ -80,10 +80,10 @@ fn run(args: &[String]) -> Result<i32, String> {
         }
     }
     if let Some(mode) = &tier {
-        if mode != "0" {
+        if mode != "0" && mode != "bytecode" {
             return Err(format!(
-                "antipythony: --tier {mode} is not implemented; this binary runs tier-0 only \
-                 (pass --tier 0 or omit --tier)"
+                "antipythony: --tier {mode} is not implemented; this binary runs tier-0 or \
+                 the flat-bytecode tier (--tier 0 | --tier bytecode, or omit --tier)"
             ));
         }
     }
@@ -105,7 +105,7 @@ fn run(args: &[String]) -> Result<i32, String> {
         Some("--notices") | Some("notices") => Ok(ap_cli::notices::cmd_notices()),
         Some("new") => cmd_new(&rest),
         Some("add") => cmd_add(&rest),
-        Some("run") => cmd_run(&rest, false),
+        Some("run") => cmd_run(&rest, false, tier.as_deref()),
         Some("build") => cmd_build(&rest),
         Some("build-ext") => build_ext::build_ext(&rest).map(|_| 0),
         Some("cache") => cmd_cache(&rest),
@@ -113,12 +113,12 @@ fn run(args: &[String]) -> Result<i32, String> {
         // Single-file legacy form: `antipythony file.py` (02.02 seam).
         Some(other) if other.ends_with(".py") => {
             let r2: Vec<&str> = vec![other];
-            cmd_run(&r2, false)
+            cmd_run(&r2, false, tier.as_deref())
         }
         Some(other) if other != "run" && rest.iter().any(|a| a.ends_with(".py")) => {
             // `--tier 0 file.py` fell through the pre-scan into verb position.
             let r2: Vec<&str> = std::iter::once(other).chain(rest.iter().copied()).collect();
-            cmd_run(&r2, false)
+            cmd_run(&r2, false, tier.as_deref())
         }
         Some(other) => {
             eprintln!("antipythony: unexpected argument '{other}'");
@@ -358,7 +358,7 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<(), String> {
 // run
 // ---------------------------------------------------------------------------
 
-fn cmd_run(rest: &[&str], _wasm: bool) -> Result<i32, String> {
+fn cmd_run(rest: &[&str], _wasm: bool, tier: Option<&str>) -> Result<i32, String> {
     let mut path: Option<String> = None;
     let mut no_cache = false;
     let mut wasm = false;
@@ -490,9 +490,18 @@ fn cmd_run(rest: &[&str], _wasm: bool) -> Result<i32, String> {
     let script_path = std::path::absolute(&path)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| path.clone());
+    let tier_owned = tier.map(|s| s.to_string());
     let exit_code = std::thread::Builder::new()
         .stack_size(256 << 20)
         .spawn(move || {
+            // fast-path leaf 02: forward the pre-scanned --tier into
+            // run_module's init seam (thread_local — set ON the interpreter
+            // thread, same discipline as ap_run_eval's spawned closure).
+            match tier_owned.as_deref() {
+                Some("0") => ap_run::tier_flag::set("0"),
+                Some("bytecode") => ap_run::tier_flag::set("bytecode"),
+                _ => {}
+            }
             let mut out = std::io::stdout();
             let mut err = std::io::stderr();
             let outcome = ap_run::run_module(&source, &script_path, &mut out, &mut err);

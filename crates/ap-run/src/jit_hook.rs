@@ -55,12 +55,26 @@ pub enum TierMode {
     /// invisible today; the seam exists so tier-1 hooks in later without
     /// touching this dispatch again).
     Adaptive,
+    /// fast-path leaf 00-infra/02: function bodies whose lowering to flat
+    /// bytecode succeeded execute through ap_run::bytecode_interp's
+    /// dispatch loop; everything else falls back to the tree-walker.
+    /// `--tier bytecode` / APX_TIER=bytecode. Default OFF (Tree) — a
+    /// toggle-off run never touches the bytecode path.
+    Bytecode,
 }
 
 impl TierMode {
     /// Whether function bodies should attempt the JIT route.
     pub fn jit_enabled(self) -> bool {
         matches!(self, TierMode::Jit | TierMode::Adaptive)
+    }
+
+    /// fast-path leaf 02: whether function bodies should attempt the flat
+    /// bytecode dispatch route (mutually exclusive with the JIT route —
+    /// the dispatch arm checks this BEFORE jit_enabled; `--tier jit` and
+    /// `--tier bytecode` are distinct modes).
+    pub fn bytecode_enabled(self) -> bool {
+        matches!(self, TierMode::Bytecode)
     }
 }
 
@@ -286,6 +300,8 @@ fn parse_tier(m: &str) -> Option<TierMode> {
     match m {
         "0" => Some(TierMode::Tree),
         "jit" | "adaptive" => Some(TierMode::Adaptive),
+        // fast-path leaf 00-infra/02: the flat-bytecode dispatch tier.
+        "bytecode" => Some(TierMode::Bytecode),
         // 02.06: the AoT binary's mode — the dispatch arm consults the
         // registered manifest FIRST (aot_runtime::entry_for), falling
         // back to this same adaptive/JIT route (the tree-walker twin is
@@ -517,6 +533,11 @@ pub fn report_line() {
     // 02.05f: the OSR transfer counter (own APX_OSR_STATS knob — the
     // conformance channels stay untouched without it).
     if let Some(line) = ap_codegen_native::runtime::osr_stats_line() {
+        eprintln!("{line}");
+    }
+    // fast-path leaf 02: the bytecode dispatch counters (only nonzero when
+    // --tier bytecode was active — a toggle-off run prints nothing here).
+    if let Some(line) = crate::bytecode_interp::bc_stats_line() {
         eprintln!("{line}");
     }
 }

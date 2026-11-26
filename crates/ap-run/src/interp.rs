@@ -3553,49 +3553,10 @@ pub(crate) fn eval_expr(
             if *line > 0 {
                 frame.last_line.set(*line);
             }
-            // 02.03 unary dunders (__neg__/__pos__/__invert__/__abs__)
-            // before the builtin numeric paths (c030).
-            let unary_slot = match op {
-                UnaryOp::Minus => Some("__neg__"),
-                UnaryOp::Plus => Some("__pos__"),
-                UnaryOp::Invert => Some("__invert__"),
-                UnaryOp::Not => None,
-            };
-            if let Some(slot) = unary_slot {
-                if let Some((f, _)) = crate::classes::special_lookup(interp, &xv, slot) {
-                    let r = call_value(
-                        interp,
-                        &module_frame_pub(),
-                        &f,
-                        std::slice::from_ref(&xv),
-                        &[],
-                    )?;
-                    if !result_is_not_implemented(&Ok(r.clone())) {
-                        return Ok(r);
-                    }
-                } else if let Some((_f, _)) = crate::classes::special_lookup(interp, &xv, "__abs__")
-                {
-                    if slot == "__neg__" || slot == "__pos__" {
-                        // CPython doesn't fall back to __abs__ for -/+
-                        // (only round/abs paths); skip.
-                    }
-                }
-            }
-            match op {
-                UnaryOp::Plus => match xv {
-                    Value::Int(_) | Value::Float(_) | Value::Bool(_) => Ok(xv),
-                    other => Err(raise(
-                        "TypeError",
-                        format!(
-                            "bad operand type for unary +: '{}'",
-                            crate::classes::display_type_name(&other)
-                        ),
-                    )),
-                },
-                UnaryOp::Minus => ap_obj::ops::neg(&xv).map_err(Flow::from_py),
-                UnaryOp::Invert => ap_obj::ops::invert(&xv).map_err(Flow::from_py),
-                UnaryOp::Not => Ok(Value::Bool(!truthy(interp, &xv)?)),
-            }
+            // The dunder dispatch + builtin fallbacks live in eval_unary_pub
+            // (extracted verbatim; the bytecode dispatch loop shares THIS
+            // body — no semantic duplication, master.md).
+            eval_unary_pub(interp, *op, xv)
         }
         Expr::BoolOp(op, xs) => {
             // Short-circuit preserving operand VALUES (S-01-30).
@@ -9904,6 +9865,18 @@ fn call_function(
         // resolve (manifest qualnames are main-module def names);
         // everything else falls through the routes below untouched.
         crate::aot_runtime::call_body(aot_idx, interp, &frame, &entry)
+    } else if crate::jit_hook::tier_mode().bytecode_enabled() {
+        // fast-path leaf 00-infra/02 (the bytecode dispatch arm, checked
+        // BEFORE the JIT arm — `--tier bytecode` and `--tier jit` are
+        // distinct, mutually exclusive modes): route the body through the
+        // flat-bytecode dispatch loop. Ok(None) = lowerer fallback →
+        // tree-walker, byte-identical.
+        match crate::bytecode_interp::call_body_bytecode(interp, &entry, &frame) {
+            Ok(Some(v)) => Ok(v),
+            Ok(None) => exec_block(interp, &frame, &def.body.blocks, &current_registry(interp))
+                .map(|_| Value::None),
+            Err(f) => Err(f),
+        }
     } else if crate::jit_hook::tier_mode().jit_enabled() {
         // 02.05a JIT entry hook (the ONE dispatch arm): route the body
         // through the compiled cfg::Func baseline. Ok(None) = fallback
@@ -18222,6 +18195,56 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
             Ok(Some(Value::Obj(code)))
         }
         _ => Ok(None),
+    }
+}
+
+/// The tree-walker's Expr::UnaryOp arm body (minus the operand eval +
+/// instrument-line publish), extracted verbatim so the bytecode dispatch
+/// loop (fast-path leaf 02) shares ONE unary implementation — master.md:
+/// no semantic duplication. Takes the value by clone (bytecode stack pops
+/// it; the walker holds it in a local).
+pub fn eval_unary_pub(interp: &Arc<Interpreter>, op: UnaryOp, xv: Value) -> EResult {
+    // 02.03 unary dunders (__neg__/__pos__/__invert__/__abs__)
+    // before the builtin numeric paths (c030).
+    let unary_slot = match op {
+        UnaryOp::Minus => Some("__neg__"),
+        UnaryOp::Plus => Some("__pos__"),
+        UnaryOp::Invert => Some("__invert__"),
+        UnaryOp::Not => None,
+    };
+    if let Some(slot) = unary_slot {
+        if let Some((f, _)) = crate::classes::special_lookup(interp, &xv, slot) {
+            let r = call_value(
+                interp,
+                &module_frame_pub(),
+                &f,
+                std::slice::from_ref(&xv),
+                &[],
+            )?;
+            if !result_is_not_implemented(&Ok(r.clone())) {
+                return Ok(r);
+            }
+        } else if let Some((_f, _)) = crate::classes::special_lookup(interp, &xv, "__abs__") {
+            if slot == "__neg__" || slot == "__pos__" {
+                // CPython doesn't fall back to __abs__ for -/+
+                // (only round/abs paths); skip.
+            }
+        }
+    }
+    match op {
+        UnaryOp::Plus => match xv {
+            Value::Int(_) | Value::Float(_) | Value::Bool(_) => Ok(xv),
+            other => Err(raise(
+                "TypeError",
+                format!(
+                    "bad operand type for unary +: '{}'",
+                    crate::classes::display_type_name(&other)
+                ),
+            )),
+        },
+        UnaryOp::Minus => ap_obj::ops::neg(&xv).map_err(Flow::from_py),
+        UnaryOp::Invert => ap_obj::ops::invert(&xv).map_err(Flow::from_py),
+        UnaryOp::Not => Ok(Value::Bool(!truthy(interp, &xv)?)),
     }
 }
 
