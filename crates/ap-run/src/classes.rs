@@ -4144,6 +4144,28 @@ fn class_attr_get(
                 let f = ap_obj::PyObject::new(ap_obj::ObjKind::BuiltinFn, "__object_new2__");
                 return Ok(Value::Obj(f));
             }
+            // hp-forloop (s031 gate): a metaclass-level CLASSMETHOD read on
+            // the class must bind cls (CPython: A.hook where hook is a
+            // @classmethod on Meta is a method bound to A). The raw
+            // classmethod descriptor leaked through and later call sites
+            // raised "'object' object is not callable" (abc.ABCMeta's
+            // __subclasshook__ chain; the `_hook` repro). Same unwrap the
+            // __prepare__ arm applies (classes.rs __prepare__).
+            if let Value::Obj(d) = &mv {
+                if d.kind == ap_obj::ObjKind::Descriptor
+                    && matches!(
+                        d.descr_kind
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .as_deref(),
+                        Some("classmethod")
+                    )
+                {
+                    if let Some(f) = d.func.lock().unwrap_or_else(|p| p.into_inner()).clone() {
+                        return Ok(bind_function(&f, cls_v.clone()));
+                    }
+                }
+            }
             return Ok(mv);
         }
         if let Some(ga) = meta.lookup("__getattr__") {

@@ -409,6 +409,21 @@ fn a_ptr_eq(a: &Value, b: &Value) -> bool {
         (Value::None, Value::None) => true,
         (Value::Bool(x), Value::Bool(y)) => x == y,
         (Value::Ellipsis, Value::Ellipsis) => true,
+        // hp-forloop (s031 gate): NotImplemented is a runtime SINGLETON
+        // semantically (`ok is not NotImplemented` in _py_abc's
+        // __subclasscheck__), but each creation site mints a fresh marker
+        // object — identify by name, exactly as the tree-walker's
+        // value_is does (interp.rs value_is, 02.03b-fix). The JIT'd
+        // h_compare CMP_IS/CMP_NOTEQ arm was missing this, so the
+        // `ok is not NotImplemented` gate in any JIT'd body inverted.
+        (Value::Obj(x), Value::Obj(y))
+            if x.name == "NotImplemented"
+                && y.name == "NotImplemented"
+                && x.kind == ap_obj::ObjKind::Opaque
+                && y.kind == ap_obj::ObjKind::Opaque =>
+        {
+            true
+        }
         // Gc-backed arms (Gc<T> = Rc<T>): same allocation ⇒ same object.
         (Value::Str(x), Value::Str(y)) => std::sync::Arc::ptr_eq(x, y),
         // 02.05c gate fix (latent 02.05a bug exposed when the h_call

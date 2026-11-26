@@ -341,6 +341,12 @@ thread_local! {
 /// Only the process-global driver runs here; when the driver was never
 /// started (tier-0 runs, unit tests) the registry stays empty.
 fn osr_registry_lookup(fn_key: u64, header: u32) -> *const u8 {
+    // hp-forloop A/B debug knob: APX_OSR_OFF=1 disables all OSR entries
+    // (the poll fast path only) — used to isolate suspected OSR-body
+    // bugs from desugar semantics. Never set in production runs.
+    if std::env::var("APX_OSR_OFF").map(|v| v == "1").unwrap_or(false) {
+        return std::ptr::null();
+    }
     let installed = OSR_ENTRIES.with(|m| {
         *m.borrow()
             .get(&(fn_key, header))
@@ -1013,9 +1019,29 @@ pub fn jit_call_body(
         }
         (other, _) => other,
     };
-    let call_r = match fast_for_call {
-        Some(fast_ptr) => unsafe { tierup::call_fast(fast_ptr, &je.jit, &mut ctx) },
-        None => unsafe { je.jit.call(&mut ctx) },
+    // hp-forloop (s031 gate): use the raw outcome. The Raised arm (status 1
+    // + empty pending_exc) is the h_raise terminator's exit — ret carries
+    // the raised exception INSTANCE; convert through the same interpreter
+    // surface the AoT boundary uses (aot_runtime::call_body's 0206-embed
+    // arm). The tier-1 fast path keeps its own call (its status contract
+    // 0/2 hand-off is unchanged); the twin's outcome rides call_status.
+    let call_outcome = match fast_for_call {
+        Some(fast_ptr) => {
+            match unsafe { tierup::call_fast(fast_ptr, &je.jit, &mut ctx) } {
+                Ok(()) => ap_codegen_native::clif::CallOutcome::Completed,
+                Err(e) => ap_codegen_native::clif::CallOutcome::Parked(e),
+            }
+        }
+        None => unsafe { je.jit.call_status(&mut ctx) },
+    };
+    let call_r = match &call_outcome {
+        ap_codegen_native::clif::CallOutcome::Completed => Ok(()),
+        ap_codegen_native::clif::CallOutcome::Raised => Ok(()), // ret = raise
+        ap_codegen_native::clif::CallOutcome::Parked(e) => Err(e.clone()),
+        ap_codegen_native::clif::CallOutcome::Malformed => Err(ap_obj::PyException::new(
+            "SystemError",
+            "JIT helper failed without parking an exception",
+        )),
     };
     // 02.05c twin-start hygiene: the tier-1 hand-off parks the twin start
     // block; both call paths consume it. Reset so an independent later
@@ -1037,7 +1063,27 @@ pub fn jit_call_body(
 
     match call_r {
         Ok(()) => {
+            // hp-forloop (s031 gate): the Raised outcome (status 1 + empty
+            // pending_exc) is the h_raise terminator's exit — ret carries
+            // the raised exception INSTANCE. Convert through the same
+            // interpreter surface the AoT boundary uses (aot_runtime
+            // call_body's 0206-embed arm). On the COMPLETED outcome ret is
+            // the return value — never converted (a normal return of a
+            // user object must not become a raise; the conversion only
+            // fires for CallOutcome::Raised).
             let r = std::mem::replace(&mut ctx.ret, Value::None);
+            if matches!(
+                call_outcome,
+                ap_codegen_native::clif::CallOutcome::Raised
+            ) {
+                match crate::interp::exception_value_of_instance_pub(&r) {
+                    Ok(mut ev) => {
+                        ev.raise_line = frame.last_line.get();
+                        return Err(crate::Flow::Raise(ev));
+                    }
+                    Err(other) => return Err(other),
+                }
+            }
             Ok(Some(r))
         }
         Err(py) => Err(crate::Flow::Raise(rebuild(py))),

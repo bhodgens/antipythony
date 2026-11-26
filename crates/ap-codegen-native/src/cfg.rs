@@ -480,9 +480,19 @@ impl<'a> Lowerer<'a> {
                 let c = self.lower_expr(cond)?;
                 let else_entry = self.func.new_block();
                 self.set_term(Terminator::Branch(c, body_b, else_entry));
+                self.cur = cond_b;
+                self.func.blocks[cond_b.0 as usize].region = self.cur_region();
+                // hp-forloop: the poll lives at the TOP OF THE HEAD (the
+                // cond block), not the body — the same position the for
+                // desugar uses, so loop_headers resolves the OSR entry
+                // point as the head block for BOTH loop kinds (the OSR
+                // body re-enters at the iteration boundary: poll →
+                // cond-eval / IterNext → body; the item/cond state the
+                // back-edge carries is in the locals the transfer
+                // buffer already owns).
+                self.push_inst(Inst::OsrPoll);
                 self.cur = body_b;
                 self.func.blocks[body_b.0 as usize].region = self.cur_region();
-                self.push_inst(Inst::OsrPoll); // back-edge poll (leaf item 6)
                 self.loops.push(LoopCtx {
                     cont: cond_b,
                     brk: brk_b,

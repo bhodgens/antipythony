@@ -112,16 +112,59 @@ impl JitFunc {
     /// The code blob is alive as long as `self` is; `ctx` is
     /// exclusively borrowed for the call duration.
     pub unsafe fn call(&self, ctx: &mut rt::ExecCtx) -> Result<(), ap_obj::PyException> {
+        match self.call_status(ctx) {
+            CallOutcome::Completed => Ok(()),
+            CallOutcome::Raised => Ok(()), // ret carries the raise; host reads it
+            CallOutcome::Parked(e) => Err(e),
+            CallOutcome::Malformed => Err(ap_obj::PyException::new(
+                "SystemError",
+                "JIT helper failed without parking an exception",
+            )),
+        }
+    }
+}
+
+/// What [`JitFunc::call_status`] observed at the compiled boundary.
+pub enum CallOutcome {
+    /// Status 0: ret carries the return value.
+    Completed,
+    /// Status 1 with empty pending_exc: the h_raise terminator's exit —
+    /// ret carries the raised exception INSTANCE (not a return value).
+    /// hp-forloop (s031 gate): the host boundary (jit_call_body) converts
+    /// it through the interpreter's exception-instance surface — the old
+    /// behavior turned EVERY propagated JIT'd raise into a SystemError
+    /// "JIT helper failed without parking an exception" (raise ValueError
+    /// in a JIT'd fn caught at module level; the AoT boundary already
+    /// handled this arm, jit_call_body never did).
+    Raised,
+    /// Status 1 with a helper-parked exception (the normal helper raise
+    /// path — binop TypeError, call failure, ...).
+    Parked(ap_obj::PyException),
+    /// Status 1 with NEITHER: a helper failed fail-closed. Never a silent
+    /// continue.
+    Malformed,
+}
+
+impl JitFunc {
+    /// Call with the raw outcome (see [`CallOutcome`]).
+    ///
+    /// # Safety
+    ///
+    /// Same contract as [`JitFunc::call`].
+    pub unsafe fn call_status(&self, ctx: &mut rt::ExecCtx) -> CallOutcome {
         let f: extern "C" fn(*mut rt::ExecCtx) -> i32 = std::mem::transmute(self.code_ptr);
         let status = f(ctx as *mut rt::ExecCtx);
         match status {
-            0 => Ok(()),
+            0 => CallOutcome::Completed,
             _ => match ctx.pending_exc.take() {
-                Some(e) => Err(e),
-                None => Err(ap_obj::PyException::new(
-                    "SystemError",
-                    "JIT helper failed without parking an exception",
-                )),
+                Some(e) => CallOutcome::Parked(e),
+                None => {
+                    if matches!(ctx.ret, ap_obj::value::Value::None) {
+                        CallOutcome::Malformed
+                    } else {
+                        CallOutcome::Raised
+                    }
+                }
             },
         }
     }

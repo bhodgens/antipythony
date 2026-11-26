@@ -313,19 +313,24 @@ pub fn loop_headers(func: &Func) -> Vec<BlockId> {
                 _ => {}
             }
         }
-        // The header is the predecessor that itself reaches the poll block
-        // again through the loop (the back-edge source). For the while
-        // shape the cfg emits, the body block's in-loop predecessor is the
-        // condition re-evaluation edge from the body's end — the header is
-        // the CONDITION block: the unique predecessor reachable FROM the
-        // poll block. Walk successors of the poll block; whichever
-        // predecessor lies on that forward path is the header.
-        let header = preds.iter().copied().find(|&p| {
-            // p must be able to reach `pi` forward (it re-enters the loop)
-            reaches(func, p, pi as u32)
-        });
-        if let Some(h) = header {
-            headers.push(BlockId(h));
+        // hp-forloop FIX: the header is THE POLL BLOCK ITSELF. Both loop
+        // desugars place the poll at the TOP of the head block (while:
+        // cond block; for: the IterNext head) — the head is the iteration
+        // boundary, so the OSR body must enter THERE. Entering at any
+        // other predecessor re-runs pre-head state: for the for-shape the
+        // pre-head holds IterNew, and a naive "first predecessor that
+        // reaches the poll" heuristic picked it, re-running iter() with a
+        // FRESH iterator (cursor reset) — the OSR body re-processed
+        // already-consumed items (the s023 double-unparse: exactly one
+        // duplicate subtree per transfer). Validate the loop: the poll
+        // block must be reachable from one of its own predecessors (a
+        // real back-edge) — a poll outside any loop resolves no header
+        // and stays OSR-ineligible (reported, never silent).
+        let on_cycle = preds
+            .iter()
+            .any(|&p| reaches(func, pi as u32, p) && p != pi as u32);
+        if on_cycle {
+            headers.push(BlockId(pi as u32));
         }
     }
     headers.sort_unstable();
