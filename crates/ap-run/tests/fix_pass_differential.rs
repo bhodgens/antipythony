@@ -320,4 +320,3 @@ pprint.pprint({"b": 1, "a": 2}, sort_dicts=False)
 "#,
     );
 }
-

@@ -1,4 +1,5 @@
-#![forbid(unsafe_code)] // issue #18 wave 3 ratchet: measured zero-unsafe target (scripts/unsafe_report.sh + clippy undocumented_unsafe_blocks = 0)
+#![forbid(unsafe_code)]
+// issue #18 wave 3 ratchet: measured zero-unsafe target (scripts/unsafe_report.sh + clippy undocumented_unsafe_blocks = 0)
 //! `ap-gc-eval` — container-mint microbench (Fix-C probe, hp-nursery variant).
 //! A = full path; B = insert-only (hook registers, gc disabled);
 //! C = pure alloc (no-op hook).

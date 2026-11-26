@@ -1,4 +1,5 @@
-#![forbid(unsafe_code)] // issue #18 wave 3 ratchet: measured zero-unsafe target (scripts/unsafe_report.sh + clippy undocumented_unsafe_blocks = 0)
+#![forbid(unsafe_code)]
+// issue #18 wave 3 ratchet: measured zero-unsafe target (scripts/unsafe_report.sh + clippy undocumented_unsafe_blocks = 0)
 //! `ap-mint-eval` — hp-lazydunders raw mint microbench (temporary probe bin).
 //! Decomposes the PyObject (BoundMethod) mint floor:
 //!   A_list:      PyList mint alone (registry + GC amortized)

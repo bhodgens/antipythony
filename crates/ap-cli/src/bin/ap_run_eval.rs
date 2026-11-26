@@ -1,4 +1,5 @@
-#![forbid(unsafe_code)] // issue #18 wave 3 ratchet: measured zero-unsafe target (scripts/unsafe_report.sh + clippy undocumented_unsafe_blocks = 0)
+#![forbid(unsafe_code)]
+// issue #18 wave 3 ratchet: measured zero-unsafe target (scripts/unsafe_report.sh + clippy undocumented_unsafe_blocks = 0)
 //! `ap-run-eval` — the T-05/T-06 testability bin: parse -> lower ->
 //! execute a single .py file; stdout/stderr/exit mirror CPython (C-24).
 //!
