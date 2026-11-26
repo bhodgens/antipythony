@@ -54,6 +54,9 @@ pub mod structmod;
 pub mod surr_codec;
 pub mod threading;
 pub mod threading_call;
+// fast-path leaf 00-infra/02: the flat-bytecode dispatch loop (toggle
+// --tier bytecode / APX_TIER=bytecode; default OFF = never entered).
+pub mod bytecode_interp;
 
 pub use aot_runtime::AotFnEntry;
 use ap_obj::exc::PyException;

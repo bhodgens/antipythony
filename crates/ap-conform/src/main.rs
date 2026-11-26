@@ -115,8 +115,10 @@ fn main() -> std::process::ExitCode {
             impl_wasm_builder,
         } => {
             if let Some(mode) = &tier {
-                if mode != "0" && mode != "adaptive" {
-                    eprintln!("ap-conform: error: --tier must be '0' or 'adaptive', got '{mode}'");
+                if mode != "0" && mode != "adaptive" && mode != "bytecode" {
+                    eprintln!(
+                        "ap-conform: error: --tier must be '0', 'adaptive', or 'bytecode', got '{mode}'"
+                    );
                     return std::process::ExitCode::from(2);
                 }
             }

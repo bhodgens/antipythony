@@ -37,10 +37,11 @@ fn main() {
     let Args { tier, file: path } = Args::parse();
 
     if let Some(mode) = &tier {
-        if mode != "0" && mode != "adaptive" && mode != "jit" {
+        if mode != "0" && mode != "adaptive" && mode != "jit" && mode != "bytecode" {
             eprintln!(
-                "ap-run-eval: --tier {mode} is not implemented; this bin runs tier-0 or adaptive \
-                 (pass --tier 0, --tier adaptive, or omit --tier)"
+                "ap-run-eval: --tier {mode} is not implemented; this bin runs tier-0, adaptive, \
+                 or the flat-bytecode tier (pass --tier 0, --tier adaptive, --tier bytecode, \
+                 or omit --tier)"
             );
             std::process::exit(2);
         }
@@ -77,6 +78,7 @@ fn main() {
             match tier.as_deref() {
                 Some("0") => ap_run::tier_flag::set("0"),
                 Some("adaptive") | Some("jit") => ap_run::tier_flag::set("adaptive"),
+                Some("bytecode") => ap_run::tier_flag::set("bytecode"),
                 _ => {}
             }
             let mut out = std::io::stdout();
