@@ -611,6 +611,7 @@ assert set(ALL_PROBES) == set(EXPECTED), "probe/expectation drift"
 import platform as _platform
 DARWIN_FROZEN = frozenset({
     "a1_err1_invariants",
+    "a1_err0_table",
     "a1_stat1_consts",
     "a1_pipe0_rw",
     "a1_pipe1_flags",
