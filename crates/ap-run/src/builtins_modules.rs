@@ -13171,29 +13171,86 @@ fn zlib_error(msg: String) -> Flow {
 
 use std::io::Write as IoWrite;
 
+/// PyLong_AsUnsignedLongMask semantics for crc32/adler32 seed args: the
+/// value must be an int (Bool counts; CPython accepts True/False), masked
+/// to the low 32 bits with Python floor-mod semantics — exact for
+/// negatives and for arbitrary-precision ints beyond i64 (probed vs
+/// CPython 3.14: crc32(d, 2**64+1) == crc32(d, 1), crc32(d, -2**100)
+/// == crc32(d, 0)). Non-int args raise CPython's seed TypeError.
+fn seed_mask_u32(v: &Value) -> Result<u32, Flow> {
+    let n = match v.as_int() {
+        Some(n) => n,
+        None => {
+            return Err(raise(
+                "TypeError",
+                format!(
+                    "'{}' object cannot be interpreted as an integer",
+                    v.type_name()
+                ),
+            ))
+        }
+    };
+    let q = match n.to_i64() {
+        Some(q) => q,
+        None => n
+            .bitand(&ap_obj::Int::from_i64(0xFFFF_FFFF))
+            .to_i64()
+            .unwrap_or(0),
+    };
+    Ok(q as u32)
+}
+
+/// crc32/adler32 DATA argument: CPython's zlib module uses the buffer
+/// protocol — str is REJECTED with 'a bytes-like object is required,
+/// not 'str'' (both zlib.crc32 and zlib.adler32; probed 3.14). Distinct
+/// from hashlib's bytes_arg, which historically accepted str.
+fn crc_data_arg(v: &Value) -> Result<Vec<u8>, Flow> {
+    match v {
+        Value::Bytes(b) => Ok((**b).clone()),
+        other => Err(raise(
+            "TypeError",
+            format!(
+                "a bytes-like object is required, not '{}'",
+                other.type_name()
+            ),
+        )),
+    }
+}
+
 pub fn call_zlib(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Option<BResult> {
     let r: BResult = (|| -> BResult {
         match name {
-            // zlib.crc32 == binascii.crc32 (same IEEE CRC-32 register walk).
+            // zlib.crc32 == binascii.crc32: crc32fast (NEON carry-less-multiply
+            // aarch64 backend, ~10-30x the scalar loop). Hasher state IS the
+            // zlib internal register: crc32(data, value) == seed !value, walk,
+            // return !crc. Chaining holds exactly: passing a previous RESULT
+            // as value reproduces crc32(a+b) (fix_crc gate rows).
             "crc32" => {
-                let data = bytes_arg(required(args, "crc32")?)?;
-                let seed = args
-                    .get(1)
-                    .and_then(|v| v.as_int())
-                    .and_then(|n| n.to_i64())
-                    .map(|v| !(v as u32))
-                    .unwrap_or(0xFFFF_FFFF);
-                Ok(i(!(crc32_walk(seed, &data)) as i64))
+                let data = crc_data_arg(required(args, "crc32")?)?;
+                // crc32fast's Hasher state ALREADY uses the zlib VALUE
+                // convention (verified: new_with_initial(0xFFFFFFFF) +
+                // finalize == zlib.crc32(d, 0xFFFFFFFF); new() == zlib.crc32).
+                // Seed masking per seed_mask_u32 (PyLong mask semantics).
+                let seed = match args.get(1) {
+                    Some(v) => seed_mask_u32(v)?,
+                    None => 0,
+                };
+                let mut h = crc32fast::Hasher::new_with_initial(seed);
+                h.update(&data);
+                Ok(i(h.finalize() as i64))
             }
             "adler32" => {
-                // donor zlib.rs adler32: value taken as u32 mask (wraps).
-                let data = bytes_arg(required(args, "adler32")?)?;
-                let value = args
-                    .get(1)
-                    .and_then(|v| v.as_int())
-                    .and_then(|n| n.to_i64())
-                    .unwrap_or(1) as u32;
-                Ok(i(adler32_walk(value, &data) as i64))
+                // simd-adler32 (NEON vectorized on aarch64). Adler state =
+                // (b<<16)|a with a=low16, b=high16; CPython seeds via
+                // PyLong_AsUnsignedLongMask (low 32 bits, negatives masked).
+                let data = crc_data_arg(required(args, "adler32")?)?;
+                let value = match args.get(1) {
+                    Some(v) => seed_mask_u32(v)?,
+                    None => 1,
+                };
+                let mut h = simd_adler32::Adler32::from_checksum(value);
+                h.write(&data);
+                Ok(i(h.finish() as i64))
             }
             // donor zlib.rs compress: level default -1; wbits picks the
             // container format (9..=15 zlib, -9..=-15 raw deflate,
@@ -13395,7 +13452,13 @@ fn one_shot_gzip(data: &[u8]) -> Result<Vec<u8>, String> {
     let trailer = &data[data.len() - 8..];
     let crc32 = u32::from_le_bytes([trailer[0], trailer[1], trailer[2], trailer[3]]);
     let isize_ = u32::from_le_bytes([trailer[4], trailer[5], trailer[6], trailer[7]]);
-    let crc_got = crc32_walk(0xFFFF_FFFF, &body) ^ 0xFFFF_FFFF;
+    // crc32fast: Hasher state == zlib value convention; walking the whole
+    // body from the implicit seed gives the final CRC directly.
+    let crc_got = {
+        let mut h = crc32fast::Hasher::new();
+        h.update(&body);
+        h.finalize()
+    };
     if crc_got != crc32 || body.len() != isize_ as usize {
         return Err("Error -3 while decompressing data: incorrect data check".to_string());
     }
@@ -13440,31 +13503,6 @@ fn gzip_payload(data: &[u8]) -> Option<&[u8]> {
         return None;
     }
     Some(&data[off..data.len() - 8])
-}
-
-fn crc32_walk(mut crc: u32, data: &[u8]) -> u32 {
-    for &b in data {
-        crc ^= b as u32;
-        for _ in 0..8 {
-            let mask = (crc & 1).wrapping_neg();
-            crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
-        }
-    }
-    crc
-}
-
-fn adler32_walk(value: u32, data: &[u8]) -> u32 {
-    let mut a = value & 0xFFFF;
-    let mut b = (value >> 16) & 0xFFFF;
-    for chunk in data.chunks(5552) {
-        for &byte in chunk {
-            a += byte as u32;
-            b += a;
-        }
-        a %= 65521;
-        b %= 65521;
-    }
-    (b << 16) | a
 }
 
 // ===========================================================================
@@ -14952,24 +14990,18 @@ pub fn call_binascii(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> 
                 Ok(Value::Bytes(Gc::new(out)))
             }
             "crc32" => {
-                let data = bytes_arg(required(args, "crc32")?)?;
-                // CPython: crc32(data, value) seeds the register with
-                // !value (the caller passes a previous RESULT).
-                let seed = args
-                    .get(1)
-                    .and_then(|v| v.as_int())
-                    .and_then(|n| n.to_i64())
-                    .map(|v| !(v as u32))
-                    .unwrap_or(0xFFFF_FFFF);
-                let mut crc: u32 = seed;
-                for &b in &data {
-                    crc ^= b as u32;
-                    for _ in 0..8 {
-                        let mask = (crc & 1).wrapping_neg();
-                        crc = (crc >> 1) ^ (0xEDB8_8320 & mask);
-                    }
-                }
-                Ok(i(!crc as i64))
+                let data = crc_data_arg(required(args, "crc32")?)?;
+                // CPython: crc32(data, value) chains the previous RESULT;
+                // crc32fast's state convention matches the value directly
+                // (see call_zlib's crc32 arm). Seed masking per
+                // seed_mask_u32 (PyLong mask semantics).
+                let seed = match args.get(1) {
+                    Some(v) => seed_mask_u32(v)?,
+                    None => 0,
+                };
+                let mut h = crc32fast::Hasher::new_with_initial(seed);
+                h.update(&data);
+                Ok(i(h.finalize() as i64))
             }
             // A-1 item 2 (below): qp/uu/hqx arms — adapted from RustPython
             // crates/common/src/binascii.rs (MIT).
