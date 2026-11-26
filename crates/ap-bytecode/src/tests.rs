@@ -852,7 +852,7 @@ fn opcode_names_table_in_sync() {
         assert!(!name.is_empty());
         assert!(seen.insert(name), "duplicate opcode name {name}");
     }
-    assert_eq!(all.len(), 32);
+    assert_eq!(all.len(), 33);
 }
 
 #[test]

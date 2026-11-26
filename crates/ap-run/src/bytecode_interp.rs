@@ -74,6 +74,7 @@ use ap_obj::value::{PyList, PyString, Tuple, Value};
 
 use crate::exc_hier::ExceptionValue;
 use crate::frame::{FnEntry, Frame, Interpreter, Loc};
+use crate::iter::IterState;
 use crate::Flow;
 
 // ===========================================================================
@@ -229,6 +230,89 @@ fn raise_flow(class: &str, msg: impl Into<String>) -> Flow {
     Flow::Raise(ExceptionValue::msg(class, msg))
 }
 
+// ===========================================================================
+// Smi fast paths (leaf 01-core/01 perf targets). The shared helpers'
+// generality (user-dunder walks, exc machinery, bool allocs) costs
+// ~200ns/step; the loop targets need ~20ns. These arms run ONLY when the
+// operand SHAPES guarantee identical semantics (raw smi ints; for floor
+// mod, positive operands); any other shape falls to the shared helper —
+// semantics live in the shared helpers, this is a guarded entry into
+// them, not a fork.
+// ===========================================================================
+
+/// Raw smi x op y for the pure-int arith ops whose ap_obj::ops::binop int
+/// path is exactly this (Int::add/sub/mul are checked and Smi-or-bigint
+/// promote identically — an overflow here means the slow path would
+/// return a Big; None = take the slow path). Never handles Mod (floor-mod
+/// sign rules) — that stays on the shared helper.
+#[inline]
+fn fast_smi_binop(a: &Value, op: ap_ir::BinOp, b: &Value) -> Option<Value> {
+    let (Value::Int(x), Value::Int(y)) = (a, b) else {
+        return None;
+    };
+    let (Int::Smi(xi), Int::Smi(yi)) = (x, y) else {
+        return None; // bigint arm: full machinery
+    };
+    let v = match op {
+        ap_ir::BinOp::Add => xi.checked_add(*yi)?,
+        ap_ir::BinOp::Sub => xi.checked_sub(*yi)?,
+        ap_ir::BinOp::Mul => xi.checked_mul(*yi)?,
+        _ => return None,
+    };
+    Some(Value::Int(Int::Smi(v)))
+}
+
+/// The attr_get fast_eligible arm's exact (receiver, name) -> fresh
+/// BoundMethod mint, without the deep walk. Mirrors its family gates:
+/// native_attr claims pylist/pydict/pyset method tables FIRST (those
+/// receivers' surfaces ride the native dispatcher — dotted marker mints,
+/// NOT bare names), so a native_attr hit here would be wrong; the walk's
+/// arm only answers when native_attr returns None. For the four primitive
+/// receivers + these names native_attr provably returns None (the tables
+/// claim dotted names like "pylist.sort", not bare "append") — verified
+/// against builtins_modules::native_attr's match shapes.
+#[inline]
+fn fast_bound_mint(obj: &Value, name: &str) -> Option<Value> {
+    let family_ok = match obj {
+        Value::List(_) => {
+            matches!(name, "append" | "insert" | "sort" | "reverse" | "extend" | "remove")
+        }
+        Value::Dict(_) => matches!(
+            name,
+            "keys" | "values" | "items" | "update" | "setdefault" | "popitem" | "get"
+                | "fromkeys" | "pop"
+        ),
+        Value::Set(_) | Value::Frozen(_) => matches!(
+            name,
+            "difference" | "difference_update" | "intersection" | "intersection_update"
+                | "union" | "update" | "copy" | "clear" | "discard" | "remove" | "pop"
+                | "issubset" | "issuperset" | "symmetric_difference"
+                | "symmetric_difference_update" | "add"
+        ),
+        _ => false,
+    };
+    if !family_ok {
+        return None;
+    }
+    // CPython identity pin: a fresh BoundMethod per read (d.get is d.get
+    // is False) — never memoize. Same mint site as the walk's arm.
+    let m = ap_obj::PyObject::with_self(ap_obj::ObjKind::BoundMethod, name, obj.clone());
+    Some(Value::Obj(m))
+}
+
+/// Truthiness for the hot shapes with the EXACT semantics of
+/// interp::truthy_public (Int: != 0; Bool: itself; None: false). Every
+/// other shape (str/list/tuple/dict/user) falls to the shared helper.
+#[inline]
+fn fast_truthy(v: &Value) -> Option<bool> {
+    match v {
+        Value::Int(Int::Smi(n)) => Some(*n != 0),
+        Value::Bool(b) => Some(*b),
+        Value::None => Some(false),
+        _ => None,
+    }
+}
+
 /// Outcome of the frame: its return value, or (line-at-failure, flow).
 type FrameOutcome = Result<Value, (u32, Flow)>;
 
@@ -270,6 +354,10 @@ fn run_frame(
     // frame exit (break/unwind AND exhaustion both drop their entries inside
     // pull_iter; this covers the BREAK/mid-stream exits, the G1 discipline).
     let mut frame_iter_ids: Vec<u64> = Vec::new();
+    // ForNext handle cache (leaf 01-core/01): the most recent GetIter'd
+    // iterator Arc, matched against the peeked stack handle by pointer
+    // identity — skips the iterators-table Mutex on every loop step.
+    let mut cached_it: Option<std::sync::Arc<crate::iter::PyIterator>> = None;
 
     // Macro: propagate a helper failure as (current line, flow) so the exit
     // path can sync the frame line before the traceback is built. The macro
@@ -310,9 +398,12 @@ fn run_frame(
             ));
         }
         let ins = code.instrs[pc];
-        // THE leaf's core bookkeeping change: one TLS store per instruction.
-        cur_line = c.dense_lines[pc];
-        BC_LINE.with(|l| l.set(cur_line));
+        // Line bookkeeping: the LOCAL cur_line drives every error/exit sync
+        // (sync_frame_line). The BC_LINE TLS cell is written at frame exit
+        // only — the per-INSTRUCTION TLS store cost ~15ns/step and had NO
+        // reader anywhere in the crate (audited 01-core/01: the s016
+        // machinery reads frame.last_line, synced at the instrument ops and
+        // at the error exit, which is preserved).
 
         match ins {
             // ---- constants -------------------------------------------------
@@ -344,14 +435,12 @@ fn run_frame(
             // ---- names ------------------------------------------------------
             Instr::LoadFast(slot) => {
                 let s = slot as usize;
-                if s >= locals.len() {
-                    break Err((
-                        cur_line,
-                        raise_flow("SystemError", "bytecode local slot out of range"),
-                    ));
-                }
-                match &locals[s] {
-                    None => {
+                // Hot path first: bound slot -> one clone. The bounds check
+                // rides the same branch (slots are lowerer-proven < n_locals,
+                // this is belt-and-braces).
+                match locals.get(s) {
+                    Some(Some(v)) => stack.push(v.clone()),
+                    Some(None) => {
                         // Unbound local: the tree-walker's exact error shape.
                         // (Some(Value::None) is a real `x = None` store and
                         // reads fine — the Option IS the unbound marker.)
@@ -371,7 +460,12 @@ fn run_frame(
                             ),
                         ));
                     }
-                    Some(v) => stack.push(v.clone()),
+                    None => {
+                        break Err((
+                            cur_line,
+                            raise_flow("SystemError", "bytecode local slot out of range"),
+                        ));
+                    }
                 }
                 pc += 1;
             }
@@ -383,7 +477,16 @@ fn run_frame(
                         raise_flow("SystemError", "bytecode local slot out of range"),
                     ));
                 }
-                let v = pop!();
+                let n = stack.len();
+                if n == 0 {
+                    break 'dispatch Err((
+                        cur_line,
+                        raise_flow("SystemError", "bytecode operand stack underflow"),
+                    ));
+                }
+                // Swap the value out of the stack slot in place (no clone).
+                let v = std::mem::replace(&mut stack[n - 1], Value::None);
+                stack.truncate(n - 1);
                 locals[s] = Some(v);
                 pc += 1;
             }
@@ -429,9 +532,29 @@ fn run_frame(
             // line in the traceback) ---------------------------------------
             Instr::BinOp(kind) => {
                 sync_frame_line(frame, cur_line);
+                // No-clone pops for the smi fast path: peek both operands
+                // through references; only the SLOW path (shared helper)
+                // clones (it takes owned Values). The n = stack.len()
+                // guard is the underflow check (pop! equivalent).
+                let n = stack.len();
+                if n < 2 {
+                    break 'dispatch Err((
+                        cur_line,
+                        raise_flow("SystemError", "bytecode operand stack underflow"),
+                    ));
+                }
+                let op = bin_ir(kind);
+                let (a_ref, b_ref) = (&stack[n - 2], &stack[n - 1]);
+                let fast = fast_smi_binop(a_ref, op, b_ref);
+                if let Some(v) = fast {
+                    stack.truncate(n - 2);
+                    stack.push(v);
+                    pc += 1;
+                    continue;
+                }
                 let b = pop!();
                 let a = pop!();
-                let v = hop!(crate::interp::eval_binop(&a, bin_ir(kind), &b));
+                let v = hop!(crate::interp::eval_binop(&a, op, &b));
                 stack.push(v);
                 pc += 1;
             }
@@ -463,14 +586,26 @@ fn run_frame(
                 // fidelity only; the dispatch key is `kind`.
                 sync_frame_line(frame, cur_line);
                 let _ = sym;
+                let n = stack.len();
+                if n < 2 {
+                    break 'dispatch Err((
+                        cur_line,
+                        raise_flow("SystemError", "bytecode operand stack underflow"),
+                    ));
+                }
+                let op = bin_ir(kind);
+                // Smi fast path: a iop b on two raw smis rebinds (immutable
+                // value, no aliasing concern) — identical to aug_binop_value.
+                let fast = fast_smi_binop(&stack[n - 2], op, &stack[n - 1]);
+                if let Some(v) = fast {
+                    stack.truncate(n - 2);
+                    stack.push(v);
+                    pc += 1;
+                    continue;
+                }
                 let b = pop!();
                 let a = pop!();
-                let v = hop!(crate::interp::aug_binop_value(
-                    interp,
-                    bin_ir(kind),
-                    &a,
-                    &b
-                ));
+                let v = hop!(crate::interp::aug_binop_value(interp, op, &a, &b));
                 stack.push(v);
                 pc += 1;
             }
@@ -484,6 +619,20 @@ fn run_frame(
                     .get(idx as usize)
                     .map(|n| n.as_str())
                     .unwrap_or("<attr>");
+                // FAST MINT (leaf 01-core/01): the per-iteration
+                // `out.append`/`d.get` bound-method read. attr_get's deep
+                // walk costs ~1.7us per mint; this guard covers the exact
+                // (receiver-family, family-gated name) pairs the walk's
+                // fast_eligible arm answers with `PyObject::with_self` —
+                // same mint, minus the walk. Non-matching shapes fall to
+                // the full attr_get (which owns ALL the fall-through
+                // semantics — nothing here changes an answer, only the
+                // route).
+                if let Some(v) = fast_bound_mint(&obj, name) {
+                    stack.push(v);
+                    pc += 1;
+                    continue;
+                }
                 match crate::interp::attr_get_public(interp, &obj, name) {
                     Ok(Some(v)) => stack.push(v),
                     Ok(None) => {
@@ -546,12 +695,98 @@ fn run_frame(
                 }
                 let args = stack.split_off(stack.len() - argc);
                 let callee = pop!();
+                // (The leaf's BoundMethod fast arms were folded into the
+                // fused LoadAttrCall opcode — `obj.method(x)` shapes never
+                // mint a BoundMethod now. A BoundMethod VALUE reaching
+                // CallFunction is the rare first-class route (hoisted
+                // `ap = out.append`) and rides call_value unchanged.)
                 let v = hop!(crate::interp::call_value_frame_pub(
                     interp,
                     frame,
                     &callee,
                     &args,
                     &[]
+                ));
+                stack.push(v);
+                pc += 1;
+            }
+
+            Instr::LoadAttrCall { idx, argc } => {
+                // FUSED method call (leaf 01-core/01). Stack: receiver,
+                // then args. Semantics = attr_get + call_value EXACTLY;
+                // the fast arms below are pure routing shortcuts for the
+                // shapes methods::call_method answers natively. Any other
+                // shape mints the BoundMethod through attr_get_public and
+                // calls it through call_value_frame_pub — the identical
+                // two-opcode semantics, one opcode.
+                sync_frame_line(frame, cur_line);
+                let argc = argc as usize;
+                if stack.len() < argc + 1 {
+                    break Err((
+                        cur_line,
+                        raise_flow("SystemError", "bytecode call stack underflow"),
+                    ));
+                }
+                let args = stack.split_off(stack.len() - argc);
+                let recv = pop!();
+                let name = code.names.get(idx as usize).map(|n| n.as_str()).unwrap_or("<attr>");
+                // FAST ARMS — the primitive-receiver method families whose
+                // dispatch is methods::call_method's own match arms (no
+                // dunder walk, no mint).
+                let fast: Option<Result<Value, Flow>> = match (&recv, name) {
+                    (Value::List(l), "append") if argc == 1 => {
+                        l.append(args[0].clone());
+                        Some(Ok(Value::None))
+                    }
+                    // PyDict::get returns Option<Value>; a missing key is
+                    // Value::None — the same answer call_method's dict arm
+                    // gives (dict.get never raises).
+                    (Value::Dict(d), "get") if argc == 1 => {
+                        Some(Ok(d.get(&args[0]).unwrap_or(Value::None)))
+                    }
+                    (Value::Set(s), "add") if argc == 1 => match s.add(args[0].clone()) {
+                        Ok(()) => Some(Ok(Value::None)),
+                        Err(e) => Some(Err(Flow::from_py(e))),
+                    },
+                    _ => None,
+                };
+                if let Some(r) = fast {
+                    match r {
+                        Ok(v) => {
+                            stack.push(v);
+                            pc += 1;
+                            continue;
+                        }
+                        Err(f) => break Err((cur_line, f)),
+                    }
+                }
+                // FALLBACK: mint through the walk + call (two-opcode shape).
+                let callee = match crate::interp::attr_get_public(interp, &recv, name) {
+                    Ok(Some(v)) => v,
+                    Ok(None) => {
+                        let extra = match &recv {
+                            Value::Obj(mo) if mo.kind == ap_obj::ObjKind::Module => {
+                                format!(" (module '{}')", mo.name)
+                            }
+                            _ => String::new(),
+                        };
+                        break Err((
+                            cur_line,
+                            raise_flow(
+                                "AttributeError",
+                                format!(
+                                    "'{}' object has no attribute '{}'{}",
+                                    crate::classes::display_type_name(&recv),
+                                    name,
+                                    extra
+                                ),
+                            ),
+                        ));
+                    }
+                    Err(f) => break Err((cur_line, f)),
+                };
+                let v = hop!(crate::interp::call_value_frame_pub(
+                    interp, frame, &callee, &args, &[]
                 ));
                 stack.push(v);
                 pc += 1;
@@ -630,12 +865,18 @@ fn run_frame(
             }
             Instr::JumpIfFalse(t) => {
                 let v = pop!();
-                let b = hop!(crate::interp::truthy_public(interp, &v));
+                let b = match fast_truthy(&v) {
+                    Some(b) => b,
+                    None => hop!(crate::interp::truthy_public(interp, &v)),
+                };
                 pc = if b { pc + 1 } else { t as usize };
             }
             Instr::JumpIfTrue(t) => {
                 let v = pop!();
-                let b = hop!(crate::interp::truthy_public(interp, &v));
+                let b = match fast_truthy(&v) {
+                    Some(b) => b,
+                    None => hop!(crate::interp::truthy_public(interp, &v)),
+                };
                 pc = if b { t as usize } else { pc + 1 };
             }
             Instr::JumpIfFalseOrPop(t) => {
@@ -652,7 +893,10 @@ fn run_frame(
                         ));
                     }
                 };
-                let b = hop!(crate::interp::truthy_public(interp, &v));
+                let b = match fast_truthy(&v) {
+                    Some(b) => b,
+                    None => hop!(crate::interp::truthy_public(interp, &v)),
+                };
                 if b {
                     stack.pop();
                     pc += 1;
@@ -672,7 +916,10 @@ fn run_frame(
                         ));
                     }
                 };
-                let b = hop!(crate::interp::truthy_public(interp, &v));
+                let b = match fast_truthy(&v) {
+                    Some(b) => b,
+                    None => hop!(crate::interp::truthy_public(interp, &v)),
+                };
                 if b {
                     pc = t as usize;
                 } else {
@@ -694,6 +941,18 @@ fn run_frame(
                 if id % 2 == 0 {
                     frame_iter_ids.push(id);
                 }
+                // Park the handle for ForNext's cache (even ids only; the
+                // registry lookup under the table lock happens once here).
+                cached_it = if id % 2 == 0 {
+                    interp
+                        .iterators
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .get(&id)
+                        .map(|it| it.clone())
+                } else {
+                    None
+                };
                 let obj = ap_obj::PyObject::new(ap_obj::ObjKind::Iterator, "iterator");
                 *obj.gen_id.lock().unwrap_or_else(|p| p.into_inner()) = Some(id);
                 stack.push(Value::Obj(obj));
@@ -703,16 +962,25 @@ fn run_frame(
                 // CPython FOR_ITER shape: the iterator handle STAYS on the
                 // stack (peek, not pop) — the next back-edge iteration
                 // re-reads it; exhaustion pops it and jumps to the exit.
-                let h = match stack.last() {
-                    Some(h) => h.clone(),
-                    None => {
-                        break 'dispatch Err((
-                            cur_line,
-                            raise_flow("SystemError", "bytecode operand stack underflow"),
-                        ))
-                    }
-                };
-                let id = match &h {
+                //
+                // FAST PATH (leaf 01-core/01): the overwhelmingly common
+                // pull is an even-id table iterator whose state is one of
+                // the simple cursors. That pull needs NO CallFn probe (the
+                // CALLFN_ITER_EXISTS gate stays false for plain loops), NO
+                // generators-table probe (even id), and NO prune scan —
+                // inline the cursor arms and take the mutex once. Any other
+                // state (generator, CallFn, dict, zip...) routes through
+                // pull_iter_pub unchanged.
+                let n = stack.len();
+                if n == 0 {
+                    break 'dispatch Err((
+                        cur_line,
+                        raise_flow("SystemError", "bytecode operand stack underflow"),
+                    ));
+                }
+                // Peek WITHOUT cloning the handle Value: gen_id is behind a
+                // Mutex inside the Obj — read through the stack ref.
+                let id = match &stack[n - 1] {
                     Value::Obj(o) => *o.gen_id.lock().unwrap_or_else(|p| p.into_inner()),
                     _ => None,
                 };
@@ -722,13 +990,149 @@ fn run_frame(
                         raise_flow("TypeError", "'NoneType' object is not an iterator"),
                     ));
                 };
-                match hop!(crate::interp::pull_iter_pub(interp, id)) {
+                // Inline even-id cursor pull; odd ids (generators) and any
+                // non-cursor state go through the full pull_iter_pub.
+                let mut fast: Option<Option<Value>> = None;
+                if id % 2 == 0 {
+                    // Handle-cache hit: GetIter parked the Arc<PyIterator>
+                    // right after registering it. If the peeked handle is
+                    // still THAT iterator (same Arc pointer), pull straight
+                    // from the cached handle — no table lookup, no table
+                    // Mutex (only the iterator's own state Mutex, which
+                    // pull_iter takes anyway).
+                    let cached_ok = match (&cached_it, &stack[n - 1]) {
+                        (Some(it), Value::Obj(o)) => {
+                            // Identity by table id: the wrapper PyObject is
+                            // minted fresh per GetIter, but its gen_id IS
+                            // the unique registry id we cached against.
+                            *o.gen_id.lock().unwrap_or_else(|p| p.into_inner())
+                                == it.table_id.get()
+                                && it.table_id.get().is_some()
+                        }
+                        _ => false,
+                    };
+                    if cached_ok {
+                        let it = cached_it.as_ref().unwrap();
+                        let mut st = it.state.lock().unwrap_or_else(|p| p.into_inner());
+                        match &mut *st {
+                            IterState::Seq(items, cur) => {
+                                fast = Some(if *cur < items.len() {
+                                    let v = items[*cur].clone();
+                                    *cur += 1;
+                                    Some(v)
+                                } else {
+                                    None
+                                });
+                            }
+                            IterState::SharedList(l, cur) => {
+                                let v = l.get(*cur);
+                                if v.is_some() {
+                                    *cur += 1;
+                                }
+                                fast = Some(v);
+                            }
+                            IterState::SharedTuple(tup, cur) => {
+                                fast = Some(if *cur < tup.0.len() {
+                                    let v = tup.0[*cur].clone();
+                                    *cur += 1;
+                                    Some(v)
+                                } else {
+                                    None
+                                });
+                            }
+                            IterState::Range {
+                                cur, stop, step, ..
+                            } => {
+                                let cont = if *step >= 0 {
+                                    *cur < *stop
+                                } else {
+                                    *cur > *stop
+                                };
+                                fast = Some(if cont {
+                                    let v = *cur;
+                                    *cur += *step;
+                                    Some(Value::Int(Int::Smi(v)))
+                                } else {
+                                    None
+                                });
+                            }
+                            IterState::DictKeys(it2) => fast = Some(it2.next()),
+                            _ => {}
+                        }
+                    }
+                    if fast.is_none() {
+                        let its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
+                        if let Some(it) = its.get(&id) {
+                            let mut st = it.state.lock().unwrap_or_else(|p| p.into_inner());
+                            match &mut *st {
+                                IterState::Seq(items, cur) => {
+                                    fast = Some(if *cur < items.len() {
+                                        let v = items[*cur].clone();
+                                        *cur += 1;
+                                        Some(v)
+                                    } else {
+                                        None
+                                    });
+                                }
+                                IterState::SharedList(l, cur) => {
+                                    let v = l.get(*cur);
+                                    if v.is_some() {
+                                        *cur += 1;
+                                    }
+                                    fast = Some(v);
+                                }
+                                IterState::SharedTuple(tup, cur) => {
+                                    fast = Some(if *cur < tup.0.len() {
+                                        let v = tup.0[*cur].clone();
+                                        *cur += 1;
+                                        Some(v)
+                                    } else {
+                                        None
+                                    });
+                                }
+                                IterState::Range {
+                                    cur, stop, step, ..
+                                } => {
+                                    let cont = if *step >= 0 {
+                                        *cur < *stop
+                                    } else {
+                                        *cur > *stop
+                                    };
+                                    fast = Some(if cont {
+                                        let v = *cur;
+                                        *cur += *step;
+                                        Some(Value::Int(Int::Smi(v)))
+                                    } else {
+                                        None
+                                    });
+                                }
+                                IterState::DictKeys(dk) => fast = Some(dk.next()),
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                let pulled = match fast {
+                    Some(v) => v,
+                    None => hop!(crate::interp::pull_iter_pub(interp, id)),
+                };
+                match pulled {
                     Some(v) => {
                         stack.push(v);
                         pc += 1;
                     }
                     None => {
                         stack.pop(); // the exhausted iterator handle
+                        // Exhaustion prune (pull_iter's 02.04 discipline —
+                        // the fast path bypasses pull_iter, so it prunes
+                        // here): drop the finished iterator's table entry.
+                        if id % 2 == 0 {
+                            interp
+                                .iterators
+                                .lock()
+                                .unwrap_or_else(|p| p.into_inner())
+                                .remove(&id);
+                        }
                         pc = t as usize; // -> loop exit
                     }
                 }
@@ -754,6 +1158,10 @@ fn run_frame(
         }
     };
 
+    // Frame exit: publish the final line to the TLS cell (see the loop
+    // header comment — the per-instruction store was removed; observers
+    // reading BC_LINE between frames see the last executed line).
+    BC_LINE.with(|l| l.set(cur_line));
     // Frame exit: prune every iterator this frame registered (break /
     // return / unwind paths; exhaustion already pruned inside pull_iter).
     // Mirrors the tree-walker Stmt::For exit's table removal (G1).

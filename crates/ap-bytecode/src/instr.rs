@@ -206,6 +206,16 @@ pub enum Instr {
     /// mutation; leaf 01-core/01 lifts the refusal with a dedicated opcode).
     /// `sym` is the operator's source spelling (error-message fidelity).
     AugOp { kind: BinKind, sym: &'static str },
+    /// FUSED `TOS.method(args...)` — pops the receiver, pops `argc` args,
+    /// calls the family-gated method directly (NO BoundMethod mint: the
+    /// `out.append(x)` build-loop shape's per-iteration mint alloc was the
+    /// dominant cost). `idx` names the method; semantics are methods::
+    /// call_method's exact arms for the covered receivers — any uncovered
+    /// shape raises SystemError-equivalent... no: the LOWERER emits this
+    /// only for the exact Expr::Attribute-callee + Call shape, and the
+    /// DISPATCHER falls back to mint+call_value for any receiver the fast
+    /// arms don't cover (identical semantics, slower route).
+    LoadAttrCall { idx: u32, argc: u16 },
     /// Pseudo-instruction: this function's body is a tree-walk job
     /// (unsupported shape at lowering time). Never executed by the
     /// dispatch loop — entry (leaf 02) routes on it.
@@ -290,14 +300,15 @@ impl Instr {
             Self::ReturnValue => 28,
             Self::ReturnNone => 29,
             Self::AugOp { .. } => 30,
-            Self::FallbackToTreeWalk => 31,
+            Self::LoadAttrCall { .. } => 31,
+            Self::FallbackToTreeWalk => 32,
         }
     }
 }
 
 /// One name per opcode, discriminant order (kept in sync with
 /// `Instr::opcode_index`; `decode::disassemble` and tests rely on it).
-pub const OPCODE_NAMES: [&str; 32] = [
+pub const OPCODE_NAMES: [&str; 33] = [
     "LoadConst",
     "LoadFast",
     "LoadGlobal",
@@ -329,5 +340,6 @@ pub const OPCODE_NAMES: [&str; 32] = [
     "ReturnValue",
     "ReturnNone",
     "AugOp",
+    "LoadAttrCall",
     "FallbackToTreeWalk",
 ];

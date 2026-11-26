@@ -705,6 +705,29 @@ impl Lowerer {
                 Arg::KwStar(_) => return Err(Unsupported("**kwargs call")),
             }
         }
+        // FUSED METHOD CALL (leaf 01-core/01): `obj.name(args...)` — the
+        // build-loop `out.append(x)` shape. Lowering LoadAttr then
+        // CallFunction mints a fresh BoundMethod per iteration (~1.5us
+        // alloc); the fused opcode routes receiver+name+args straight to
+        // the method dispatcher (mint only as the fallback inside the
+        // dispatcher). The vanilla two-opcode shape stays for everything
+        // else (bare attr reads, nested attribute bases stay supported:
+        // the base expr lowers normally under the receiver).
+        let argc = u16::try_from(pos_args).map_err(|_| Unsupported("call too many args"))?;
+        if let Expr::Attribute(base, attr, _) = callee {
+            self.lower_expr(base)?;
+            for a in args {
+                if let Arg::Pos(e) = a {
+                    self.lower_expr(e)?;
+                }
+            }
+            if line >= 1 {
+                self.cur_line = line;
+            }
+            let idx = self.intern_name(attr);
+            self.emit_at_line(Instr::LoadAttrCall { idx, argc }, self.cur_line);
+            return Ok(());
+        }
         self.lower_expr(callee)?;
         for a in args {
             if let Arg::Pos(e) = a {
@@ -715,10 +738,7 @@ impl Lowerer {
             self.cur_line = line;
         }
         let site = self.sites.alloc(SiteKind::Call, 0);
-        let ins_idx = self.emit(Instr::CallFunction {
-            argc: u16::try_from(pos_args).map_err(|_| Unsupported("call too many args"))?,
-            site,
-        });
+        let ins_idx = self.emit(Instr::CallFunction { argc, site });
         self.sites.retarget(ins_idx, site);
         self.lines.record(ins_idx, line.max(1));
         Ok(())
