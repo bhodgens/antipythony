@@ -406,9 +406,14 @@ def lists():
     return (lst2, len(lst2), lst2[1], lst2[-1], [0] * 3)
 
 def dicts():
-    d = {"a": 1, "b": 2}
-    d["c"] = 3
-    return (d["a"] + d["b"] + d["c"], len(d), "b" in d)
+    # dict() constructor (NOT a `{}` display — a dict display makes the
+    # lowerer fall back wholesale; this probe deliberately exercises the
+    # BYTECODE-routed StoreSubscript on an attribute-backed dict).
+    d = dict()
+    d["a"] = 1
+    d["b"] = 2
+    d["a"] = d["b"] + 1
+    return (d["a"], d["b"], len(d), "b" in d)
 
 def attr_reads():
     class P:
@@ -421,7 +426,9 @@ def attr_reads():
 
 def nested_reads():
     grid = [[1, 2], [3, 4]]
-    m = {"inner": {"deep": 7}}
+    m = dict()
+    m["inner"] = dict()
+    m["inner"]["deep"] = 7
     return grid[1][0] + m["inner"]["deep"]
 
 def seq_methods():

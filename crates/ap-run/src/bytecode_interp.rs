@@ -604,10 +604,13 @@ fn run_frame(
                 pc += 1;
             }
             Instr::StoreSubscript => {
-                let v = pop!();
-                let k = pop!();
-                let o = pop!();
-                hop!(crate::methods::subscript_set(&o, &k, v));
+                // Lowerer layout (lower_store_target, Subscript arm): Assign
+                // pushed the VALUE first, then obj, then key — so TOS=key,
+                // TOS-1=obj, TOS-2=value. Map to subscript_set(obj, key, value).
+                let key = pop!();
+                let obj = pop!();
+                let value = pop!();
+                hop!(crate::methods::subscript_set(&obj, &key, value));
                 pc += 1;
             }
 
