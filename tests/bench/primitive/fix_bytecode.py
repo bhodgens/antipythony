@@ -50,6 +50,29 @@ from _target_dir import build_dir  # noqa: E402
 def default_binary():
     cand = build_dir(REPO_ROOT) / "release" / "antipythony"
     if cand.exists():
+        # Stale-binary guard: an older-than-sources binary silently tests
+        # bytecode-less code and every exercise assertion fails with a
+        # confusing NO-BC-STATS-LINE. Fail loud instead (Nov 2026 incident:
+        # target-0304c was 2 days stale and masked the whole gate).
+        newest_src = 0.0
+        for crate in ("ap-bytecode", "ap-run"):
+            d = os.path.join(REPO_ROOT, "crates", crate, "src")
+            if os.path.isdir(d):
+                for root, _dirs, files in os.walk(d):
+                    for fn in files:
+                        if fn.endswith(".rs"):
+                            newest_src = max(
+                                newest_src,
+                                os.stat(os.path.join(root, fn)).st_mtime,
+                            )
+        if cand.stat().st_mtime < newest_src:
+            raise SystemExit(
+                "fix_bytecode: binary %s is STALE (older than ap-bytecode/"
+                "ap-run sources). Rebuild or pass --other. Hint: the trunk "
+                "build may land in a DIFFERENT target dir — check .cargo/"
+                "config.toml's target-dir redirect and mtime."
+                % cand
+            )
         return [str(cand)]
     raise SystemExit(
         "fix_bytecode: no antipythony binary at %s (pass --other or build first)"
