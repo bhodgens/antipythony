@@ -13,8 +13,12 @@
 //!   module-level execution).
 //! - Const pool dedupes; line table records only on line change; site
 //!   ids are allocated for LoadAttr/Call/LoadGlobal in emission order.
-//! - NO For/Try/With/Match/BoolOp/chained-Compare lowering this leaf:
-//!   those shapes raise Unsupported (control flow lands in 01-core).
+//! - Control flow (leaf 01-core/01): If/While/For lower to Jump/GetIter/
+//!   ForNext; BoolOp to short-circuit Jump chains (value rule preserved);
+//!   Break/Continue/loop-else via block-target tracking (loops stack).
+//!   Try/With/Match/Raise/assert/import/del/nested-def still raise
+//!   Unsupported — a Try ANYWHERE in a loop body rejects the whole
+//!   function (function granularity, 01-core/03 owns exceptions).
 
 use std::collections::HashMap;
 
@@ -73,6 +77,19 @@ struct Lowerer {
     slots: HashMap<String, u16>,
     n_locals: usize,
     cur_line: usize,
+    /// Break/continue routing (block-target tracking). One frame per
+    /// enclosing loop: patches applied when the loop's exit is fixed up.
+    loop_stack: Vec<LoopFrame>,
+}
+
+/// One enclosing loop's pending break/continue jump sites (instruction
+/// indices whose u32 target gets backpatched).
+struct LoopFrame {
+    /// `break` jumps -> the loop's AFTER-ORELSE exit point.
+    breaks: Vec<u32>,
+    /// `continue` jumps -> the loop's CONTINUE point (For: the ForNext;
+    /// While: the condition re-eval).
+    continues: Vec<u32>,
 }
 
 impl Lowerer {
@@ -87,6 +104,7 @@ impl Lowerer {
             slots: HashMap::new(),
             n_locals: 0,
             cur_line: 0,
+            loop_stack: Vec::new(),
         }
     }
 
@@ -126,6 +144,32 @@ impl Lowerer {
         self.n_locals += 1;
         self.slots.insert(name.to_string(), s);
         s
+    }
+
+    /// Emit a jump with a placeholder target; returns the instruction idx
+    /// for backpatching.
+    fn emit_jump(&mut self, i: Instr) -> u32 {
+        debug_assert!(i.is_jump());
+        self.emit(i)
+    }
+
+    fn patch_jump(&mut self, at: u32, target: u32) {
+        let ins = &mut self.instrs[at as usize];
+        match ins {
+            Instr::Jump(t)
+            | Instr::JumpIfFalse(t)
+            | Instr::JumpIfTrue(t)
+            | Instr::JumpIfFalseOrPop(t)
+            | Instr::JumpIfTrueOrPop(t)
+            | Instr::ForNext(t) => *t = target,
+            _ => unreachable!("patch_jump on non-jump"),
+        }
+    }
+
+    fn patch_all(&mut self, sites: &[u32], target: u32) {
+        for &at in sites {
+            self.patch_jump(at, target);
+        }
     }
 
     // --- entry ------------------------------------------------------------
@@ -216,12 +260,18 @@ impl Lowerer {
                 self.lower_store_target(&targets[0])
             }
             Stmt::AugAssign(target, op, value) => {
-                // `x op= v`: read-target, binop, store-target. In-place
-                // protocol (__iX__) is the interpreter's op dispatch; the
-                // lowerer only reshapes.
+                // `x op= v`: read-target, AUG (in-place protocol), store-
+                // target. The AugOp opcode (leaf 01-core/01) executes the
+                // __iX__-aware aug — list `+=` aliasing mutation preserved.
                 self.lower_load_target(target)?;
                 self.lower_expr(value)?;
-                self.emit_at_line(Instr::BinOp(BinKind::from_ir(*op)), self.cur_line);
+                self.emit_at_line(
+                    Instr::AugOp {
+                        kind: BinKind::from_ir(*op),
+                        sym: op_symbol(*op),
+                    },
+                    self.cur_line,
+                );
                 self.lower_store_target(target)
             }
             Stmt::AnnAssign(target, _ann, value) => {
@@ -244,9 +294,9 @@ impl Lowerer {
                 self.emit_at_line(Instr::ReturnNone, self.cur_line);
                 Ok(())
             }
-            Stmt::If(..) => Err(Unsupported("if statement")),
-            Stmt::While(..) => Err(Unsupported("while statement")),
-            Stmt::For(..) => Err(Unsupported("for statement")),
+            Stmt::If(cond, then, orelse) => self.lower_if(cond, then, orelse),
+            Stmt::While(cond, body, orelse) => self.lower_while(cond, body, orelse),
+            Stmt::For(target, iter, body, orelse) => self.lower_for(target, iter, body, orelse),
             Stmt::With(..) => Err(Unsupported("with statement")),
             Stmt::Try(..) => Err(Unsupported("try statement")),
             Stmt::Raise(..) => Err(Unsupported("raise statement")),
@@ -257,8 +307,26 @@ impl Lowerer {
             Stmt::Import(..) => Err(Unsupported("import statement")),
             Stmt::ImportFrom(..) => Err(Unsupported("import-from statement")),
             Stmt::Del(..) => Err(Unsupported("del statement")),
-            Stmt::Break => Err(Unsupported("break")),
-            Stmt::Continue => Err(Unsupported("continue")),
+            Stmt::Break => {
+                let Some(_) = self.loop_stack.last() else {
+                    return Err(Unsupported("break outside loop"));
+                };
+                let j = self.emit_jump(Instr::Jump(u32::MAX));
+                if let Some(frame) = self.loop_stack.last_mut() {
+                    frame.breaks.push(j);
+                }
+                Ok(())
+            }
+            Stmt::Continue => {
+                let Some(_) = self.loop_stack.last() else {
+                    return Err(Unsupported("continue outside loop"));
+                };
+                let j = self.emit_jump(Instr::Jump(u32::MAX));
+                if let Some(frame) = self.loop_stack.last_mut() {
+                    frame.continues.push(j);
+                }
+                Ok(())
+            }
             Stmt::LocalDef(_) => Err(Unsupported("nested def")),
             Stmt::LocalClass(_) => Err(Unsupported("nested class")),
             Stmt::Pass => Ok(()),
@@ -276,6 +344,97 @@ impl Lowerer {
                 Ok(())
             }
         }
+    }
+
+    // --- control flow (leaf 01-core/01) ------------------------------------
+
+    /// `if c: T else: E` — also covers elif chains (orelse holds the next
+    /// If). CPython 3.12+ shape: evaluate cond, JumpIfFalse over the then.
+    fn lower_if(&mut self, cond: &Expr, then: &[Stmt], orelse: &[Stmt]) -> Result<(), Unsupported> {
+        self.lower_expr(cond)?;
+        let j_end = self.emit_jump(Instr::JumpIfFalse(u32::MAX));
+        self.lower_stmts(then)?;
+        if orelse.is_empty() {
+            self.patch_jump(j_end, self.instrs.len() as u32);
+        } else {
+            // Jump over the else after the then-block.
+            let j_over = self.emit_jump(Instr::Jump(u32::MAX));
+            self.patch_jump(j_end, self.instrs.len() as u32);
+            self.lower_stmts(orelse)?;
+            self.patch_jump(j_over, self.instrs.len() as u32);
+        }
+        Ok(())
+    }
+
+    /// `while c: BODY else: ELSE` —
+    /// ```text
+    /// LOOP:  eval c; JumpIfFalse -> EXIT
+    ///        BODY (breaks/continues collect into the frame)
+    ///        Jump -> LOOP            (back edge)
+    /// EXIT:  ELSE; exit point
+    /// ```
+    fn lower_while(
+        &mut self,
+        cond: &Expr,
+        body: &[Stmt],
+        orelse: &[Stmt],
+    ) -> Result<(), Unsupported> {
+        let loop_start = self.instrs.len() as u32;
+        self.lower_expr(cond)?;
+        let j_exit = self.emit_jump(Instr::JumpIfFalse(u32::MAX));
+        self.loop_stack.push(LoopFrame {
+            breaks: Vec::new(),
+            continues: Vec::new(),
+        });
+        self.lower_stmts(body)?;
+        let frame = self.loop_stack.pop().expect("while frame pushed");
+        // Back edge: `continue` and fall-through both re-test the cond.
+        self.patch_all(&frame.continues, loop_start);
+        self.emit_jump(Instr::Jump(loop_start));
+        // Exit arc: false-cond lands here; breaks jump past the else.
+        let exit_here = self.instrs.len() as u32;
+        self.patch_jump(j_exit, exit_here);
+        self.lower_stmts(orelse)?;
+        self.patch_all(&frame.breaks, self.instrs.len() as u32);
+        Ok(())
+    }
+
+    /// `for T in ITER: BODY else: ELSE` —
+    /// ```text
+    ///        eval ITER; GetIter
+    /// LOOP:  ForNext -> EXIT   (exhaustion; also the `continue` target)
+    ///        store T
+    ///        BODY
+    ///        Jump -> LOOP         (back edge)
+    /// EXIT:  ELSE; exit point
+    /// ```
+    /// ForNext IS the continue point: CPython re-enters FOR_ITER directly
+    /// on continue (next pull, same store-arc skip).
+    fn lower_for(
+        &mut self,
+        target: &Target,
+        iter: &Expr,
+        body: &[Stmt],
+        orelse: &[Stmt],
+    ) -> Result<(), Unsupported> {
+        self.lower_expr(iter)?;
+        self.emit_at_line(Instr::GetIter, self.cur_line);
+        let loop_start = self.instrs.len() as u32;
+        let j_exit = self.emit_jump(Instr::ForNext(u32::MAX));
+        self.lower_store_target(target)?;
+        self.loop_stack.push(LoopFrame {
+            breaks: Vec::new(),
+            continues: Vec::new(),
+        });
+        self.lower_stmts(body)?;
+        let frame = self.loop_stack.pop().expect("for frame pushed");
+        self.patch_all(&frame.continues, loop_start);
+        self.emit_jump(Instr::Jump(loop_start));
+        let exit_here = self.instrs.len() as u32;
+        self.patch_jump(j_exit, exit_here);
+        self.lower_stmts(orelse)?;
+        self.patch_all(&frame.breaks, self.instrs.len() as u32);
+        Ok(())
     }
 
     fn lower_store_target(&mut self, t: &Target) -> Result<(), Unsupported> {
@@ -410,7 +569,36 @@ impl Lowerer {
                 self.emit_at_line(Instr::UnaryOp(UnaryKind::from_ir(*op)), self.cur_line);
                 Ok(())
             }
-            Expr::BoolOp(..) => Err(Unsupported("boolop (and/or)")),
+            Expr::BoolOp(op, xs) => {
+                // Short-circuit Jump chains preserving the VALUE rule:
+                // `a or b` yields a's VALUE when truthy (not a bool). CPython
+                // 3.12+ emits JUMP_IF_FALSE/JUMP_IF_TRUE **or-pop** style;
+                // the TOS stays on the stack through each undecided
+                // operand, and the last operand's value is the result.
+                //
+                // Layout for `x0 and x1 and x2`:
+                //   eval x0; JumpIfFalseOrPop -> DONE   (x0 falsy = result)
+                //   eval x1; JumpIfFalseOrPop -> DONE
+                //   eval x2                             (last: no jump)
+                // DONE:
+                // `or` mirrors with JumpIfTrueOrPop.
+                let is_and = matches!(op, ap_ir::BoolOp::And);
+                let kind = if is_and {
+                    Instr::JumpIfFalseOrPop(u32::MAX)
+                } else {
+                    Instr::JumpIfTrueOrPop(u32::MAX)
+                };
+                let mut jumps: Vec<u32> = Vec::new();
+                for (i, x) in xs.iter().enumerate() {
+                    self.lower_expr(x)?;
+                    if i + 1 < xs.len() {
+                        jumps.push(self.emit_jump(kind));
+                    }
+                }
+                let done = self.instrs.len() as u32;
+                self.patch_all(&jumps, done);
+                Ok(())
+            }
             Expr::Compare(ops, operands, line) => {
                 // Pairwise single comparison lowers; chains (2+ ops) need
                 // short-circuit jumps (01-core) — the IR evaluates each
@@ -691,6 +879,27 @@ fn scan_assigned_expr_walrus(e: &Expr, out: &mut Vec<String>) {
             scan_assigned_expr_walrus(a, out)
         }
         _ => {}
+    }
+}
+
+/// The operator's source spelling (CPython aug error-message fidelity:
+/// "unsupported operand type(s) for +=: 'int' and 'str'").
+fn op_symbol(op: ap_ir::BinOp) -> &'static str {
+    use ap_ir::BinOp as B;
+    match op {
+        B::Add => "+=",
+        B::Sub => "-=",
+        B::Mul => "*=",
+        B::MatMul => "@=",
+        B::Div => "/=",
+        B::FloorDiv => "//=",
+        B::Mod => "%=",
+        B::Pow => "**=",
+        B::LShift => "<<=",
+        B::RShift => ">>=",
+        B::BitOr => "|=",
+        B::BitXor => "^=",
+        B::BitAnd => "&=",
     }
 }
 

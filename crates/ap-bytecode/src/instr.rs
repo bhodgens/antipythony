@@ -199,6 +199,13 @@ pub enum Instr {
     ReturnValue,
     /// `return None` (bare `return` / fall-off-the-end).
     ReturnNone,
+    /// Augmented-assign VALUE op: pops `b` (rhs) then `a` (current target
+    /// value), pushes `a iop b` — the IN-PLACE protocol (__iX__ first,
+    /// falling back to the full binary machinery), NOT plain BinOp. This is
+    /// why AugAssign bodies previously refused bytecode (list `+=` aliasing
+    /// mutation; leaf 01-core/01 lifts the refusal with a dedicated opcode).
+    /// `sym` is the operator's source spelling (error-message fidelity).
+    AugOp { kind: BinKind, sym: &'static str },
     /// Pseudo-instruction: this function's body is a tree-walk job
     /// (unsupported shape at lowering time). Never executed by the
     /// dispatch loop — entry (leaf 02) routes on it.
@@ -282,14 +289,15 @@ impl Instr {
             Self::BuildSet(_) => 27,
             Self::ReturnValue => 28,
             Self::ReturnNone => 29,
-            Self::FallbackToTreeWalk => 30,
+            Self::AugOp { .. } => 30,
+            Self::FallbackToTreeWalk => 31,
         }
     }
 }
 
 /// One name per opcode, discriminant order (kept in sync with
 /// `Instr::opcode_index`; `decode::disassemble` and tests rely on it).
-pub const OPCODE_NAMES: [&str; 31] = [
+pub const OPCODE_NAMES: [&str; 32] = [
     "LoadConst",
     "LoadFast",
     "LoadGlobal",
@@ -320,5 +328,6 @@ pub const OPCODE_NAMES: [&str; 31] = [
     "BuildSet",
     "ReturnValue",
     "ReturnNone",
+    "AugOp",
     "FallbackToTreeWalk",
 ];

@@ -32,8 +32,8 @@ impl CodeObject {
     }
 
     /// Validate structural invariants that lowering must preserve:
-    /// - every jump target is in bounds and lands AFTER the jump
-    ///   (forward-only; our lowerer emits no backward edges this leaf),
+    /// - every jump target is in bounds (back-edges ARE emitted since
+    ///   leaf 01-core/01: loop back-edges Jump to the loop head),
     /// - every site id carried by an instruction is a valid table index
     ///   whose recorded instr_idx matches the instruction's own index,
     /// - every const-pool index referenced is in bounds.
@@ -48,10 +48,8 @@ impl CodeObject {
                 if t >= n {
                     return Err(format!("jump target {t} out of bounds (n={n})"));
                 }
-                if t <= i {
-                    return Err(format!(
-                        "jump target {t} not forward of instr {i} (no back-edges this leaf)"
-                    ));
+                if *ins == Instr::Jump(u32::MAX) || *ins == Instr::ForNext(u32::MAX) {
+                    return Err(format!("unpatched jump placeholder at instr {i}"));
                 }
             }
             if let Some(site) = ins.site_id() {
