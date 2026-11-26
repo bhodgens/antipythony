@@ -459,8 +459,8 @@ path = "annotationlib.py"
 upstream_path = "annotationlib.py"
 status = "deviated"
 upstream_sha256 = "1cce29393714b91e3f71571ffbedacc7f73f11ad26be10701debeb86ec059a32"
-deviated_sha256 = "f7d768f6f29789e6322a2fdba513e008deed8094ff8b33be58ba94133003a53d"
-note = "Declared deviation (LICENSES/README-vendored-stdlib.md): REPLACED by a self-declared minimal shim (docstring says so); CPython's uses t-strings (PEP 750), outside the v1 grammar. Re-declared 2026-10-22 (wave-5 audit): 2619a0f added the callable-obj annotations branch; shim-only. Re-declared 2026-10-25 (A-4 closeout): b5ca2fd (in-flight sibling snapshot) extended the minimal shim's callable-object annotations branch."
+deviated_sha256 = "66b38977befd8f6a99fad1e90b0814e6f2c02a6e0b0825fedb972ad503e41a3c"
+note = "Declared deviation (LICENSES/README-vendored-stdlib.md): REPLACED by a self-declared minimal shim (docstring says so); CPython's uses t-strings (PEP 750), outside the v1 grammar. Re-declared 2026-10-22 (wave-5 audit): 2619a0f added the callable-obj annotations branch; shim-only. Re-declared 2026-10-25 (A-4 closeout): b5ca2fd (in-flight sibling snapshot) extended the minimal shim's callable-object annotations branch. Re-declared 2026-11-26 (T3 S2.5 wave, commit 4a270b5): ForwardRef.__owner__ assignment for typing.evaluate_forward_ref (pydantic chain requirement)."
 
 [[file]]
 path = "argparse.py"

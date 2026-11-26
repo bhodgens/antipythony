@@ -83,6 +83,13 @@ def _mask_ref_stdlib(data: bytes) -> bytes:
     """
     return re.sub(rb"/[^\s\"',;()]*?lib/python3\.14/([^\s\"',;()]*)",
                   rb"<REF>/lib/python3.14/\1", data)
+    # NOTE: line NUMBERS inside threading.py frames are also version- and
+    # host-conditional (darwin 3.14.7: 1082/1024; linux 3.14.10: 1083/1025).
+    # Masking them would drop the semantic frame identity, so instead the
+    # Face-A self-check skips T109 on non-darwin hosts (see DARWIN_PINNED).
+
+
+DARWIN_PINNED_T10 = frozenset({"T109-exception-in-thread"})
 
 
 CORPUS_DIR = REPO_ROOT / "tests" / "corpus" / "threading"
@@ -172,6 +179,11 @@ def test_expected_stdout_nonempty_and_exit_pinned(case):
 
 @pytest.mark.parametrize("case", ALL_CASES, ids=case_ids())
 def test_expected_bytes_stable(case):
+    # T109's pin embeds darwin-3.14.7 threading.py line numbers (1082/1024);
+    # linux 3.14.10 emits 1083/1025 — the live reference itself cannot
+    # reproduce the pin off-darwin (issue #17 host-conditional class).
+    if case.stem in DARWIN_PINNED_T10 and sys.platform != "darwin":
+        pytest.skip("T109 pin is darwin-3.14.7-frozen (threading.py line numbers)")
     # Re-run the reference and byte-compare all three channels against the
     # pinned triple (C-24/C-27: stdout, stderr, exit code; no trimming, no
     # normalization). Drift here means a race leaked into output: the case is
