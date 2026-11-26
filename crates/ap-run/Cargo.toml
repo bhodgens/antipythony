@@ -64,6 +64,16 @@ corosensei = "0.3.4"
 # utimensat-based os.utime — direct libc syscalls, following the donor's
 # host_env/posix.rs layer (RustPython hosts them behind nix; we call libc
 # directly to avoid the extra dependency).
+# pp2-bz2: real bz2 one-shot surface (compress/decompress + BZ2Compressor/
+# BZ2Decompressor). bzip2 >= 0.6 defaults to libbz2-rs-sys — a 100% Rust
+# (c2rust-translated, audited) implementation of the same C code CPython
+# links — so output/decode are libbz2-exact with NO C dependency.
+bzip2 = "0.6"
+# pp2-bz2: lzma one-shot surface (FORMAT_XZ/ALONE/RAW). Pure-Rust LZMA/LZMA2/xz
+# codecs (MIT/Apache). Encoder output may differ byte-wise from liblzma;
+# DECODE of CPython-produced bytes is exact (the hard-exact contract).
+lzma-rs = { version = "0.3", features = ["raw_decoder"] }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 

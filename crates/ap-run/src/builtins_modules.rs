@@ -889,6 +889,11 @@ fn registry() -> &'static [(&'static str, ModuleBuilder)] {
         // (excluded needs-redesign). Registry entry shadows the vendored
         // zlib.py deviation shim (import behavior unchanged).
         ("zlib", build_zlib),
+        // pp2-bz2: real bz2/lzma one-shot surfaces (bzip2 crate /
+        // lzma-rs); registry entries shadow the vendored raise-shim .py
+        // files (import behavior unchanged, ops now real).
+        ("bz2", crate::bz2_lzma::build_bz2),
+        ("lzma", crate::bz2_lzma::build_lzma),
         // A-2 item 6: select surface with the darwin-correct unsupported
         // platform error types (epoll attribute ABSENT like CPython-darwin;
         // poll object real via libc::poll).
@@ -16684,6 +16689,9 @@ pub fn call_native(
         "hashlib" => call_hashlib(fname, args, kwargs),
         // A-2 item 2: real zlib one-shot surface.
         "zlib" => call_zlib(fname, args, kwargs),
+        // pp2-bz2: real bz2/lzma one-shot surfaces.
+        "bz2" => crate::bz2_lzma::call_bz2(fname, args, kwargs),
+        "lzma" => crate::bz2_lzma::call_lzma(fname, args, kwargs),
         // A-2 item 6: select surface (darwin-correct error taxonomy).
         "select" => call_select(fname, args, kwargs),
         "base64" => call_base64(fname, args, kwargs),
