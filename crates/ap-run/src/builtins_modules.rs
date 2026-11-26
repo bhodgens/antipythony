@@ -18868,8 +18868,14 @@ pub fn call_builtin_values(
                 Ok(Value::Bytes(Gc::new(out)))
             }
             ("pyint", "bit_length") => {
-                let i64v = match &recv {
-                    Value::Int(n) => n.to_i64().unwrap_or(0).unsigned_abs(),
+                // pp2-int: real bit_length (the old stub did
+                // to_i64().unwrap_or(0) — every bigint beyond i64 read as 0).
+                // CPython: bit_length of 0 is 0, else bits in |v|.
+                let nbits = match &recv {
+                    Value::Int(n) => match n {
+                        ap_obj::Int::Smi(v) => 64 - v.unsigned_abs().leading_zeros() as i64,
+                        ap_obj::Int::Big(b) => b.magnitude().bits() as i64,
+                    },
                     _ => {
                         return Err(raise(
                             "SystemError",
@@ -18881,9 +18887,7 @@ pub fn call_builtin_values(
                         ));
                     }
                 };
-                Ok(Value::Int(ap_obj::Int::from_i64(
-                    64 - i64v.leading_zeros() as i64,
-                )))
+                Ok(Value::Int(ap_obj::Int::from_i64(nbits)))
             }
             ("pystr", "startswith") | ("pystr", "endswith") => {
                 // D9 (memperf audit 2026-11-06): borrow the receiver.
