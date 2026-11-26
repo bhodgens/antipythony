@@ -1575,6 +1575,74 @@ pub fn call_method(
     args: &[Value],
 ) -> Option<MResult> {
     let r: Option<MResult> = match (obj, name) {
+        // fix_bytes: bytes method surface routes through
+        // call_builtin_values' pybytes arms (find/count/replace/split/...).
+        (Value::Bytes(_), "find")
+        | (Value::Bytes(_), "rfind")
+        | (Value::Bytes(_), "index")
+        | (Value::Bytes(_), "rindex")
+        | (Value::Bytes(_), "count")
+        | (Value::Bytes(_), "replace")
+        | (Value::Bytes(_), "split")
+        | (Value::Bytes(_), "rsplit")
+        | (Value::Bytes(_), "startswith")
+        | (Value::Bytes(_), "endswith")
+        | (Value::Bytes(_), "strip")
+        | (Value::Bytes(_), "lstrip")
+        | (Value::Bytes(_), "rstrip")
+        | (Value::Bytes(_), "upper")
+        | (Value::Bytes(_), "lower")
+        | (Value::Bytes(_), "hex") => {
+            let interp2 = crate::builtins_modules::current_interp()?;
+            let mut a2: Vec<Value> = vec![obj.clone()];
+            a2.extend_from_slice(args);
+            crate::builtins_modules::call_builtin_values("pybytes", name, &a2, &[])
+        }
+        // fix_bytes: the native-receiver __getattribute__ marker (receiver
+        // parked via park_getattribute_recv at attr time). Resolve the
+        // requested attr on the receiver; AttributeError propagates exactly
+        // as CPython's object.__getattribute__ would.
+        (Value::Obj(o), "__getattribute__")
+            if o.kind == ap_obj::ObjKind::BuiltinFn
+                && o.name == "__object_virtual___getattribute____" =>
+        {
+            let (subject, attr) = match obj {
+                Value::Obj(fo) => {
+                    let fa = fo.attrs.lock().unwrap_or_else(|p| p.into_inner());
+                    let recv = fa
+                        .get(&Value::Str(PyString::new("<ap_recv>")))
+                        .map(|v| v.clone())
+                        .unwrap_or_else(|| obj.clone());
+                    let attr = fa
+                        .get(&Value::Str(PyString::new("<ap_attr>")))
+                        .and_then(|v| match v {
+                            Value::Str(s) => Some(s.as_str().to_string()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    (recv, attr)
+                }
+                _ => (obj.clone(), String::new()),
+            };
+            // fix_bytes: bytes/str/int receivers resolve their method
+            // surface through native_attr (call_builtin_values' pybytes
+            // arms). attr_get_protocol has no arm for native receivers;
+            // on a None/AttributeError result, raise CPython-parity
+            // AttributeError.
+            let resolved = crate::builtins_modules::native_attr(&subject, &attr);
+            Some(match resolved {
+                Some(v) => Ok(v),
+                None => {
+                    let msg = format!(
+                        "'{}' object has no attribute '{}'",
+                        subject.type_name(),
+                        attr
+                    );
+                    let e = raise("AttributeError", msg);
+                    Err(e)
+                }
+            })
+        }
         (Value::Str(s), "upper") => Some(Ok(Value::Str(PyString::new(s.as_str().to_uppercase())))),
         (Value::Str(s), "lower") => Some(Ok(Value::Str(PyString::new(s.as_str().to_lowercase())))),
         (Value::Str(s), "join") => {

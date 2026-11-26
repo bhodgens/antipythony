@@ -17984,6 +17984,19 @@ pub fn call_native_marker(full: &str, args: &[Value]) -> Option<BResult> {
     call_native_marker_impl(full, None, args)
 }
 
+thread_local! {
+    static GETATTRIBUTE_RECV: std::cell::RefCell<Option<Value>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+pub fn park_getattribute_recv(v: Value) {
+    GETATTRIBUTE_RECV.with(|slot| *slot.borrow_mut() = Some(v));
+}
+
+pub fn take_getattribute_recv() -> Option<Value> {
+    GETATTRIBUTE_RECV.with(|slot| slot.borrow_mut().take())
+}
+
 pub fn call_native_marker_impl(
     full: &str,
     marker_obj: Option<ap_obj::Gc<ap_obj::PyObject>>,
@@ -20311,6 +20324,18 @@ pub fn call_builtin_values(
                     // D9 (memperf audit 2026-11-06): borrow sep + receiver
                     // (was: two full byte copies up front).
                     let sep_v = a(1);
+                    if matches!(sep_v, Some(Value::Str(_))) {
+                        return Err(raise(
+                            "TypeError",
+                            "a bytes-like object is required, not 'str'",
+                        ));
+                    }
+                    if matches!(sep_v, Some(Value::Int(_))) {
+                        return Err(raise(
+                            "TypeError",
+                            "a bytes-like object is required, not 'int'",
+                        ));
+                    }
                     let sep: Option<&[u8]> = match &sep_v {
                         Some(Value::Bytes(p)) => Some(&**p),
                         _ => None,
@@ -20492,31 +20517,81 @@ pub fn call_builtin_values(
                     let new_v = a(2);
                     let old: &[u8] = match &old_v {
                         Some(Value::Bytes(p)) => p,
-                        _ => return Err(raise("TypeError", "replace expected bytes arguments")),
+                        other => {
+                            let msg = match other {
+                                Some(Value::Str(_)) => {
+                                    "a bytes-like object is required, not 'str'".to_string()
+                                }
+                                Some(v) => format!(
+                                    "a bytes-like object is required, not '{}'",
+                                    v.type_name()
+                                ),
+                                None => "replace expected bytes arguments".to_string(),
+                            };
+                            return Err(raise("TypeError", msg));
+                        }
                     };
                     let new: &[u8] = match &new_v {
                         Some(Value::Bytes(p)) => p,
-                        _ => return Err(raise("TypeError", "replace expected bytes arguments")),
+                        other => {
+                            let msg = match other {
+                                Some(Value::Str(_)) => {
+                                    "a bytes-like object is required, not 'str'".to_string()
+                                }
+                                Some(v) => format!(
+                                    "a bytes-like object is required, not '{}'",
+                                    v.type_name()
+                                ),
+                                None => "replace expected bytes arguments".to_string(),
+                            };
+                            return Err(raise("TypeError", msg));
+                        }
                     };
                     let cnt = a(3).map(|v| as_int_i64(&v)).transpose()?.unwrap_or(-1);
                     let data: &[u8] = b;
                     let mut out: Vec<u8> = Vec::with_capacity(data.len());
-                    let mut rest: &[u8] = data;
-                    let mut left = cnt;
-                    while left != 0 {
-                        match rest.windows(old.len().max(1)).position(|w| w == old) {
-                            Some(p) if !old.is_empty() => {
-                                out.extend_from_slice(&rest[..p]);
-                                out.extend_from_slice(new);
-                                rest = &rest[p + old.len()..];
-                                if left > 0 {
-                                    left -= 1;
-                                }
-                            }
-                            _ => break,
+                    if old.is_empty() {
+                        // CPython: empty old inserts new between EVERY byte
+                        // (len+1 pieces), bounded by count.
+                        if cnt == 0 {
+                            return Ok(Value::Bytes(Gc::new(data.to_vec())));
                         }
+                        let cnt_us = if cnt < 0 {
+                            data.len()
+                        } else {
+                            (cnt as usize).min(data.len())
+                        };
+                        if cnt_us >= data.len() {
+                            for byte in data {
+                                out.extend_from_slice(new);
+                                out.push(*byte);
+                            }
+                            out.extend_from_slice(new);
+                        } else {
+                            for byte in &data[..cnt_us] {
+                                out.extend_from_slice(new);
+                                out.push(*byte);
+                            }
+                            out.extend_from_slice(&data[cnt_us..]);
+                        }
+                    } else {
+                        let mut rest: &[u8] = data;
+                        let mut left = cnt;
+                        while left != 0 {
+                            match rest.windows(old.len()).position(|w| w == old) {
+                                Some(p) => {
+                                    out.extend_from_slice(&rest[..p]);
+                                    out.extend_from_slice(new);
+                                    rest = &rest[p + old.len()..];
+                                    if left > 0 {
+                                        left -= 1;
+                                    }
+                                }
+                                None => break,
+                            }
+                        }
+                        out.extend_from_slice(rest);
                     }
-                    out.extend_from_slice(rest);
                     return Ok(Value::Bytes(Gc::new(out)));
                 }
                 Err(raise(
@@ -20545,27 +20620,75 @@ pub fn call_builtin_values(
                         Some(Value::Int(n)) => {
                             let v = n.to_i64().unwrap_or(-1);
                             if !(0..=255).contains(&v) {
-                                return Err(raise("ValueError", "byte must be in range(0, 256)"));
+                                return Err(raise(
+                                    "ValueError",
+                                    "byte must be in range(0, 256)",
+                                ));
                             }
                             (None, Some(v as u8))
                         }
+                        Some(Value::Str(_)) => {
+                            return Err(raise(
+                                "TypeError",
+                                "argument should be integer or bytes-like object, not 'str'",
+                            ));
+                        }
+                        Some(Value::Float(_)) => {
+                            return Err(raise(
+                                "TypeError",
+                                "argument should be integer or bytes-like object, not 'float'",
+                            ));
+                        }
                         _ => return Err(raise("TypeError", "expected a bytes argument")),
                     };
+                    // CPython start/end semantics: clamp [start, end]
+                    // Python-style (negatives from the end; start > len
+                    // means not found; end clamps to len).
+                    let clamp_v = |v: i64| -> usize {
+                        if v < 0 {
+                            let nv = (b.len() as i64) + v;
+                            if nv < 0 { 0 } else { nv as usize }
+                        } else {
+                            (v as usize).min(b.len())
+                        }
+                    };
+                    let (st, en) = match (a(2), a(3)) {
+                        (Some(Value::Int(s)), Some(Value::Int(e))) => {
+                            (clamp_v(s.to_i64().unwrap_or(0)), clamp_v(e.to_i64().unwrap_or(b.len() as i64)))
+                        }
+                        (Some(Value::Int(s)), None) => (clamp_v(s.to_i64().unwrap_or(0)), b.len()),
+                        (None, Some(Value::Int(e))) => (0, clamp_v(e.to_i64().unwrap_or(b.len() as i64))),
+                        _ => (0, b.len()),
+                    };
+                    let st = st.min(en);
+                    let raw_start_gt_len = matches!(a(2), Some(Value::Int(s)) if s.to_i64().unwrap_or(0) > b.len() as i64);
+                    let window = &b[st..en];
+                    let offset = st;
                     let pos = match (sub, single) {
                         (Some(sub), _) => {
-                            if fname.starts_with("r") {
-                                b.windows(sub.len().max(1)).rposition(|w| w == sub)
+                            if sub.is_empty() {
+                                if raw_start_gt_len {
+                                    None
+                                } else if fname.starts_with("r") {
+                                    Some(en)
+                                } else {
+                                    Some(offset)
+                                }
+                            } else if raw_start_gt_len {
+                                None
+                            } else if fname.starts_with("r") {
+                                window.windows(sub.len()).rposition(|w| w == sub).map(|p| p + offset)
                             } else {
-                                b.windows(sub.len().max(1)).position(|w| w == sub)
+                                window.windows(sub.len()).position(|w| w == sub).map(|p| p + offset)
                             }
                         }
                         (None, Some(byte)) => {
                             let r = if fname.starts_with("r") {
-                                b.iter().rposition(|&c| c == byte)
+                                window.iter().rposition(|&c| c == byte)
                             } else {
-                                b.iter().position(|&c| c == byte)
+                                window.iter().position(|&c| c == byte)
                             };
-                            r.map(|p| p as usize)
+                            r.map(|p| p + offset)
                         }
                         (None, None) => unreachable!("needle coercion produced neither"),
                     };
@@ -20600,25 +20723,77 @@ pub fn call_builtin_values(
                         Some(Value::Int(n)) => {
                             let v = n.to_i64().unwrap_or(-1);
                             if !(0..=255).contains(&v) {
-                                return Err(raise("ValueError", "byte must be in range(0, 256)"));
+                                return Err(raise(
+                                    "ValueError",
+                                    "byte must be in range(0, 256)",
+                                ));
                             }
                             (None, Some(v as u8))
                         }
+                        Some(Value::Int(_)) => {
+                            return Err(raise(
+                                "TypeError",
+                                "a bytes-like object is required, not 'int'",
+                            ))
+                        }
+                        Some(Value::Str(_)) => {
+                            return Err(raise(
+                                "TypeError",
+                                "argument should be integer or bytes-like object, not 'str'",
+                            ));
+                        }
+                        Some(Value::Float(_)) => {
+                            return Err(raise(
+                                "TypeError",
+                                "argument should be integer or bytes-like object, not 'float'",
+                            ));
+                        }
                         _ => return Err(raise("TypeError", "expected a bytes argument")),
                     };
-                    return match (sub, single) {
+                    // CPython: count is NON-overlapping within the
+                    // clamped [start, end) window.
+                    let clamp_v = |v: i64| -> usize {
+                        if v < 0 {
+                            let nv = (b.len() as i64) + v;
+                            if nv < 0 { 0 } else { nv as usize }
+                        } else {
+                            (v as usize).min(b.len())
+                        }
+                    };
+                    let (st, en) = match (a(2), a(3)) {
+                        (Some(Value::Int(s)), Some(Value::Int(e))) => {
+                            (clamp_v(s.to_i64().unwrap_or(0)), clamp_v(e.to_i64().unwrap_or(b.len() as i64)))
+                        }
+                        (Some(Value::Int(s)), None) => (clamp_v(s.to_i64().unwrap_or(0)), b.len()),
+                        (None, Some(Value::Int(e))) => (0, clamp_v(e.to_i64().unwrap_or(b.len() as i64))),
+                        _ => (0, b.len()),
+                    };
+                    let st = st.min(en);
+                    let window = &b[st..en];
+                    let n = match (sub, single) {
                         (Some(sub), _) => {
                             if sub.is_empty() {
-                                Ok(i(b.len() as i64 + 1))
+                                window.len() + 1
                             } else {
-                                Ok(i(b.windows(sub.len()).filter(|w| *w == sub).count() as i64))
+                                let mut c = 0usize;
+                                let mut pos = 0usize;
+                                while pos + sub.len() <= window.len() {
+                                    if &window[pos..pos + sub.len()] == sub {
+                                        c += 1;
+                                        pos += sub.len();
+                                    } else {
+                                        pos += 1;
+                                    }
+                                }
+                                c
                             }
                         }
                         (None, Some(byte)) => {
-                            Ok(i(b.iter().filter(|&&c| c == byte).count() as i64))
+                            window.iter().filter(|&&c| c == byte).count()
                         }
                         (None, None) => unreachable!("needle coercion produced neither"),
                     };
+                    return Ok(i(n as i64));
                 }
                 Err(raise(
                     "SystemError",
@@ -20649,6 +20824,24 @@ pub fn call_builtin_values(
                             }
                             _ => false,
                         }),
+                        Some(Value::Int(_)) => {
+                            return Err(raise(
+                                "TypeError",
+                                "startswith first arg must be bytes or a tuple of bytes, not int",
+                            ))
+                        }
+                        Some(Value::Str(_)) => {
+                            return Err(raise(
+                                "TypeError",
+                                "argument should be integer or bytes-like object, not 'str'",
+                            ));
+                        }
+                        Some(Value::Float(_)) => {
+                            return Err(raise(
+                                "TypeError",
+                                "argument should be integer or bytes-like object, not 'float'",
+                            ));
+                        }
                         _ => return Err(raise("TypeError", "expected a bytes argument")),
                     };
                     return Ok(Value::Bool(hit));

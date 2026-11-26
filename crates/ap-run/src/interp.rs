@@ -8063,6 +8063,21 @@ fn call_value_inner_impl(
                                     &interp2, &subject, &attr,
                                 ) {
                                     Ok(v) => Ok(v),
+                                    // fix_bytes: native-type receivers
+                                    // (bytes/str/int) resolve their method
+                                    // surface through native_attr —
+                                    // attr_get_protocol already maps
+                                    // Ok(None) to Ok(None-value); add the
+                                    // native_attr fallback on both None
+                                    // result AND AttributeError.
+                                    Err(Flow::Raise(e)) if e.class == "AttributeError" => {
+                                        match crate::builtins_modules::native_attr(
+                                            &subject, &attr,
+                                        ) {
+                                            Some(v) => Ok(v),
+                                            None => Ok(Value::None),
+                                        }
+                                    }
                                     Err(Flow::Raise(e)) if e.class == "AttributeError" => {
                                         Ok(Value::None)
                                     }
@@ -14919,6 +14934,30 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
             "__object_virtual_init__",
         ))));
     }
+    // fix_bytes gate: object.__getattribute__ is reachable off every
+    // native-type instance (CPython: slot wrapper 'object.__getattribute__';
+    // the object-class marker arm only fires when t.name == "object", which
+    // a bytes/str/int receiver never is). Mint a marker whose call arm
+    // (call_value_inner's "getattribute" case) resolves the requested
+    // attribute on the parked receiver — same protocol read the class-level
+    // marker uses.
+    if name == "__getattribute__"
+        && matches!(
+            obj,
+            Value::Str(_) | Value::Int(_) | Value::Bool(_) | Value::Bytes(_)
+        )
+    {
+        let f = ap_obj::PyObject::new(
+            ap_obj::ObjKind::BuiltinFn,
+            "__object_virtual___getattribute____",
+        );
+        {
+            let mut sp = f.slice_parts.lock().unwrap_or_else(|p| p.into_inner());
+            sp.clear();
+            sp.push(obj.clone());
+        }
+        return Ok(Some(Value::Obj(f)));
+    }
     // 02.08-lite: native-type instance attrs/methods + structured exc fields.
     // 02.04 completion: weakref.proxy — transparent attribute forwarding to
     // the live target; a dead target raises ReferenceError (C-22). This arm
@@ -15027,6 +15066,28 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
     }
     if let Some(v) = builtins_modules::native_attr(obj, name) {
         return Ok(Some(v));
+    }
+    // fix_bytes gate: native-type receivers need __getattribute__ to
+    // resolve (CPython: slot wrapper object.__getattribute__) — mint the
+    // object-virtual marker with the receiver parked in slice_parts; its
+    // call arm (call_value_inner_impl "getattribute") does the protocol
+    // read via attr_get_protocol.
+    if name == "__getattribute__"
+        && matches!(
+            obj,
+            Value::Bytes(_) | Value::Str(_) | Value::Int(_) | Value::Bool(_)
+        )
+    {
+        let f = ap_obj::PyObject::new(
+            ap_obj::ObjKind::BuiltinFn,
+            "__object_virtual___getattribute____",
+        );
+        {
+            let mut sp = f.slice_parts.lock().unwrap_or_else(|p| p.into_inner());
+            sp.clear();
+            sp.push(obj.clone());
+        }
+        return Ok(Some(Value::Obj(f)));
     }
     // T2 (pathlib _PathParents.__getitem__: slice.indices(len)): SliceObj
     // attribute surface — start/stop/step + indices(n).
