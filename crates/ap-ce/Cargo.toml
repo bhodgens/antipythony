@@ -13,5 +13,8 @@ libc = "0.2"
 [build-dependencies]
 cc = "1"
 
+[lints]
+workspace = true
+
 [lib]
 name = "ap_ce"

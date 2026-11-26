@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)] // issue #18 ratchet: measured zero-unsafe crate (src/)
 //! `antipythony` — the driver binary (Plan 04 CLI surface).
 //!
 //! Verbs (04.01 + 04.02):

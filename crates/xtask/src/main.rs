@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)] // issue #18 ratchet: measured zero-unsafe crate (src/)
 //! xtask: repo maintenance tasks.
 //!
 //! `cargo run -p xtask -- notices`         regenerate THIRD_PARTY_NOTICES

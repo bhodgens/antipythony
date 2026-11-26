@@ -64,6 +64,19 @@ jobs:
         # Compares tracked vendored_stdlib files against the setup-python
         # 3.14 Lib/ (sysconfig probe); undeclared drift exits 1.
         run: cargo run -p xtask -- stdlib-provenance --check
+      - name: unsafe-ratchet drift gate (issue #18, follow-up to #15)
+        # Regenerates the per-crate unsafe inventory at HEAD and requires it
+        # to equal docs/unsafe-baseline.txt. Growth = red build. A reduction
+        # is also red until the baseline is regenerated in the same commit:
+        #   scripts/unsafe_report.sh > docs/unsafe-baseline.txt
+        run: |
+          bash scripts/unsafe_report.sh | grep -v '^#' > "${RUNNER_TEMP:-/tmp}/unsafe-now.txt"
+          grep -v '^#' docs/unsafe-baseline.txt > "${RUNNER_TEMP:-/tmp}/unsafe-base.txt"
+          if ! diff -u "${RUNNER_TEMP:-/tmp}/unsafe-base.txt" "${RUNNER_TEMP:-/tmp}/unsafe-now.txt"; then
+            echo "::error::unsafe-baseline.txt drift — see diff above (issue #18 ratchet)"
+            exit 1
+          fi
+          echo "unsafe ratchet: baseline matches HEAD"
 
   rust:
     name: rust 1.94.0 (fmt / clippy-info / build / test)

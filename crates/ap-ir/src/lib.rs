@@ -1,4 +1,5 @@
 #![warn(missing_docs)] // robustness-ci 05.03: public surface is fully documented
+#![forbid(unsafe_code)] // issue #18 ratchet: measured zero-unsafe crate (src/)
 //! `ap-ir` — compiler IR shared by all backends (no backend or vendor deps).
 //!
 //! # Vendor-clean rule (master contract)
