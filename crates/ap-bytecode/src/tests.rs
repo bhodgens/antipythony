@@ -843,6 +843,7 @@ fn opcode_names_table_in_sync() {
             kind: BinKind::Add,
             sym: "+",
         },
+        Instr::LoadAttrCall { idx: 0, argc: 1 },
         Instr::FallbackToTreeWalk,
     ];
     assert_eq!(samples.len(), OPCODE_NAMES.len());
