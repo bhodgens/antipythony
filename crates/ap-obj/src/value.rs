@@ -407,7 +407,7 @@ impl Tuple {
 /// (pattern documented in crate docs; growth factor is unobservable).
 ///
 /// 02.09c — unboxed Smi storage (SPLIT-02.09 §02.09c; audit doc §4, census
-/// verdict GO, Smi-only v1): the payload is a [`ListStorage`] enum. A list
+/// verdict GO, Smi-only v1): the payload is a `ListStorage` enum. A list
 /// whose every element is `Value::Int(Int::Smi(_))` stores a raw `Vec<i64>`
 /// (8 B/elem, no per-element `Value` tag) — the tier-0 half of master.md's
 /// compact-layout intent. `Value::Bool` is deliberately NOT unboxed (bool ⊂

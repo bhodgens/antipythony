@@ -2,7 +2,7 @@
 //!
 //! A lone surrogate (U+D800..U+DFFF) cannot be a Rust `char`. PyString
 //! stores it as WTF-8: the 3-byte UTF-8-style sequence ED A0 80 ..
-//! ED BF BF inside the existing Unicode Box<str>. Valid UTF-8 never
+//! ED BF BF inside the existing Unicode `Box<str>`. Valid UTF-8 never
 //! contains those bytes, so every surrogate-free string is untouched
 //! and every existing as_str() consumer keeps its behavior.
 //!
