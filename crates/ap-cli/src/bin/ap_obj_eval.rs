@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)] // issue #18 wave 3 ratchet: measured zero-unsafe target (scripts/unsafe_report.sh + clippy undocumented_unsafe_blocks = 0)
 //! `ap-obj-eval` — T-05 single-expression mode: evaluate one expression from
 //! argv (or stdin) and print its repr; reuses the tier-0 pipeline
 //! (`ap-obj-eval '1 + 2'` -> `3`). Flips the T-05 xfail gates.
