@@ -90,6 +90,12 @@ struct LoopFrame {
     /// `continue` jumps -> the loop's CONTINUE point (For: the ForNext;
     /// While: the condition re-eval).
     continues: Vec<u32>,
+    /// True for For loops: the iterator handle sits on the operand stack
+    /// for the whole body, so `break` must PopTop it before jumping to the
+    /// exit arc (exhaustion pops it via ForNext; break must match, or the
+    /// enclosing loop peeks a stale handle). CPython's compiler synthesizes
+    /// the same stack unwind on its break arcs.
+    is_for: bool,
 }
 
 impl Lowerer {
@@ -311,6 +317,12 @@ impl Lowerer {
                 let Some(_) = self.loop_stack.last() else {
                     return Err(Unsupported("break outside loop"));
                 };
+                // For-loop break: the iterator handle is on the stack — pop
+                // it (the exit arc expects NO handle; exhaustion pops via
+                // ForNext, break must unwind the same slot).
+                if self.loop_stack.last().is_some_and(|f| f.is_for) {
+                    self.emit_at_line(Instr::PopTop, self.cur_line);
+                }
                 let j = self.emit_jump(Instr::Jump(u32::MAX));
                 if let Some(frame) = self.loop_stack.last_mut() {
                     frame.breaks.push(j);
@@ -385,6 +397,7 @@ impl Lowerer {
         self.loop_stack.push(LoopFrame {
             breaks: Vec::new(),
             continues: Vec::new(),
+            is_for: false,
         });
         self.lower_stmts(body)?;
         let frame = self.loop_stack.pop().expect("while frame pushed");
@@ -425,6 +438,7 @@ impl Lowerer {
         self.loop_stack.push(LoopFrame {
             breaks: Vec::new(),
             continues: Vec::new(),
+            is_for: true,
         });
         self.lower_stmts(body)?;
         let frame = self.loop_stack.pop().expect("for frame pushed");

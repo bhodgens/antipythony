@@ -1196,52 +1196,10 @@ fn exec_stmt(
         Stmt::AugAssign(target, op, value) => {
             let cur = read_target(interp, frame, target, reg)?;
             let rhs = eval_expr(interp, frame, value, reg)?;
-            // In-place protocol (S-03-26): list += mutates in place.
-            let result = if matches!(op, BinOp::Add) && matches!(&cur, Value::List(_)) {
-                match &rhs {
-                    Value::List(l) => {
-                        if let Value::List(dst) = &cur {
-                            for item in l.items().iter() {
-                                dst.append(item.clone());
-                            }
-                        }
-                        cur.clone()
-                    }
-                    _ => {
-                        return Err(raise(
-                            "TypeError",
-                            format!(
-                                "can only concatenate list (not \"{}\") to list",
-                                rhs.type_name()
-                            ),
-                        ));
-                    }
-                }
-            } else {
-                // 02.03 in-place protocol (S-03-26): __iX__ first, falling
-                // back to the full binary machinery; result REBINDS the
-                // target name.
-                let interp2 = current_interp_for_bindings();
-                let (iop, op_name, rop_name, sym) = match op {
-                    BinOp::Add => ("__iadd__", "__add__", "__radd__", "+"),
-                    BinOp::Sub => ("__isub__", "__sub__", "__rsub__", "-"),
-                    BinOp::Mul => ("__imul__", "__mul__", "__rmul__", "*"),
-                    BinOp::Div => ("__itruediv__", "__truediv__", "__rtruediv__", "/"),
-                    BinOp::FloorDiv => ("__ifloordiv__", "__floordiv__", "__rfloordiv__", "//"),
-                    BinOp::Mod => ("__imod__", "__mod__", "__rmod__", "%"),
-                    BinOp::Pow => ("__ipow__", "__pow__", "__rpow__", "**"),
-                    BinOp::MatMul => ("__imatmul__", "__matmul__", "__rmatmul__", "@"),
-                    BinOp::LShift => ("__ilshift__", "__lshift__", "__rlshift__", "<<"),
-                    BinOp::RShift => ("__irshift__", "__rshift__", "__rrshift__", ">>"),
-                    BinOp::BitOr => ("__ior__", "__or__", "__ror__", "|"),
-                    BinOp::BitXor => ("__ixor__", "__xor__", "__rxor__", "^"),
-                    BinOp::BitAnd => ("__iand__", "__and__", "__rand__", "&"),
-                };
-                match user_binop_inplace(&interp2, iop, op_name, rop_name, sym, &cur, &rhs) {
-                    Some(r) => r?,
-                    None => eval_binop(&cur, *op, &rhs)?,
-                }
-            };
+            // Shared aug VALUE computation (S-03-26 in-place protocol; the
+            // bytecode AugOp opcode routes through the SAME body — leaf
+            // 01-core/01, no semantic duplication).
+            let result = aug_binop_value(interp, *op, &cur, &rhs)?;
             assign_target(interp, frame, target, result, reg)?;
             Ok(StmtOut::Next)
         }
@@ -12390,6 +12348,59 @@ fn current_interp_for_bindings() -> Arc<Interpreter> {
     CURRENT_INTERP
         .with(|c| c.borrow().clone())
         .expect("interpreter set for the run")
+}
+
+/// The AugAssign arm's VALUE computation, shared by the tree-walker
+/// (leaf 01-core/01: the bytecode AugOp opcode routes here too — one body,
+/// no semantic duplication, master.md).
+/// List `+=` mutates in place (aliasing preserved); everything else runs
+/// the in-place `__iX__` protocol falling back to the full binary machinery.
+pub fn aug_binop_value(
+    interp: &Arc<Interpreter>,
+    op: BinOp,
+    cur: &Value,
+    rhs: &Value,
+) -> Result<Value, Flow> {
+    // In-place protocol (S-03-26): list += mutates in place.
+    if matches!(op, BinOp::Add) && matches!(cur, Value::List(_)) {
+        if let Value::List(l) = rhs {
+            if let Value::List(dst) = cur {
+                for item in l.items().iter() {
+                    dst.append(item.clone());
+                }
+            }
+            return Ok(cur.clone());
+        }
+        return Err(raise(
+            "TypeError",
+            format!(
+                "can only concatenate list (not \"{}\") to list",
+                rhs.type_name()
+            ),
+        ));
+    }
+    // 02.03 in-place protocol (S-03-26): __iX__ first, falling back to the
+    // full binary machinery; result REBINDS the target name.
+    let interp2 = current_interp_for_bindings();
+    let (iop, op_name, rop_name, sym) = match op {
+        BinOp::Add => ("__iadd__", "__add__", "__radd__", "+"),
+        BinOp::Sub => ("__isub__", "__sub__", "__rsub__", "-"),
+        BinOp::Mul => ("__imul__", "__mul__", "__rmul__", "*"),
+        BinOp::Div => ("__itruediv__", "__truediv__", "__rtruediv__", "/"),
+        BinOp::FloorDiv => ("__ifloordiv__", "__floordiv__", "__rfloordiv__", "//"),
+        BinOp::Mod => ("__imod__", "__mod__", "__rmod__", "%"),
+        BinOp::Pow => ("__ipow__", "__pow__", "__rpow__", "**"),
+        BinOp::MatMul => ("__imatmul__", "__matmul__", "__rmatmul__", "@"),
+        BinOp::LShift => ("__ilshift__", "__lshift__", "__rlshift__", "<<"),
+        BinOp::RShift => ("__irshift__", "__rshift__", "__rrshift__", ">>"),
+        BinOp::BitOr => ("__ior__", "__or__", "__ror__", "|"),
+        BinOp::BitXor => ("__ixor__", "__xor__", "__rxor__", "^"),
+        BinOp::BitAnd => ("__iand__", "__and__", "__rand__", "&"),
+    };
+    match user_binop_inplace(&interp2, iop, op_name, rop_name, sym, cur, rhs) {
+        Some(r) => r,
+        None => eval_binop(cur, op, rhs),
+    }
 }
 
 // ===========================================================================

@@ -47,11 +47,12 @@
 //!   dispatch arm falls back to the tree-walker.
 //! - COVERAGE: constants, names/locals/globals, arithmetic, comparisons,
 //!   attribute/subscript reads, positional calls, tuple/list/dict/set
-//!   displays, jumps (defensive — the lowerer emits none this leaf),
-//!   GetIter/ForNext (defensive — never emitted: For-containing bodies
-//!   fall back wholesale). AugAssign bodies are REFUSED at compile time
-//!   (aug semantics are the in-place `__iX__` protocol, not plain
-//!   BinOp+Store — see body_has_aug_assign).
+//!   displays, If/While/For/BoolOp/Break/Continue jumps + loops + aug ops
+//!   (leaf 01-core/01): ForNext peeks CPython-style (handle stays on the
+//!   stack), AugOp routes the in-place protocol through the shared
+//!   aug_binop_value helper, GetIter registers frame-iter ids pruned at
+//!   frame exit (G1 discipline). Try/With/Match bodies still fall back
+//!   wholesale (01-core/03 owns exceptions).
 //!
 //! GC SAFETY: the locals vec / operand stack hold `Value` clones on this
 //! Rust stack for the frame's life. ap-gc's conservative floor
@@ -164,15 +165,10 @@ fn compile_for(entry: &FnEntry) -> Option<Arc<Compiled>> {
     if entry.def.is_generator {
         return None;
     }
-    // AugAssign lowers today as load/BinOp/store, but Python's aug semantics
-    // are the IN-PLACE protocol (__iadd__, list += aliasing mutation).
-    // Plain BinOp+store would diverge on `a = [1]; b = a; a += [2]` (b must
-    // observe the mutation). Refuse the body until 01-core gives aug its own
-    // opcode — fallback is always byte-exact.
-    if body_has_aug_assign(&entry.def.body.blocks) {
-        BC_FALLBACKS.fetch_add(1, Ordering::Relaxed);
-        return None;
-    }
+    // AugAssign lowers to the dedicated AugOp opcode since leaf 01-core/01
+    // (in-place protocol inside the shared aug_binop_value helper) — no
+    // refusal needed anymore. Everything else the runtime semantics need is
+    // either lowered faithfully or lowerer-rejected at function granularity.
     let code = match ap_bytecode::lower_fn(&entry.def) {
         ap_bytecode::lower::LowerOutcome::Code(code) => code,
         ap_bytecode::lower::LowerOutcome::Fallback(_) => {
@@ -216,106 +212,6 @@ fn dense_lines_of(code: &CodeObject) -> Vec<u32> {
     dense
 }
 
-/// Straight IR scan: does any statement in the body use AugAssign?
-/// (Everything else the runtime semantics need is either lowered faithfully
-/// or lowerer-rejected at function granularity.)
-fn body_has_aug_assign(stmts: &[ap_ir::item::Stmt]) -> bool {
-    use ap_ir::item::Stmt;
-    stmts.iter().any(|s| match s {
-        Stmt::AugAssign(..) => true,
-        Stmt::If(c, b, o) => expr_has_aug(c) || body_has_aug_assign(b) || body_has_aug_assign(o),
-        Stmt::While(c, b, o) => expr_has_aug(c) || body_has_aug_assign(b) || body_has_aug_assign(o),
-        Stmt::For(t, it, b, o) => {
-            target_has_aug(t)
-                || expr_has_aug(it)
-                || body_has_aug_assign(b)
-                || body_has_aug_assign(o)
-        }
-        Stmt::With(items, b) => {
-            items.iter().any(|i| expr_has_aug(&i.expr)) || body_has_aug_assign(b)
-        }
-        Stmt::Try(t) => {
-            body_has_aug_assign(&t.body)
-                || t.handlers.iter().any(|h| body_has_aug_assign(&h.body))
-                || body_has_aug_assign(&t.orelse)
-                || body_has_aug_assign(&t.finalbody)
-        }
-        Stmt::Match(subject, cases) => {
-            expr_has_aug(subject)
-                || cases.iter().any(|c| {
-                    c.guard.as_ref().is_some_and(|g| expr_has_aug(g))
-                        || body_has_aug_assign(&c.body)
-                })
-        }
-        Stmt::Assert(t, m) => expr_has_aug(t) || m.as_ref().is_some_and(|m| expr_has_aug(m)),
-        Stmt::Raise(e, cause) => {
-            e.as_ref().is_some_and(|e| expr_has_aug(e))
-                || cause.as_ref().is_some_and(|c| expr_has_aug(c))
-        }
-        Stmt::Return(Some(e)) | Stmt::ExprStmt(e) => expr_has_aug(e),
-        Stmt::Assign(targets, v) => targets.iter().any(target_has_aug) || expr_has_aug(v),
-        Stmt::AnnAssign(t, _ann, v) => {
-            target_has_aug(t) || v.as_ref().is_some_and(|v| expr_has_aug(v))
-        }
-        Stmt::LocalDef(f) => body_has_aug_assign(&f.body.blocks),
-        Stmt::LocalClass(cl) => body_has_aug_assign(&cl.body),
-        _ => false,
-    })
-}
-
-fn target_has_aug(t: &ap_ir::item::Target) -> bool {
-    use ap_ir::item::Target;
-    match t {
-        Target::Subscript(o, k) => expr_has_aug(o) || expr_has_aug(k),
-        Target::Attribute(o, ..) => expr_has_aug(o),
-        Target::Tuple(ts) => ts.iter().any(target_has_aug),
-        Target::Starred(e) => expr_has_aug(e),
-        Target::Name(_) => false,
-    }
-}
-
-fn expr_has_aug(e: &ap_ir::expr::Expr) -> bool {
-    use ap_ir::expr::{Arg, Expr};
-    match e {
-        Expr::BoolOp(_, _) | Expr::Named(..) => false,
-        Expr::BinOp(_, a, b, _) => expr_has_aug(a) || expr_has_aug(b),
-        Expr::UnaryOp(_, a, _) => expr_has_aug(a),
-        Expr::Compare(_, operands, _) => operands.iter().any(expr_has_aug),
-        Expr::Attribute(o, ..) => expr_has_aug(o),
-        Expr::Subscript(o, k, _) => expr_has_aug(o) || expr_has_aug(k),
-        Expr::Call(f, args, _) => {
-            expr_has_aug(f)
-                || args.iter().any(|a| match a {
-                    Arg::Pos(e) | Arg::Star(e) | Arg::KwStar(e) => expr_has_aug(e),
-                    Arg::Kw(_, e) => expr_has_aug(e),
-                })
-        }
-        Expr::List(xs) | Expr::Tuple(xs) | Expr::Set(xs) => xs.iter().any(expr_has_aug),
-        Expr::Dict(items) => items
-            .iter()
-            .any(|i| expr_has_aug(&i.key) || expr_has_aug(&i.value)),
-        Expr::IfExp(a, b, c, _) => expr_has_aug(a) || expr_has_aug(b) || expr_has_aug(c),
-        Expr::Starred(a) | Expr::Await(a) | Expr::Yield(Some(a)) | Expr::YieldFrom(a) => {
-            expr_has_aug(a)
-        }
-        // The FStrPart access is shape-matched (fstrings are lowerer-rejected
-        // anyway — this arm exists so the scan stays total over Expr).
-        Expr::FString(parts) => parts.iter().any(|p| match p {
-            ap_ir::expr::FStrPart::Interp { expr, spec, .. } => {
-                expr_has_aug(expr)
-                    || spec.as_ref().is_some_and(|sp| {
-                        sp.iter().any(|p2| match p2 {
-                            ap_ir::expr::FStrPart::Interp { expr, .. } => expr_has_aug(expr),
-                            _ => false,
-                        })
-                    })
-            }
-            _ => false,
-        }),
-        _ => false,
-    }
-}
-
 // ===========================================================================
 // The dispatch loop
 // ===========================================================================
@@ -344,7 +240,6 @@ fn run_frame(
 ) -> Result<Option<Value>, Flow> {
     let code = &c.code;
     let n_instr = code.instrs.len();
-    let reg = crate::interp::current_registry_pub();
 
     // Fixed locals vec, slot-indexed. `None` = UNBOUND (the
     // never-assigned sentinel); `Some(Value::None)` is a real `x = None`
@@ -371,6 +266,10 @@ fn run_frame(
     let mut stack: Vec<Value> = Vec::with_capacity(8);
     let mut pc: usize = 0;
     let mut cur_line: u32 = c.dense_lines.first().copied().unwrap_or(1);
+    // Registered even-id iterators this frame created (GetIter) — pruned at
+    // frame exit (break/unwind AND exhaustion both drop their entries inside
+    // pull_iter; this covers the BREAK/mid-stream exits, the G1 discipline).
+    let mut frame_iter_ids: Vec<u64> = Vec::new();
 
     // Macro: propagate a helper failure as (current line, flow) so the exit
     // path can sync the frame line before the traceback is built. The macro
@@ -556,6 +455,25 @@ fn run_frame(
                 stack.push(Value::Bool(r));
                 pc += 1;
             }
+            Instr::AugOp { kind, sym } => {
+                // The AugAssign arm's VALUE op (leaf 01-core/01): the shared
+                // aug_binop_value — in-place __iX__ protocol + list += alias
+                // mutation — the SAME body the tree-walker's Stmt::AugAssign
+                // arm routes through. `sym` (+=, //...) is error-message
+                // fidelity only; the dispatch key is `kind`.
+                sync_frame_line(frame, cur_line);
+                let _ = sym;
+                let b = pop!();
+                let a = pop!();
+                let v = hop!(crate::interp::aug_binop_value(
+                    interp,
+                    bin_ir(kind),
+                    &a,
+                    &b
+                ));
+                stack.push(v);
+                pc += 1;
+            }
 
             // ---- attribute / subscript (instrument ops) --------------------
             Instr::LoadAttr { idx, .. } => {
@@ -721,6 +639,10 @@ fn run_frame(
                 pc = if b { t as usize } else { pc + 1 };
             }
             Instr::JumpIfFalseOrPop(t) => {
+                // CPython JUMP_IF_FALSE_OR_POP: falsy TOS is the RESULT —
+                // jump KEEPING it; truthy TOS is discarded and the next
+                // operand evaluates. (Value rule: `a and b` yields a when
+                // a is falsy.)
                 let v = match stack.last().cloned() {
                     Some(v) => v,
                     None => {
@@ -732,13 +654,15 @@ fn run_frame(
                 };
                 let b = hop!(crate::interp::truthy_public(interp, &v));
                 if b {
+                    stack.pop();
                     pc += 1;
                 } else {
-                    stack.pop();
                     pc = t as usize;
                 }
             }
             Instr::JumpIfTrueOrPop(t) => {
+                // CPython JUMP_IF_TRUE_OR_POP: truthy TOS is the RESULT —
+                // jump KEEPING it; falsy TOS is discarded.
                 let v = match stack.last().cloned() {
                     Some(v) => v,
                     None => {
@@ -757,21 +681,37 @@ fn run_frame(
                 }
             }
             Instr::GetIter => {
-                // Defensive coverage (never emitted this leaf): same shape
-                // as jit_hook's iter seam — register through the
-                // tree-walker's Stmt::For entry, wrap the handle.
+                // iter(TOS) — register through the tree-walker's Stmt::For
+                // entry (same registration surface, same iterator table).
                 let o = pop!();
                 let id = match crate::interp::register_iter_pub(interp, &o) {
                     Ok(id) => id,
                     Err(f) => break Err((cur_line, f)),
                 };
+                // Frame-exit prune list (G1 discipline: a break out of the
+                // loop must not pin the registered iterator). Odd ids are
+                // the generator-protocol space — never pruned here.
+                if id % 2 == 0 {
+                    frame_iter_ids.push(id);
+                }
                 let obj = ap_obj::PyObject::new(ap_obj::ObjKind::Iterator, "iterator");
                 *obj.gen_id.lock().unwrap_or_else(|p| p.into_inner()) = Some(id);
                 stack.push(Value::Obj(obj));
                 pc += 1;
             }
             Instr::ForNext(t) => {
-                let h = pop!();
+                // CPython FOR_ITER shape: the iterator handle STAYS on the
+                // stack (peek, not pop) — the next back-edge iteration
+                // re-reads it; exhaustion pops it and jumps to the exit.
+                let h = match stack.last() {
+                    Some(h) => h.clone(),
+                    None => {
+                        break 'dispatch Err((
+                            cur_line,
+                            raise_flow("SystemError", "bytecode operand stack underflow"),
+                        ))
+                    }
+                };
                 let id = match &h {
                     Value::Obj(o) => *o.gen_id.lock().unwrap_or_else(|p| p.into_inner()),
                     _ => None,
@@ -788,7 +728,8 @@ fn run_frame(
                         pc += 1;
                     }
                     None => {
-                        pc = t as usize; // exhausted -> loop exit
+                        stack.pop(); // the exhausted iterator handle
+                        pc = t as usize; // -> loop exit
                     }
                 }
             }
@@ -812,6 +753,16 @@ fn run_frame(
             }
         }
     };
+
+    // Frame exit: prune every iterator this frame registered (break /
+    // return / unwind paths; exhaustion already pruned inside pull_iter).
+    // Mirrors the tree-walker Stmt::For exit's table removal (G1).
+    if !frame_iter_ids.is_empty() {
+        let mut its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
+        for id in frame_iter_ids {
+            its.remove(&id);
+        }
+    }
 
     match outcome {
         Ok(v) => {
