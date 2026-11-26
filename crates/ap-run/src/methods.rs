@@ -683,6 +683,66 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
                 )),
             }
         }
+        // T3-S2 (issue #20): re-subscription of the Opaque `typing._GenericAlias`
+        // alias placeholder (`Callable[[T, X], T][T]` — pydantic.functional_validators
+        // TypeAlias chains, typing._BaseGenericAlias users). The placeholder stores
+        // [origin, key] in slice_parts (methods.rs UserClass/BuiltinFn subscript
+        // arms); CPython's _GenericAlias.__getitem__ substitutes TypeVar positions
+        // with the new args. v0 substitution mirrors the Namespace "_GenericAlias"
+        // arm above: replace __ap_typevar__ slots positionally, carry origin/args
+        // into a fresh placeholder. WITHOUT this arm the structseq catch-all below
+        // subscripted the [origin, key] parts-tuple -> TypeError "'tuple' object is
+        // not subscriptable".
+        (Value::Obj(o), _k)
+            if o.kind == ap_obj::ObjKind::Opaque && o.name == "typing._GenericAlias" =>
+        {
+            let (origin, old_args) = {
+                let sp = o.slice_parts.lock().unwrap_or_else(|p| p.into_inner());
+                let origin = sp.first().cloned().unwrap_or(Value::None);
+                let old_args = match sp.get(1) {
+                    Some(Value::Tuple(t)) => t.0.clone(),
+                    Some(other) => vec![other.clone()],
+                    None => Vec::new(),
+                };
+                (origin, old_args)
+            };
+            let kv: Vec<Value> = match key {
+                Value::Tuple(tt) => tt.0.clone(),
+                other => vec![other.clone()],
+            };
+            let mut new_args: Vec<Value> = Vec::new();
+            let mut ki = 0usize;
+            for av in &old_args {
+                let is_tv = matches!(av, Value::Obj(vo) if {
+                    let sp = vo.slice_parts.lock().unwrap_or_else(|p| p.into_inner());
+                    matches!(sp.first(), Some(Value::Str(ps)) if ps.as_str() == "__ap_typevar__")
+                });
+                if is_tv && ki < kv.len() {
+                    new_args.push(kv[ki].clone());
+                    ki += 1;
+                } else {
+                    new_args.push(av.clone());
+                }
+            }
+            let g = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "typing._GenericAlias");
+            {
+                let mut at = g.attrs.lock().unwrap_or_else(|p| p.into_inner());
+                let _ = at.set(
+                    Value::Str(ap_obj::PyString::new("__origin__")),
+                    origin.clone(),
+                );
+                let _ = at.set(
+                    Value::Str(ap_obj::PyString::new("__class__")),
+                    Value::Str(ap_obj::PyString::new("_GenericAlias")),
+                );
+                let _ = at.set(
+                    Value::Str(ap_obj::PyString::new("__args__")),
+                    Value::Tuple(Gc::new(Tuple(new_args))),
+                );
+            }
+            *g.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) = vec![origin, key.clone()];
+            Ok(Value::Obj(g))
+        }
         // A-3 item 5: stat_result (opaque, slice_parts-populated) subscripts
         // and slices through slice_parts like a plain sequence.
         // A-4 item 5b: slices return a TUPLE — stat_result and uname_result

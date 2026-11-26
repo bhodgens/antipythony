@@ -168,6 +168,16 @@ registry_table!(
     (HashMap<usize, Arc<crate::sre::MatchBox>>, Vec<usize>),
     "match-context address table + ledger (sre.rs thread_local)"
 );
+// T3-S2 (issue #20): liveness pins for MATCH_TABLE — one Weak per minted match
+// object; sre_match_evict_dead (rides evict_stale_tables) drops rows whose
+// object died. Replaces the old fixed SRE_TABLE_CAP ledger eviction that
+// invalidated live Match objects past 1024 mints.
+registry_table!(
+    SRE_MATCH_PINS_T,
+    SRE_MATCH_PINS_T_acc,
+    HashMap<usize, std::sync::Weak<ap_obj::PyObject>>,
+    "sre match-object address pins for MATCH_TABLE (same key set)"
+);
 registry_table!(
     CELL_BACKING_T,
     CELL_BACKING_T_acc,
@@ -333,6 +343,7 @@ pub fn retire_runtime_state(interp: &Arc<Interpreter>) {
     let _ = RE_CACHE_T_acc().lock().unwrap().remove(&key);
     let _ = PAT_TABLE_T_acc().lock().unwrap().remove(&key);
     let _ = MATCH_TABLE_T_acc().lock().unwrap().remove(&key);
+    let _ = SRE_MATCH_PINS_T_acc().lock().unwrap().remove(&key);
     let _ = CLASS_KWARGS_T_acc().lock().unwrap().remove(&key);
     let _ = CURRENT_CLASS_NS_T_acc().lock().unwrap().remove(&key);
     let _ = BRIDGE_SOURCE_T_acc().lock().unwrap().remove(&key);
