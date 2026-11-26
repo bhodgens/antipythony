@@ -1947,37 +1947,61 @@ pub fn call_method(
             // kwargs reach this dispatch (ppfix-sort fixes the old
             // silent no-kwargs arm): key=None = no key, reverse= honored,
             // unknown kwargs raise CPython's exact text.
-            let all_int = l
-                .items()
-                .iter()
-                .all(|v| matches!(v, Value::Int(_) | Value::Bool(_)));
-            let all_str = l.items().iter().all(|v| matches!(v, Value::Str(_)));
-            if all_int || all_str {
-                let mut items = l.items().to_vec();
-                items.sort_by(|a, b| match (a, b) {
-                    (Value::Int(x), Value::Int(y)) => {
-                        x.to_i64().unwrap_or(0).cmp(&y.to_i64().unwrap_or(0))
+            // pp2-sort (Fix B): the raw arms extend to all-float and
+            // int/bool/float mixes via crate::sortcmp (raw_float_cmp =
+            // CPython 3.10+ float total order; mixed_numeric_cmp =
+            // values_cmp's exact numeric arms without its TypeError
+            // arm). Anything else (strs in the mix, user objects,
+            // tuples) falls through to the generic arm UNCHANGED — its
+            // exact TypeError texts are gate-pinned.
+            use crate::sortcmp::Homog;
+            let items_snap = l.items();
+            match crate::sortcmp::classify(&items_snap) {
+                Homog::AllInt | Homog::AllStr | Homog::AllFloat | Homog::MixedNumeric => {
+                    drop(items_snap);
+                    let mut items = l.items().to_vec();
+                    let cmp = match crate::sortcmp::classify(&items) {
+                        Homog::AllInt => crate::sortcmp::SortCmp::RawInt,
+                        Homog::AllStr => crate::sortcmp::SortCmp::RawStr,
+                        Homog::AllFloat => crate::sortcmp::SortCmp::RawFloat,
+                        _ => crate::sortcmp::SortCmp::MixedNumeric,
+                    };
+                    let mut cmp_err: Option<Flow> = None;
+                    items.sort_by(|a, b| {
+                        if cmp_err.is_some() {
+                            return std::cmp::Ordering::Equal;
+                        }
+                        match cmp.cmp(a, b) {
+                            crate::sortcmp::CmpOutcome::Ord(ord) => ord,
+                            crate::sortcmp::CmpOutcome::Err(f) => {
+                                cmp_err = Some(f);
+                                std::cmp::Ordering::Equal
+                            }
+                        }
+                    });
+                    if let Some(f) = cmp_err {
+                        return Some(Err(f));
                     }
-                    (Value::Str(x), Value::Str(y)) => x.as_str().cmp(y.as_str()),
-                    _ => std::cmp::Ordering::Equal,
-                });
-                l.clear();
-                for it in items {
-                    l.append(it);
+                    l.clear();
+                    for it in items {
+                        l.append(it);
+                    }
+                    return Some(Ok(Value::None));
                 }
-                return Some(Ok(Value::None));
+                crate::sortcmp::Homog::Other => {
+                    // ppfix-sort: a MIXED list is NOT routed by this v0 arm —
+                    // returning None lets the caller fall through to the dotted
+                    // route (interp.rs BoundMethod: name.contains('.') is false
+                    // for "sort", so the attr-get path's BoundMethod has no func
+                    // and the call reaches call_named_kw → the pylist "sort"
+                    // generic arm in builtins_modules with the REAL kwargs:
+                    // key=None = no-key, unknown kwargs raise CPython's exact
+                    // text, comparator TypeErrors propagate). This kills both
+                    // the silent no-op (bug 2) and the NoneType-not-callable
+                    // crash (bug 3) for l.sort().
+                    None
+                }
             }
-            // ppfix-sort: a MIXED list is NOT routed by this v0 arm —
-            // returning None lets the caller fall through to the dotted
-            // route (interp.rs BoundMethod: name.contains('.') is false
-            // for "sort", so the attr-get path's BoundMethod has no func
-            // and the call reaches call_named_kw → the pylist "sort"
-            // generic arm in builtins_modules with the REAL kwargs:
-            // key=None = no-key, unknown kwargs raise CPython's exact
-            // text, comparator TypeErrors propagate). This kills both
-            // the silent no-op (bug 2) and the NoneType-not-callable
-            // crash (bug 3) for l.sort().
-            None
         }
         (Value::List(l), "insert") => {
             if args.len() >= 2 {

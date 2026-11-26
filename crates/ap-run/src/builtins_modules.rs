@@ -18907,6 +18907,51 @@ pub fn call_builtin_values(
                             ));
                         }
                     }
+                    // pp2-sort (audit Fix B): KEYLESS arm through the hoisted
+                    // comparator. This IS the arm every `l.sort()` reaches
+                    // (the attr layer binds the "pylist.sort" marker —
+                    // dbg: `l.sort.__name__ == 'pylist.sort'`); before this
+                    // change every compare paid py_lt (4x MRO special_lookup
+                    // per compare). classify() routes all-int/all-str/
+                    // all-float/numeric-mix to the RAW arms (the methods.rs
+                    // v0 strategy); user-instance lists resolve __lt__ once
+                    // per sort (single-class, reflected-free); mixed shapes
+                    // keep the exact per-compare py_lt semantics (TypeError
+                    // texts are gate-pinned). key=None == no key (ppfix-sort).
+                    if keyf.is_none() {
+                        // pp2-sort: reverse=True via decorate-reverse-sort-
+                        // reverse (CPython reverses the keys array pre-merge
+                        // — equal-key ties KEEP input order under reverse).
+                        // ppfix-sort scheme, applied to the raw-arm path.
+                        if reverse {
+                            items.reverse();
+                        }
+                        let cmp = crate::sortcmp::sort_cmp_of(&items);
+                        let mut cmp_err: Option<Flow> = None;
+                        items.sort_by(|a, b| {
+                            if cmp_err.is_some() {
+                                return std::cmp::Ordering::Equal;
+                            }
+                            match cmp.cmp(a, b) {
+                                crate::sortcmp::CmpOutcome::Ord(ord) => ord,
+                                crate::sortcmp::CmpOutcome::Err(f) => {
+                                    cmp_err = Some(f);
+                                    std::cmp::Ordering::Equal
+                                }
+                            }
+                        });
+                        if let Some(f) = cmp_err {
+                            return Err(f);
+                        }
+                        if reverse {
+                            items.reverse();
+                        }
+                        l.clear();
+                        for x in items {
+                            l.append(x);
+                        }
+                        return Ok(Value::None);
+                    }
                     let mut keyed: Vec<(Value, Value)> = Vec::with_capacity(items.len());
                     for x in items {
                         let k = match &keyf {
