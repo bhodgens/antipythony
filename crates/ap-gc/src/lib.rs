@@ -46,9 +46,9 @@ fn gc_bridge_drain() -> usize {
 
 pub use gcmod::{
     add_root_dict, add_root_module_ns, callbacks_set_list, callbacks_snapshot, clear_roots,
-    collect, collect_gen, disable, enable, freeze, gc_register, gc_tracked_len, get_count,
-    get_object_by_addr, get_objects, get_threshold, is_enabled, is_tracked, reset_for_test,
-    set_threshold, stats, unfreeze, weakref_add, weakref_alive, weakref_count_for,
+    collect, collect_gen, disable, enable, flush_test, freeze, gc_register, gc_tracked_len,
+    get_count, get_object_by_addr, get_objects, get_threshold, is_enabled, is_tracked,
+    reset_for_test, set_threshold, stats, unfreeze, weakref_add, weakref_alive, weakref_count_for,
     weakref_entry_count, weakref_is_dead, weakref_next_seq, weakref_prune_fired, weakref_take_dead,
     weakref_tokens_for, GcStats, WeakEntry,
 };
