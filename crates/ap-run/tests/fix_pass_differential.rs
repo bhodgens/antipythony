@@ -120,3 +120,83 @@ print(warnings.__name__)
 "#,
     );
 }
+
+// ---------------------------------------------------------------------------
+// issue #19 (harvested work item 2) — re-verified 2026-11 on trunk.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn io19_int_from_bytes_range_and_shapes() {
+    common::interpreter_gate();
+    // Per-element >255 must RAISE (was silently masked as u8); iterator/
+    // generator/range data must be consumed as DATA (was routed to the
+    // byteorder slot and parsed b"big"); str data raises the buffer TypeError.
+    assert_differential(
+        r#"try:
+    print(int.from_bytes([300], 'big'))
+except ValueError as e:
+    print('V:', e)
+try:
+    int.from_bytes([-1], 'big')
+except ValueError as e:
+    print('V:', e)
+try:
+    int.from_bytes(['a'], 'big')
+except TypeError as e:
+    print('T:', e)
+try:
+    int.from_bytes('ab', 'big')
+except TypeError as e:
+    print('T:', e)
+print(int.from_bytes(b'\x01\x02', 'big'))
+print(int.from_bytes(iter([1, 2]), 'big'))
+print(int.from_bytes(iter([1, 2]), 'little'))
+print(int.from_bytes(range(2), 'big'))
+print(int.from_bytes(bytearray([1, 2]), 'big'))
+print(int.from_bytes([1, 2, 3], 'little', signed=True))
+print(int.from_bytes([1, 2], byteorder='little'))
+print(int.from_bytes([], 'big'))
+print(int.from_bytes((3,), 'little'))
+try:
+    int.from_bytes([1], 'middle')
+except ValueError as e:
+    print('V:', e)
+b = bytearray([1, 2])
+print(b, int.from_bytes(b, 'big'))
+print(bytearray('ab', 'utf-8'), bytearray(3), bytearray(b'xy'))
+try:
+    bytearray([300])
+except ValueError as e:
+    print('BV:', e)
+try:
+    bytearray([1, 'a'])
+except TypeError as e:
+    print('BT:', e)
+"#,
+    );
+}
+
+#[test]
+fn io19_format_spec_zero_fill_wide_ints() {
+    common::interpreter_gate();
+    // x/X/o/b beyond u128 must render real radix digits (was saturated to 0);
+    // zero-fill + ',' groups the FILL (width counts commas); ints accept the
+    // float codes via f64 coercion; 'c' error taxonomy.
+    assert_differential(
+        r#"big = 1 << 130
+vals = [big, -(1 << 130), 10 ** 45, 2 ** 128, 255, 0, -255]
+for v in vals:
+    for spec in ['d', '020d', '<20d', '>20d', '^20d', '020x', '020X', '020b',
+                 '020o', '+020d', ' 20d', '20', '05d', '010,', 'f', '.3f',
+                 'e', 'g', '%', 'c', '#010x', '#010b']:
+        try:
+            print('[%s] -> [%s]' % (spec, format(v, spec)))
+        except OverflowError:
+            print('[%s] -> ERR OverflowError' % spec)
+        except Exception as e:
+            print('[%s] -> ERR %s: %s' % (spec, type(e).__name__, e))
+print(format(65535, '010,'), format(65535, '013,'))
+print(format(123456, '08,'), format(1, '08,'))
+"#,
+    );
+}
