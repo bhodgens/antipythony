@@ -157,5 +157,7 @@ Values identical everywhere — attribution only. OWNED by 01-core/03
 exceptions (traceback line attribution is its spec). fix_bytecode
 also gained a staleness guard on default_binary (72eac3e — stale
 trunk binary was silently failing the exercise probe).
-Next: fp-calls-and-attrs, then fp-exceptions (owns the tb-line fix).
+fp-calls-and-attrs IN FLIGHT (Call/LoadAttr/Subscript opcodes +
+comprehension lowering; targets dict/str method-call loops >=2x vs
+tree-walk). Then fp-exceptions (owns the tb-line fix).
 Tree-walker default unchanged until parity proven.
