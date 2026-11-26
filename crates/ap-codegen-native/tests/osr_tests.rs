@@ -93,8 +93,11 @@ fn oversized_live_set_is_reported_ineligible() {
     let plan = osr_plan(&cfg, BlockId(0));
     match plan {
         OsrEligibility::Ineligible { live_count, .. } => {
-            // num_locals (1 param) + the 21 forced locals = 22 total.
-            assert_eq!(live_count, OSR_MAX_LIVE + 6);
+            // num_locals = 21 (1 param slot-space + 20 forced); hp-forloop
+            // backward liveness: NO spurious live-in temps remain (the old
+            // forward scan over-counted by reading inst destinations), so
+            // live_count == num_locals exactly.
+            assert_eq!(live_count, OSR_MAX_LIVE + 5);
         }
         OsrEligibility::Eligible { .. } => {
             panic!("over-cap live set must be reported OSR-ineligible");

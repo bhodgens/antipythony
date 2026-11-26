@@ -264,6 +264,8 @@ fn temps_of(inst: &crate::cfg::Inst) -> Vec<TempId> {
         Inst::StoreSubscript(o, k, v) => vec![*o, *k, *v],
         Inst::MatchExc(_, _, d) => vec![*d],
         Inst::Print(v) => vec![*v],
+        Inst::IterNew(src, d) => vec![*src, *d],
+        Inst::IterNext(it, d, st) => vec![*it, *d, *st],
         Inst::PushExcInfo(_)
         | Inst::PopExcInfo(_)
         | Inst::Reraise

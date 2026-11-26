@@ -11632,6 +11632,13 @@ pub fn pull_iter_pub(interp: &Arc<Interpreter>, id: u64) -> Result<Option<Value>
     pull_iter(interp, id)
 }
 
+/// hp-forloop: the tree-walker's Stmt::For iterator REGISTRATION surface,
+/// exposed for the JIT's iter seam (the codegen side cannot see interp's
+/// private tables; this returns the registered id a pull resolves).
+pub fn register_iter_pub(interp: &Arc<Interpreter>, v: &Value) -> Result<u64, Flow> {
+    register_iter(interp, v)
+}
+
 fn pull_iter(interp: &Arc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> {
     // 02.08f (s020): iter(callable, sentinel) — CallFn state needs interp
     // to invoke the callable; handle BEFORE the table .next() (which answers

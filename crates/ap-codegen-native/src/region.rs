@@ -117,6 +117,11 @@ fn block_eligible(func: &Func, bi: usize, info: &InferInfo) -> bool {
             | Inst::Reraise
             | Inst::SuspendMarker
             | Inst::OsrPoll
+            // hp-forloop: iterator protocol steps are boxed host calls —
+            // never region members (the for-loop's TYPED body region still
+            // forms in its own blocks).
+            | Inst::IterNew(..)
+            | Inst::IterNext(..)
             | Inst::UnaryOp(..)
             | Inst::Const(..) => return false,
         }
@@ -253,6 +258,7 @@ fn first_disqualifier(block: &crate::cfg::Block, info: &InferInfo) -> &'static s
             }
             Inst::SuspendMarker => "generator suspend",
             Inst::OsrPoll => "osr poll",
+            Inst::IterNew(..) | Inst::IterNext(..) => "iterator protocol",
             Inst::Const(..) => "non-smi constant",
             Inst::BinOp(op, ..) if !typed_binop(op_code(*op)) => "untyped binop",
             Inst::BinOp(_, a, ..) if !temp_unboxable(info, *a) => "untyped binop operand",

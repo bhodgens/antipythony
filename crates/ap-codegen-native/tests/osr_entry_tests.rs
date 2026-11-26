@@ -266,3 +266,100 @@ fn h_osr_load_direct() {
         other => panic!("h_osr_load direct: {other:?}"),
     }
 }
+
+#[test]
+fn debug_plan_for_while_header() {
+    let f = fn_def(hot_loop_body());
+    let cfg = lower_fn(&f).expect("lower");
+    let header = ap_codegen_native::osr::loop_headers(&cfg)[0];
+    eprintln!("header={header:?}");
+    eprintln!("plan={:?}", ap_codegen_native::osr::osr_plan(&cfg, header));
+}
+
+#[test]
+fn hp_forloop_osr_eligible_for_for_loop_with_iter_temps() {
+    // hp-forloop gate: the for-loop desugaring adds the iterator handle +
+    // exhausted-flag temps, and the OLD conservative forward scan counted
+    // every read-anywhere temp — live sets blew past OSR_MAX_LIVE and
+    // for-loop OSR was silently dead. The backward-dataflow liveness must
+    // keep a range-accumulate for-loop OSR-ELIGIBLE (the int-accum shape
+    // measured 2.1x via this path).
+    use ap_codegen_native::osr::loop_headers;
+    let body = vec![
+        Stmt::Assign(
+            vec![ap_ir::item::Target::Name("s".to_string())],
+            Expr::LitInt(0),
+        ),
+        Stmt::For(
+            ap_ir::item::Target::Name("i".to_string()),
+            Expr::Call(
+                Box::new(Expr::Name("range".to_string())),
+                vec![ap_ir::expr::Arg::Pos(Expr::Name("n".to_string()))],
+                0,
+            ),
+            vec![Stmt::Assign(
+                vec![ap_ir::item::Target::Name("s".to_string())],
+                Expr::BinOp(
+                    BinOp::Add,
+                    Box::new(Expr::Name("s".to_string())),
+                    Box::new(Expr::Name("i".to_string())),
+                    0,
+                ),
+            )],
+            vec![],
+        ),
+        Stmt::Return(Some(Expr::Name("s".to_string()))),
+    ];
+    let f = fn_def(body);
+    let cfg = lower_fn(&f).expect("for-loop lowers");
+    let headers = loop_headers(&cfg);
+    assert!(!headers.is_empty(), "for-loop must resolve an OSR header");
+    let header = headers[0];
+    let plan = osr_plan_resolved(&cfg, header).expect(
+        "for-loop OSR must be ELIGIBLE (backward liveness keeps the iter temps under the cap)",
+    );
+    assert!(
+        plan.live_count() <= ap_codegen_native::osr::OSR_MAX_LIVE,
+        "live_count={} must stay under the cap",
+        plan.live_count()
+    );
+    // And the entry actually compiles.
+    let entry =
+        ap_codegen_native::clif::compile_osr_entry(&cfg, header).expect("OSR entry compiles");
+    assert!(!entry.ptr.is_null());
+}
+
+#[test]
+fn hp_forloop_break_continue_else_lowen_and_terminate() {
+    // break/continue/else byte-shape: every block terminated, else-entry
+    // reachable only via the exhaustion/break branch pair.
+    let body = vec![
+        Stmt::For(
+            ap_ir::item::Target::Name("i".to_string()),
+            Expr::Name("xs".to_string()),
+            vec![
+                Stmt::If(
+                    Expr::Compare(
+                        vec![CmpOp::Eq],
+                        vec![Expr::Name("i".to_string()), Expr::LitInt(3)],
+                        0,
+                    ),
+                    vec![Stmt::Break],
+                    vec![],
+                ),
+                Stmt::Continue,
+            ],
+            vec![Stmt::Assign(
+                vec![ap_ir::item::Target::Name("hit".to_string())],
+                Expr::LitBool(true),
+            )],
+        ),
+        Stmt::Return(Some(Expr::Name("hit".to_string()))),
+    ];
+    let f = fn_def(body);
+    let cfg = lower_fn(&f).expect("lower");
+    for (bi, b) in cfg.blocks.iter().enumerate() {
+        assert!(b.term.is_some(), "block {bi} unterminated");
+    }
+    ap_codegen_native::cfg::verify_pop_exc_coverage(&cfg).expect("verifier green");
+}

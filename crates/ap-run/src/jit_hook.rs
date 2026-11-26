@@ -220,6 +220,66 @@ pub fn init_tier(explicit: Option<&str>) {
     // probes THIS function (installed once per process; the lookup is
     // pure over the registry + the JIT cache, no interpreter state).
     ap_codegen_native::runtime::set_host_osr_poll(osr_registry_lookup);
+    // hp-forloop: the iterator-protocol seams (S-02-17). The JIT'd
+    // for-loop desugaring lowers `for x in it:` to iter() once + next()
+    // per step through these pointers. The host side routes through the
+    // EXACT tree-walker surfaces:
+    // - iter:  interp::iterable_of_public (PyIterator::of over the
+    //   runtime iterator table — list/tuple/str/range/dict/generator
+    //   unified) + register_shared_iter_pub (live-table handle with a
+    //   gen_id, the same shape builtin_iter hands back; needed because
+    //   next() and iter() re-entry resolve the handle by gen_id).
+    // - next:  resolve the handle's registered id by gen_id, then
+    //   pull_iter_pub — the generator-aware pull (odd ids route through
+    //   gen_pull; StopIteration answers None → the loop's exit edge).
+    //   UserInstance __iter__/__next__ protocol objects resolve through
+    //   builtin_iter/builtin_next surfaces on the build side (iterable_of
+    //   handles containers; special_lookup objects go via the same
+    //   register_iter path the tree-walker's Stmt::For uses — exposed
+    //   below as register_iter_pub).
+    ap_codegen_native::runtime::set_iter_new_fn(Some(|o| {
+        let interp = crate::interp::current_interp_for_bindings_pub();
+        // register_iter_pub is the tree-walker's Stmt::For entry point:
+        // it handles Iterator/Generator handles (re-uses their id),
+        // UserInstance __iter__ (generator-function interception), and
+        // the generic iterable_of path — so JIT'd loops iterate exactly
+        // what tier-0 loops iterate.
+        let id = match crate::interp::register_iter_pub(&interp, o) {
+            Ok(id) => id,
+            Err(crate::Flow::Raise(ev)) => {
+                let class = intern_class(&ev.class);
+                let probe = crate::exc_hier::ExceptionValue::new(class, ev.args.clone());
+                return Err(format!(
+                    "{}: {}",
+                    ev.class,
+                    probe.py_str().unwrap_or_default()
+                ));
+            }
+            Err(_) => return Err("SystemError: non-raise Flow in JIT iter".to_string()),
+        };
+        let obj = ap_obj::PyObject::new(ap_obj::ObjKind::Iterator, "iterator");
+        *obj.gen_id.lock().unwrap_or_else(|p| p.into_inner()) = Some(id);
+        Ok(ap_obj::value::Value::Obj(obj))
+    }));
+    ap_codegen_native::runtime::set_iter_next_fn(Some(|h| {
+        let Some(id) = (match h {
+            ap_obj::value::Value::Obj(o) => *o.gen_id.lock().unwrap_or_else(|p| p.into_inner()),
+            _ => None,
+        }) else {
+            return Err("TypeError: 'NoneType' object is not an iterator".to_string());
+        };
+        let interp = crate::interp::current_interp_for_bindings_pub();
+        match crate::interp::pull_iter_pub(&interp, id) {
+            Ok(Some(v)) => Ok(Some(v)),
+            Ok(None) => Ok(None), // StopIteration → the loop's exit edge
+            Err(crate::Flow::Raise(ev)) => Err(format!("{}: {}", ev.class, {
+                let class = intern_class(&ev.class);
+                let probe = crate::exc_hier::ExceptionValue::new(class, ev.args.clone());
+                probe.py_str().unwrap_or_default()
+            })),
+            Err(_) => Err("SystemError: non-raise Flow in JIT iter-next".to_string()),
+        }
+    }));
 }
 
 fn parse_tier(m: &str) -> Option<TierMode> {

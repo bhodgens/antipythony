@@ -1081,6 +1081,121 @@ pub extern "C" fn h_subscript(ctx: &mut ExecCtx, obj: u32, idx: u32, dst: u32) -
     }
 }
 
+// ---------------------------------------------------------------------------
+// hp-forloop: the iterator-protocol seams (S-02-17). Same inverted-seam
+// pattern as SUBSCRIPT_SET_FN / COMPARE_FULL_FN: ap-run owns the iterator
+// table + protocol surfaces (iterable_of / pull-iterator / gen_pull); the
+// JIT'd for-loop desugaring routes through ONE host fn pointer per side.
+// Unwired (unit tests) → fail-closed park, never a silent dropped step.
+// ---------------------------------------------------------------------------
+
+/// Host ITER builder: `Err` carries the rendered "Class: message" text
+/// (TypeError 'object is not iterable' family, the Flow::Raise rendering
+/// flattened — same convention as the subscript seams).
+type HostIterNew = fn(&ap_obj::value::Value) -> Result<ap_obj::value::Value, String>;
+
+static ITER_NEW_FN: std::sync::RwLock<Option<HostIterNew>> = std::sync::RwLock::new(None);
+
+/// Install the host iterator builder (ap-run calls once at JIT init).
+pub fn set_iter_new_fn(f: Option<HostIterNew>) {
+    if let Ok(mut g) = ITER_NEW_FN.write() {
+        *g = f;
+    }
+}
+
+/// Host NEXT step: Ok(Some(v)) = value produced; Ok(None) =
+/// StopIteration (exhaustion — the loop's exit edge, NOT an error);
+/// Err("Class: msg") = a real Python exception in flight.
+type HostIterNext = fn(&ap_obj::value::Value) -> Result<Option<ap_obj::value::Value>, String>;
+
+static ITER_NEXT_FN: std::sync::RwLock<Option<HostIterNext>> = std::sync::RwLock::new(None);
+
+/// Install the host iterator stepper (ap-run calls once at JIT init).
+pub fn set_iter_next_fn(f: Option<HostIterNext>) {
+    if let Ok(mut g) = ITER_NEXT_FN.write() {
+        *g = f;
+    }
+}
+
+/// Split a flattened "Class: message" seam error into the boxed PyException
+/// (the class-name leak-intern pattern — shared by the h_subscript family).
+fn intern_class_exc(class_msg: &str, default_class: &'static str) -> PyException {
+    fn intern_class(class: &str) -> &'static str {
+        thread_local! {
+            static INTERNED: std::cell::RefCell<
+                std::collections::HashMap<String, &'static str>,
+            > = std::cell::RefCell::new(std::collections::HashMap::new());
+        }
+        INTERNED.with(|m| {
+            let mut m = m.borrow_mut();
+            if let Some(s) = m.get(class) {
+                return *s;
+            }
+            let leaked: &'static str = Box::leak(class.to_string().into_boxed_str());
+            m.insert(class.to_string(), leaked);
+            leaked
+        })
+    }
+    let (class, message) = match class_msg.split_once(": ") {
+        Some((c, m)) => (c, m.to_string()),
+        None => (default_class, class_msg.to_string()),
+    };
+    PyException::new(intern_class(class), message)
+}
+
+/// `iter(obj)` — boxed protocol build (for-loop entry, S-02-17).
+#[export_name = "apjit_h_iter_new"]
+pub extern "C" fn h_iter_new(ctx: &mut ExecCtx, obj: u32, dst: u32) -> HelperStatus {
+    let o = ctx.slots[obj as usize].clone();
+    let f = ITER_NEW_FN.read().ok().and_then(|g| *g);
+    match f {
+        Some(f) => match f(&o) {
+            Ok(v) => {
+                ctx.slots[dst as usize] = v;
+                0
+            }
+            Err(class_msg) => park_exc(ctx, intern_class_exc(&class_msg, "TypeError")),
+        },
+        None => park_exc(
+            ctx,
+            PyException::new("SystemError", "iter: host fn not installed"),
+        ),
+    }
+}
+
+/// `next(it)` — one protocol step. Writes the VALUE into `dst` and the
+/// exhausted flag into `st` (boxed bool: True = StopIteration, False =
+/// value produced). The st convention makes the loop's exit edge an
+/// ordinary Branch — StopIteration never enters the exception machinery
+/// here (CPython bytecode: FOR_ITER jumps on the stack-empty condition).
+/// Returns 0 on both produced and exhausted; 1 = real exception parked.
+#[export_name = "apjit_h_iter_next"]
+pub extern "C" fn h_iter_next(ctx: &mut ExecCtx, it: u32, dst: u32, st: u32) -> HelperStatus {
+    let h = ctx.slots[it as usize].clone();
+    let f = ITER_NEXT_FN.read().ok().and_then(|g| *g);
+    match f {
+        Some(f) => match f(&h) {
+            Ok(Some(v)) => {
+                ctx.slots[dst as usize] = v;
+                ctx.slots[st as usize] = Value::Bool(false);
+                0
+            }
+            Ok(None) => {
+                ctx.slots[st as usize] = Value::Bool(true);
+                0
+            }
+            Err(class_msg) => {
+                ctx.slots[st as usize] = Value::Bool(false);
+                park_exc(ctx, intern_class_exc(&class_msg, "StopIteration"))
+            }
+        },
+        None => park_exc(
+            ctx,
+            PyException::new("SystemError", "iter-next: host fn not installed"),
+        ),
+    }
+}
+
 /// Stage one call argument into ctx.args[k] (clif.rs Call lowering).
 #[export_name = "apjit_h_stage_arg"]
 pub extern "C" fn h_stage_arg(ctx: &mut ExecCtx, k: u32, src: u32) -> HelperStatus {

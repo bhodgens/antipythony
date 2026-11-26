@@ -615,6 +615,9 @@ fn extra_params(name: &'static str) -> &'static [usize] {
         "apjit_h_raise" => &[0],
         "apjit_h_suspend" => &[0, 0],
         "apjit_h_reraise" => &[],
+        // hp-forloop: iter_new(ctx, obj, dst); iter_next(ctx, it, dst, st).
+        "apjit_h_iter_new" => &[0, 0],
+        "apjit_h_iter_next" => &[0, 0, 0],
         _ => &[],
     }
 }
@@ -665,6 +668,12 @@ fn helper_symbols() -> Vec<(&'static str, *const u8)> {
         ("apjit_h_osr_poll", h_osr_poll as *const u8),
         ("apjit_h_osr_fill", h_osr_fill as *const u8),
         ("apjit_h_osr_load", h_osr_load as *const u8),
+        // hp-forloop iterator protocol (S-02-17 desugaring).
+        ("apjit_h_iter_new", crate::runtime::h_iter_new as *const u8),
+        (
+            "apjit_h_iter_next",
+            crate::runtime::h_iter_next as *const u8,
+        ),
     ]
 }
 
@@ -1108,6 +1117,30 @@ fn emit_cfg_with_osr<M: Module>(
                     let a1 = iconst!(fb, temp_slot(*obj));
                     let a2 = iconst!(fb, temp_slot(*idx));
                     let a3 = iconst!(fb, temp_slot(*v));
+                    let r = fb.ins().call(f, &[ctx_ptr, a1, a2, a3]);
+                    check_status(fb, r, raise_target);
+                }
+                Inst::IterNew(obj, dst) => {
+                    // hp-forloop: iter(obj) — boxed protocol build. The
+                    // host iterator table unifies list/tuple/str/range/
+                    // dict/generator; a TypeError parks on the raise edge.
+                    let f = helpers["apjit_h_iter_new"];
+                    let a1 = iconst!(fb, temp_slot(*obj));
+                    let a2 = iconst!(fb, temp_slot(*dst));
+                    let r = fb.ins().call(f, &[ctx_ptr, a1, a2]);
+                    check_status(fb, r, raise_target);
+                }
+                Inst::IterNext(it, dst, st) => {
+                    // hp-forloop: next(it) — one protocol step. The helper
+                    // writes BOTH the value (dst) and the exhausted flag
+                    // (st, boxed bool); status 0 covers produced AND
+                    // exhausted (the branch on st is the loop's exit
+                    // edge), status 1 = a real exception on the raise
+                    // edge.
+                    let f = helpers["apjit_h_iter_next"];
+                    let a1 = iconst!(fb, temp_slot(*it));
+                    let a2 = iconst!(fb, temp_slot(*dst));
+                    let a3 = iconst!(fb, temp_slot(*st));
                     let r = fb.ins().call(f, &[ctx_ptr, a1, a2, a3]);
                     check_status(fb, r, raise_target);
                 }

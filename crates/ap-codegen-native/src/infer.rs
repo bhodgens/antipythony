@@ -223,6 +223,11 @@ fn temps_of(inst: &Inst) -> Vec<TempId> {
         Inst::StoreSubscript(o, k, v) => vec![*o, *k, *v],
         Inst::MatchExc(_, _, d) => vec![*d],
         Inst::Print(v) => vec![*v],
+        // hp-forloop: iterator handles are boxed protocol values — the
+        // iterable/handle temps ride the temps universe (slot space) but
+        // never infer as unboxable.
+        Inst::IterNew(src, d) => vec![*src, *d],
+        Inst::IterNext(it, d, st) => vec![*it, *d, *st],
         Inst::PushExcInfo(_)
         | Inst::PopExcInfo(_)
         | Inst::Reraise
