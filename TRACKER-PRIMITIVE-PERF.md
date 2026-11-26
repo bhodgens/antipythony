@@ -142,6 +142,9 @@ Byte-exactness contract unchanged; tree-walker stays as fallback.
 
 Status 2026-11-26: fp-bytecode MERGED (e92c829 — 31 opcodes, lowerer,
 32 unit tests, function-granularity FallbackToTreeWalk; pure addition).
-fp-frame IN FLIGHT (dispatch interpreter + --tier bytecode toggle +
-three-way fix_bytecode gate). Tree-walker default unchanged until
-parity proven.
+fp-frame MERGED (41bf0e0 — BytecodeInterp 927-line dispatch loop,
+thread-local line bookkeeping, --tier bytecode toggle, fix_bytecode
+three-way gate 8/8, both conform slices green both toggles, 242 cargo
+tests green). Gate caught 2 bugs: unbound-vs-None locals sentinel,
+StoreSubscript operand scramble. Next: 01-core (control flow first).
+Tree-walker default unchanged until parity proven.
