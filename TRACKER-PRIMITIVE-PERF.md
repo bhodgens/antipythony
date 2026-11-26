@@ -139,3 +139,9 @@ caches, superinstructions), 03-rollout (adaptive default + closing
 bench). Target: walk floor 190ns/step -> ~10-15ns dispatch; the
 walk-bound rows (dict/sort/json.loads/join/split) to parity-or-better.
 Byte-exactness contract unchanged; tree-walker stays as fallback.
+
+Status 2026-11-26: fp-bytecode MERGED (e92c829 — 31 opcodes, lowerer,
+32 unit tests, function-granularity FallbackToTreeWalk; pure addition).
+fp-frame IN FLIGHT (dispatch interpreter + --tier bytecode toggle +
+three-way fix_bytecode gate). Tree-walker default unchanged until
+parity proven.
