@@ -56,9 +56,11 @@ const DC_PARSE_THRESHOLD: usize = 56;
 
 /// pp2-int: divide-and-conquer base-10 recombination. `chunks` holds
 /// little-endian base-10^9 limbs (least significant first); returns
-/// sum(chunks[i] * (10^9)^i). `pw` memoizes (10^9)^(2^level) across the
-/// recursion so each power is computed once per level (repeated squaring)
-/// instead of per call.
+/// sum(chunks[i] * (10^9)^i). `pw` memoizes (10^9)^(2^k) (i.e. the value of
+/// one chunk position at the START of a level-k block: 10^(9*2^k)) across
+/// the recursion; sibling subtrees at the same depth share entries, and a
+/// deeper subtree only ever sees a strictly longer prefix than its parent
+/// built, so the memo is append-only along any root-to-leaf path — sound.
 fn dc_parse_base10(chunks: &[u32], pw: &mut Vec<Big>) -> Big {
     if chunks.len() == 1 {
         return Big::from(chunks[0]);
@@ -66,18 +68,9 @@ fn dc_parse_base10(chunks: &[u32], pw: &mut Vec<Big>) -> Big {
     let mid = chunks.len() / 2;
     let lo = dc_parse_base10(&chunks[..mid], pw);
     let hi = dc_parse_base10(&chunks[mid..], pw);
-    // pw[k] = (10^9)^(2^k); level k = floor(log2(mid)) is constant per depth.
-    let level = (usize::BITS - mid.leading_zeros()) as usize - 1;
-    // grow the memo one squaring at a time so pw stays the exact prefix
-    while pw.len() <= level {
-        if pw.is_empty() {
-            pw.push(Big::from(10u32).pow(9)); // 10^9
-        } else {
-            let last = pw[pw.len() - 1].clone();
-            pw.push(&last * &last);
-        }
-    }
-    let factor = &pw[level];
+    // The hi block starts at chunk position `mid`, so its place value is
+    // (10^9)^mid = 10^(9*mid) — computed directly, independent of the memo.
+    let factor = Big::from(10u32).pow((mid as u32) * 9);
     lo + hi * factor
 }
 
