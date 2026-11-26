@@ -179,6 +179,9 @@ pub fn find_method(module: &str, name: &str) -> Option<(i32, PyCFunctionRaw)> {
 pub fn module_ns(name: &str) -> Option<ap_obj::dict::PyDict> {
     let tab = module_registry().lock().unwrap_or_else(|p| p.into_inner());
     let rec = tab.iter().find(|m| m.name == name)?;
+    // SAFETY: rec.handle was minted by module_create (a Box::into_raw'd
+    // CeObject that the ce layer never frees), so the deref is valid; the
+    // payload borrow is short with no re-entrant borrow on this path.
     unsafe {
         match (*(rec.handle as CeHandle)).payload.borrow().as_ref() {
             Some(CePayload::Module { ns, .. }) => Some(ns.as_ref().clone()),
@@ -211,6 +214,11 @@ pub fn type_from_spec_normalized(
     from_spec(
         name,
         tp_new.map(SlotFn),
+        // SAFETY: tp_init came from the extension's PyType_Slot table (C code
+        // compiled against OUR apx headers); the InitRaw (self, args, kwds)
+        // signature collapses to the PyCFunctionRaw (self, args) shape on S0 —
+        // the reinterpretation documented at type_from_spec_normalized — so the
+        // transmute preserves the ABI the caller already honors.
         tp_init.map(|f| SlotFn(unsafe { std::mem::transmute::<InitRaw, PyCFunctionRaw>(f) })),
         tp_dealloc.map(SlotFn),
         methods
@@ -223,9 +231,17 @@ pub fn type_from_spec_normalized(
                 (
                     n,
                     g.map(|f| {
+                        // SAFETY: GetterRaw (self, closure) collapses to the PyCFunctionRaw
+                        // (self, args) shape on S0 per type_from_spec_normalized; the pointer
+                        // came from the extension's PyType_Slot table compiled against our
+                        // headers, so the transmute preserves the honored ABI.
                         SlotFn(unsafe { std::mem::transmute::<GetterRaw, PyCFunctionRaw>(f) })
                     }),
                     s.map(|f| {
+                        // SAFETY: SetterRaw (self, value, closure) collapses to the
+                        // PyCFunctionRaw (self, args) shape on S0 per type_from_spec_normalized;
+                        // the pointer came from the extension's PyType_Slot table compiled
+                        // against our headers, so the transmute preserves the honored ABI.
                         SlotFn(unsafe { std::mem::transmute::<SetterRaw, PyCFunctionRaw>(f) })
                     }),
                 )
@@ -297,6 +313,9 @@ pub fn module_install_class(mod_name: &str, bare: &str, class_value: &ap_obj::va
         None => return,
     };
     let h = rec.handle as CeHandle;
+    // SAFETY: rec.handle was minted by module_create (Box::into_raw'd and
+    // never freed), so the deref is valid; borrow_mut has no concurrent or
+    // re-entrant borrow on this path (worker-serialization protocol).
     unsafe {
         if let Some(CePayload::Module { ns, .. }) = (*h).payload.borrow_mut().as_mut() {
             let _ = ns.set(

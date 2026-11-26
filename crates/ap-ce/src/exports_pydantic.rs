@@ -374,6 +374,7 @@ pub unsafe extern "C" fn PyObject_DelItem(o: PyObjPtr, key: PyObjPtr) -> c_int {
 /// C symbol exists for sequence-shaped collections.
 #[no_mangle]
 pub unsafe extern "C" fn PyObject_Size(o: PyObjPtr) -> isize {
+    // SAFETY: forwarding to PyObject_Length with the same handle; o is the
     unsafe { crate::exports_objproto::PyObject_Length(o) }
 }
 
@@ -414,6 +415,7 @@ pub unsafe extern "C" fn PyObject_GenericSetAttr(
     name: PyObjPtr,
     v: PyObjPtr,
 ) -> c_int {
+    // SAFETY: forwarding to PyObject_SetAttr with the same (o, name, v)
     unsafe { crate::exports_objproto::PyObject_SetAttr(o, name, v) }
 }
 
@@ -466,6 +468,7 @@ pub unsafe extern "C" fn PyObject_IsSubclass(derived: PyObjPtr, cls: PyObjPtr) -
 /// PyType_IsSubtype.
 #[no_mangle]
 pub unsafe extern "C" fn PyType_IsSubtype(a: PyObjPtr, b: PyObjPtr) -> c_int {
+    // SAFETY: forwarding to PyObject_IsSubclass with the same handles; the
     unsafe { PyObject_IsSubclass(a, b) }
 }
 
@@ -485,6 +488,10 @@ pub unsafe extern "C" fn PyType_GenericAlloc(t: PyObjPtr, _n: isize) -> PyObjPtr
     // no-tp_new arm (the ce_bridge __object_new__ route allocates a plain
     // instance + empty payload block when basicsize > 0).
     let h = t as CeHandle;
+    // SAFETY: caller precondition — h is a live minted ce handle (the C
+    // caller null-checks per the apx header contract); handles are
+    // Box::into_raw'd and never freed by the ce layer, so the deref is valid;
+    // the payload borrow is short with no re-entrant borrow on this path.
     let spec = unsafe {
         match (&*h).payload.borrow().as_ref() {
             Some(CePayload::Type { spec_index }) => Some(*spec_index),
@@ -520,6 +527,10 @@ pub unsafe extern "C" fn PyType_GenericAlloc(t: PyObjPtr, _n: isize) -> PyObjPtr
 #[no_mangle]
 pub unsafe extern "C" fn PyType_GetName(t: PyObjPtr) -> PyObjPtr {
     let h = t as CeHandle;
+    // SAFETY: caller precondition — h is a live minted ce handle (the C
+    // caller null-checks per the apx header contract); handles are
+    // Box::into_raw'd and never freed by the ce layer, so the deref is valid;
+    // the payload borrow is short with no re-entrant borrow on this path.
     let n = unsafe {
         match (&*h).payload.borrow().as_ref() {
             Some(CePayload::Type { spec_index }) => {
@@ -543,6 +554,7 @@ pub unsafe extern "C" fn PyType_GetName(t: PyObjPtr) -> PyObjPtr {
 /// PyType_GetQualName.
 #[no_mangle]
 pub unsafe extern "C" fn PyType_GetQualName(t: PyObjPtr) -> PyObjPtr {
+    // SAFETY: forwarding to PyType_GetName with the same handle (qualname
     unsafe { PyType_GetName(t) }
 }
 
@@ -550,6 +562,10 @@ pub unsafe extern "C" fn PyType_GetQualName(t: PyObjPtr) -> PyObjPtr {
 #[no_mangle]
 pub unsafe extern "C" fn PyType_GetModuleName(t: PyObjPtr) -> PyObjPtr {
     let h = t as CeHandle;
+    // SAFETY: caller precondition — h is a live minted ce handle (the C
+    // caller null-checks per the apx header contract); handles are
+    // Box::into_raw'd and never freed by the ce layer, so the deref is valid;
+    // the payload borrow is short with no re-entrant borrow on this path.
     let n = unsafe {
         match (&*h).payload.borrow().as_ref() {
             Some(CePayload::Type { spec_index }) => {
@@ -925,14 +941,17 @@ pub unsafe extern "C" fn PyModule_FromDefAndSpec2(
     _api_version: c_int,
 ) -> PyObjPtr {
     let def = def_base as *const [*const c_char; 4];
+    // SAFETY: def_base is the extension's static PyModuleDef-shaped table
     let name_ptr = unsafe { (*def)[0] };
     let name = if name_ptr.is_null() {
         String::new()
     } else {
+        // SAFETY: name_ptr is non-null (checked above) and is the def's static
         unsafe { std::ffi::CStr::from_ptr(name_ptr) }
             .to_string_lossy()
             .into_owned()
     };
+    // SAFETY: forwarding the same static def pointer to module_create,
     let h = unsafe { crate::api::module_create(def_base as PyObjPtr) } as PyObjPtr;
     if h.is_null() {
         return std::ptr::null_mut();
@@ -945,6 +964,7 @@ pub unsafe extern "C" fn PyModule_FromDefAndSpec2(
         })
         .unwrap_or_else(|| name.clone());
     let mh = h as CeHandle;
+    // SAFETY: mh is the handle module_create just returned (non-null
     unsafe {
         if let Some(CePayload::Module { ns, .. }) = (&*mh).payload.borrow_mut().as_mut() {
             let _ = ns.set(
@@ -978,6 +998,10 @@ pub unsafe extern "C" fn PyModuleDef_Init(def: *mut c_void) -> *mut c_void {
 #[no_mangle]
 pub unsafe extern "C" fn PyModule_GetNameObject(module: PyObjPtr) -> PyObjPtr {
     let h = module as CeHandle;
+    // SAFETY: caller precondition — h is a live minted ce handle (the C
+    // caller null-checks per the apx header contract); handles are
+    // Box::into_raw'd and never freed by the ce layer, so the deref is valid;
+    // the payload borrow is short with no re-entrant borrow on this path.
     let n = unsafe {
         match (&*h).payload.borrow().as_ref() {
             Some(CePayload::Module { name, .. }) => Some(name.clone()),
@@ -1212,6 +1236,7 @@ pub unsafe extern "C" fn PyObject_VectorcallDict(
     } else {
         kwdict
     };
+    // SAFETY: f is the pycall seam ap-run installed (PycallFn ABI, OnceLock
     unsafe { f(callable, args_t as PyObjPtr, kwds) }
 }
 
@@ -1241,6 +1266,7 @@ pub unsafe extern "C" fn PyObject_VectorcallMethod(
     let Some(self_v) = (if args.is_null() || nargsf == 0 {
         None
     } else {
+        // SAFETY: the guard checked args non-null with nargsf > 0, so *args is
         value_of(unsafe { *args })
     }) else {
         err_set("TypeError", "PyObject_VectorcallMethod: missing self");
@@ -1282,6 +1308,7 @@ pub unsafe extern "C" fn PyObject_VectorcallMethod(
     };
     let args_t = new_handle(CeKind::Tuple, CePayload::Tuple(items));
     ce_newref(args_t);
+    // SAFETY: forwarding to the pycall seam; args_t is a freshly minted
     unsafe {
         crate::exports::PyObject_Vectorcall(
             meth_h as PyObjPtr,
@@ -1345,6 +1372,7 @@ pub unsafe extern "C" fn PySequence_Contains(seq: PyObjPtr, ob: PyObjPtr) -> c_i
 #[no_mangle]
 pub unsafe extern "C" fn PyObject_HasAttrWithError(o: PyObjPtr, name: PyObjPtr) -> c_int {
     let mut out: PyObjPtr = std::ptr::null_mut();
+    // SAFETY: forwarding to PyObject_GetOptionalAttr; out is a valid stack
     unsafe { crate::exports_objproto::PyObject_GetOptionalAttr(o, name, &mut out) }
 }
 
@@ -1355,6 +1383,7 @@ pub unsafe extern "C" fn PyIter_NextItem(iter: PyObjPtr, has_next: *mut c_int) -
     if !has_next.is_null() {
         *has_next = 0;
     }
+    // SAFETY: forwarding to PyObject_IterNext; has_next writes are
     let r = unsafe { crate::exports_objproto::PyObject_IterNext(iter) };
     if r.is_null() {
         if crate::state::err_is_set() {
@@ -1389,6 +1418,7 @@ pub unsafe extern "C" fn PyMapping_Items(o: PyObjPtr) -> PyObjPtr {
             let fh = from_value(&f);
             let empty = new_handle(CeKind::Tuple, CePayload::Tuple(Vec::new()));
             ce_newref(empty);
+            // SAFETY: forwarding to PyObject_Call; fh is the attr-lookup result
             unsafe {
                 crate::exports::PyObject_Call(
                     fh as PyObjPtr,

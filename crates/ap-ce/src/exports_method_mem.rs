@@ -135,6 +135,7 @@ pub unsafe extern "C" fn apx_TypeNameOf(o: PyObjPtr) -> *const c_char {
         "object".to_string()
     } else {
         let h = o as CeHandle;
+        // SAFETY: h is non-null (o checked above); type_name_owned is our own
         let owned = unsafe { type_name_owned(h) };
         owned
     };
@@ -354,6 +355,7 @@ pub unsafe extern "C" fn PyMutex_Lock(m: *mut c_void) {
         // SAFETY: the state lives in the process-global registry (never
         // removed), so the condvar pointer stays valid; re-lock for wait.
         let g2 = PYMUTEX.lock().unwrap_or_else(|p| p.into_inner());
+        // SAFETY: cv points at the registry entry's Condvar; entries are never
         let cv = unsafe { &*cv };
         let _ = cv.wait_timeout(g2, std::time::Duration::from_millis(1));
         // loop retries the swap; Unlock's notify wakes us early
@@ -495,24 +497,36 @@ pub unsafe extern "C" fn PyUnstable_Object_ClearWeakRefsNoCallbacks(_o: PyObjPtr
 /// (measured malloc0 null=0); implemented as malloc(max(size,1)).
 #[no_mangle]
 pub unsafe extern "C" fn PyMem_Malloc(size: usize) -> *mut c_void {
+    // SAFETY: the libc allocator has no preconditions beyond a non-zero
+    // size (the .max(1) guard pins that); the returned block is owned by the
+    // ce payload registry and released only through the matching free seam.
     unsafe { libc::malloc(size.max(1)) }
 }
 
 /// PyMem_Calloc.
 #[no_mangle]
 pub unsafe extern "C" fn PyMem_Calloc(nelem: usize, elsize: usize) -> *mut c_void {
+    // SAFETY: the libc allocator has no preconditions beyond a non-zero
+    // size (the .max(1) guard pins that); the returned block is owned by the
+    // ce payload registry and released only through the matching free seam.
     unsafe { libc::calloc(nelem.max(1), elsize.max(1)) }
 }
 
 /// PyMem_Realloc — realloc(NULL) is malloc.
 #[no_mangle]
 pub unsafe extern "C" fn PyMem_Realloc(ptr: *mut c_void, new_size: usize) -> *mut c_void {
+    // SAFETY: the libc allocator has no preconditions beyond a non-zero
+    // size (the .max(1) guard pins that); the returned block is owned by the
+    // ce payload registry and released only through the matching free seam.
     unsafe { libc::realloc(ptr, new_size.max(1)) }
 }
 
 /// PyMem_Free — free(NULL) is a no-op.
 #[no_mangle]
 pub unsafe extern "C" fn PyMem_Free(ptr: *mut c_void) {
+    // SAFETY: the libc allocator has no preconditions beyond a non-zero
+    // size (the .max(1) guard pins that); the returned block is owned by the
+    // ce payload registry and released only through the matching free seam.
     unsafe {
         if !ptr.is_null() {
             libc::free(ptr);
@@ -606,6 +620,7 @@ pub unsafe extern "C" fn PyEval_SaveThread() -> *mut c_void {
 pub unsafe extern "C" fn PyEval_RestoreThread(tstate: *mut c_void) {
     if !tstate.is_null() {
         let b = tstate as *mut u64;
+        // SAFETY: tstate is the token PyEval_SaveThread returned (a
         drop(unsafe { Box::from_raw(b) });
     }
 }

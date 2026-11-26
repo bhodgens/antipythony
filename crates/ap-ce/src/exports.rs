@@ -38,6 +38,9 @@ pub extern "C" fn Py_Refcnt(o: PyObjPtr) -> isize {
     if o.is_null() {
         0
     } else {
+        // SAFETY: o is non-null (checked above) and is a Box::into_raw'd
+        // CeObject the ce layer never frees; this is a plain isize read of the
+        // emulated refcount field.
         unsafe { (*(o as CeHandle)).ob_refcnt }
     }
 }
@@ -94,6 +97,9 @@ pub unsafe extern "C" fn PyLong_AsLong(o: PyObjPtr) -> std::ffi::c_long {
     match crate::value_conv::as_i64(h) {
         Some(v) => v as std::ffi::c_long,
         None => {
+            // SAFETY: h is non-null here (to_value returned None only because the
+            // payload was not an int; a NULL h would have returned None at the top
+            // of as_i64); type_name_of is our own helper that null-checks again and
             let tn = unsafe { type_name_of(h) };
             err_set(
                 "TypeError",
@@ -110,6 +116,9 @@ pub unsafe extern "C" fn PyLong_AsLongLong(o: PyObjPtr) -> i64 {
     match crate::value_conv::as_i64(h) {
         Some(v) => v,
         None => {
+            // SAFETY: h is non-null here (to_value returned None only because the
+            // payload was not an int; a NULL h would have returned None at the top
+            // of as_i64); type_name_of is our own helper that null-checks again and
             let tn = unsafe { type_name_of(h) };
             err_set(
                 "TypeError",
@@ -128,6 +137,10 @@ pub unsafe extern "C" fn PyFloat_FromDouble(v: f64) -> PyObjPtr {
 #[no_mangle]
 pub unsafe extern "C" fn PyFloat_AsDouble(o: PyObjPtr) -> f64 {
     let h = o as CeHandle;
+    // SAFETY: caller precondition — h is a live minted ce handle (the C
+    // caller null-checks per the apx header contract); handles are
+    // Box::into_raw'd and never freed by the ce layer, so the deref is valid;
+    // the payload borrow is short with no re-entrant borrow on this path.
     unsafe {
         match (&*h).payload.borrow().as_ref() {
             Some(CePayload::Float(x)) => *x,
@@ -187,6 +200,10 @@ pub unsafe extern "C" fn PyUnicode_AsUTF8AndSize(
     size_out: *mut isize,
 ) -> *const c_char {
     let h = o as CeHandle;
+    // SAFETY: caller precondition — h is a live minted ce handle (the C
+    // caller null-checks per the apx header contract); handles are
+    // Box::into_raw'd and never freed by the ce layer, so the deref is valid;
+    // the payload borrow is short with no re-entrant borrow on this path.
     unsafe {
         match (&*h).payload.borrow().as_ref() {
             Some(CePayload::Str(s)) => {
@@ -267,6 +284,10 @@ pub unsafe extern "C" fn PyTuple_New(n: isize) -> PyObjPtr {
 #[no_mangle]
 pub unsafe extern "C" fn PyTuple_Size(o: PyObjPtr) -> isize {
     let h = o as CeHandle;
+    // SAFETY: caller precondition — h is a live minted ce handle (the C
+    // caller null-checks per the apx header contract); handles are
+    // Box::into_raw'd and never freed by the ce layer, so the deref is valid;
+    // the payload borrow is short with no re-entrant borrow on this path.
     unsafe {
         match (&*h).payload.borrow().as_ref() {
             Some(CePayload::Tuple(items)) => items.len() as isize,
@@ -283,6 +304,10 @@ pub unsafe extern "C" fn PyTuple_Size(o: PyObjPtr) -> isize {
 #[no_mangle]
 pub unsafe extern "C" fn PyTuple_SetItem(o: PyObjPtr, i: isize, v: PyObjPtr) -> c_int {
     let h = o as CeHandle;
+    // SAFETY: caller precondition — h is a live minted ce handle (the C
+    // caller null-checks per the apx header contract); handles are
+    // Box::into_raw'd and never freed by the ce layer, so the deref is valid;
+    // the payload borrow is short with no re-entrant borrow on this path.
     unsafe {
         let ok = matches!((&*h).payload.borrow().as_ref(), Some(CePayload::Tuple(_)));
         if !ok {
@@ -304,6 +329,10 @@ pub unsafe extern "C" fn PyTuple_SetItem(o: PyObjPtr, i: isize, v: PyObjPtr) -> 
 #[no_mangle]
 pub unsafe extern "C" fn PyTuple_GetItem(o: PyObjPtr, i: isize) -> PyObjPtr {
     let h = o as CeHandle;
+    // SAFETY: caller precondition — h is a live minted ce handle (the C
+    // caller null-checks per the apx header contract); handles are
+    // Box::into_raw'd and never freed by the ce layer, so the deref is valid;
+    // the payload borrow is short with no re-entrant borrow on this path.
     unsafe {
         if let Some(CePayload::Tuple(items)) = (&*h).payload.borrow().as_ref() {
             if i >= 0 && (i as usize) < items.len() {
@@ -328,6 +357,10 @@ pub unsafe extern "C" fn PyList_New(n: isize) -> PyObjPtr {
 #[no_mangle]
 pub unsafe extern "C" fn PyList_Append(o: PyObjPtr, v: PyObjPtr) -> c_int {
     let h = o as CeHandle;
+    // SAFETY: caller precondition — h is a live minted ce handle (the C
+    // caller null-checks per the apx header contract); handles are
+    // Box::into_raw'd and never freed by the ce layer, so the deref is valid;
+    // the payload borrow is short with no re-entrant borrow on this path.
     unsafe {
         if let Some(CePayload::List(items)) = &mut *(&*h).payload.borrow_mut() {
             items.push(v as CeHandle);
@@ -353,6 +386,9 @@ pub unsafe extern "C" fn PyDict_SetItemString(o: PyObjPtr, k: *const c_char, v: 
     }
     let key = std::ffi::CStr::from_ptr(k).to_string_lossy().into_owned();
     let h = o as CeHandle;
+    // SAFETY: k was null-checked above and points at a NUL-terminated C
+    // string (PyDict_SetItemString contract), so from_ptr is in-bounds; h
+    // is a live minted handle and the payload borrow is short and
     unsafe {
         if let Some(CePayload::Dict(d)) = &mut *(&*h).payload.borrow_mut() {
             let _ = d.set(
@@ -391,6 +427,8 @@ pub unsafe extern "C" fn PyModule_AddObject(
         .to_string_lossy()
         .into_owned();
     let h = m as CeHandle;
+    // SAFETY: name was null-checked above; m is a live minted module handle
+    // (the ce layer never frees handles), so the deref is valid and the
     unsafe {
         if let Some(CePayload::Module { ns, .. }) = &mut *(&*h).payload.borrow_mut() {
             let _ = ns.set(
@@ -423,6 +461,7 @@ pub unsafe extern "C" fn apx_TypeName(o: PyObjPtr) -> *const c_char {
         return b"?\0".as_ptr() as *const c_char;
     }
     // Names are static; a per-kind static table keeps the pointer valid.
+    // SAFETY: h is non-null (checked above); type_name_of only reads the
     unsafe { type_name_cstr(type_name_of(h)) }
 }
 
@@ -464,6 +503,8 @@ pub unsafe extern "C" fn PyErr_SetString(exc: PyObjPtr, msg: *const c_char) {
     };
     // The exception token is a Str handle carrying the class name (header
     // shim: apx_PyExc_<Name>() returns those).
+    // SAFETY: exc is null-checked inside this block; a non-null exc is a
+    // live minted handle (usually the apx_PyExc_<Name> Str token), so the
     let class = unsafe {
         if exc.is_null() {
             "Exception".to_string()
@@ -535,12 +576,15 @@ pub unsafe extern "C" fn PyObject_Call(
         err_set("TypeError", "'NoneType' object is not callable");
         return std::ptr::null_mut();
     }
+    // SAFETY: f is the pycall seam ap-run's ce_bridge installed (PycallFn
+    // ABI, OnceLock first-wins) and callable/args/kwds are live handles or
     unsafe { f(callable, args, kwds) }
 }
 
 /// PyObject_CallNoArgs (PyO3 emission set).
 #[no_mangle]
 pub unsafe extern "C" fn PyObject_CallNoArgs(callable: PyObjPtr) -> PyObjPtr {
+    // SAFETY: forwarding to PyObject_Call with the same live callable (its
     unsafe { PyObject_Call(callable, py_none() as PyObjPtr, std::ptr::null_mut()) }
 }
 
@@ -549,6 +593,7 @@ pub unsafe extern "C" fn PyObject_CallNoArgs(callable: PyObjPtr) -> PyObjPtr {
 pub unsafe extern "C" fn PyObject_CallOneArg(callable: PyObjPtr, arg: PyObjPtr) -> PyObjPtr {
     let args = crate::state::new_handle(CeKind::Tuple, CePayload::Tuple(vec![arg as CeHandle]));
     ce_newref(args);
+    // SAFETY: forwarding to PyObject_Call; the fresh 1-tuple handle was
     unsafe { PyObject_Call(callable, args as PyObjPtr, std::ptr::null_mut()) }
 }
 
@@ -571,6 +616,7 @@ pub unsafe extern "C" fn PyObject_Vectorcall(
     };
     let args_t = crate::state::new_handle(CeKind::Tuple, CePayload::Tuple(items));
     ce_newref(args_t);
+    // SAFETY: forwarding to PyObject_Call; the args tuple was minted from
     unsafe { PyObject_Call(callable, args_t as PyObjPtr, std::ptr::null_mut()) }
 }
 
@@ -602,6 +648,7 @@ pub unsafe extern "C" fn apx_method_register(
         .to_string_lossy()
         .into_owned();
     let h = m as CeHandle;
+    // SAFETY: name and m were null-checked above; m is a live minted module
     unsafe {
         if let Some(CePayload::Module { name: mod_name, ns }) = &mut *(&*h).payload.borrow_mut() {
             let mn = mod_name.clone();
@@ -685,16 +732,21 @@ pub unsafe extern "C" fn apx_type_register(
     let newf: Option<PyCFunctionRaw> = if tp_new.is_null() {
         None
     } else {
+        // SAFETY: tp_new came from the extension's PyType_Slot table; on S0
+        // the tp_new signature is already PyCFunction-shaped (see the comment
         Some(unsafe { std::mem::transmute(tp_new) })
     };
     let initf: Option<InitRaw> = if tp_init.is_null() {
         None
     } else {
+        // SAFETY: tp_init came from the extension's PyType_Slot table; the
+        // InitRaw (self, args, kwds) signature collapses to PyCFunctionRaw on
         Some(unsafe { std::mem::transmute(tp_init) })
     };
     let delf: Option<PyCFunctionRaw> = if tp_dealloc.is_null() {
         None
     } else {
+        // SAFETY: tp_dealloc came from the extension's PyType_Slot table; the
         Some(unsafe { std::mem::transmute(tp_dealloc) })
     };
     match crate::api::type_from_spec_normalized(
@@ -752,6 +804,8 @@ pub extern "C" fn apx_init_count() -> c_int {
     extern "C" {
         fn apx_c_init_count() -> c_int;
     }
+    // SAFETY: apx_c_init_count is defined in apx_shim.c (linked into this
+    // binary by the build); calling a linked extern "C" fn with its exact
     unsafe { apx_c_init_count() }
 }
 
@@ -769,6 +823,10 @@ pub unsafe extern "C" fn apx_InstancePayload(o: PyObjPtr) -> *mut c_void {
     if h.is_null() {
         return std::ptr::null_mut();
     }
+    // SAFETY: caller precondition — h is a live minted ce handle (the C
+    // caller null-checks per the apx header contract); handles are
+    // Box::into_raw'd and never freed by the ce layer, so the deref is valid;
+    // the payload borrow is short with no re-entrant borrow on this path.
     unsafe {
         match (&*h).payload.borrow().as_ref() {
             Some(CePayload::CeInstance { payload_key, .. }) => {
@@ -798,6 +856,7 @@ pub extern "C" fn apx_set_instance_value(key: usize, v: *const ap_obj::value::Va
     if v.is_null() {
         return -1;
     }
+    // SAFETY: v was null-checked above and points at a runtime Value the
     let v = unsafe { &*v }.clone();
     crate::value_map::set_runtime_value(key, v);
     0
@@ -814,6 +873,7 @@ pub unsafe extern "C" fn apx_instance_value(o: PyObjPtr, out: *mut ap_obj::value
     if h.is_null() || out.is_null() {
         return -1;
     }
+    // SAFETY: h and out were null-checked above; h is a live minted handle,
     let key = unsafe {
         match (&*h).payload.borrow().as_ref() {
             Some(CePayload::CeInstance { payload_key, .. }) => *payload_key,
@@ -822,6 +882,7 @@ pub unsafe extern "C" fn apx_instance_value(o: PyObjPtr, out: *mut ap_obj::value
     };
     match crate::value_map::take_runtime_value(key) {
         Some(v) => {
+            // SAFETY: out was null-checked above and points at the caller's Value
             unsafe { *out = v };
             0
         }
