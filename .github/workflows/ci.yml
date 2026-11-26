@@ -77,6 +77,19 @@ jobs:
             exit 1
           fi
           echo "unsafe ratchet: baseline matches HEAD"
+      - name: unsafe-ratchet clippy gate — undocumented_unsafe_blocks drift (issue #18 wave 3)
+        # Runs scripts/unsafe_report.sh --clippy: counts undocumented
+        # unsafe blocks across the workspace and fails if the count grows
+        # past the baseline recorded in docs/unsafe-inventory.md
+        # ('baseline: 0' since the wave-2/3 SAFETY burn-down). Informational
+        # first: continue-on-error until the pre-existing deny-lint noise
+        # (ap-ce not_unsafe_ptr_arg_deref) is cleaned up, but a count
+        # regression still prints a visible ::warning annotation.
+        continue-on-error: true
+        run: |
+          if ! bash scripts/unsafe_report.sh --clippy; then
+            echo "::warning::undocumented_unsafe_blocks grew past the baseline (issue #18 wave 3 ratchet) — see step log"
+          fi
 
   rust:
     name: rust 1.94.0 (fmt / clippy-info / build / test)
