@@ -18,10 +18,10 @@ use std::cell::{Cell, RefCell};
 use std::sync::Arc;
 
 use ap_gc::{
-    add_root_dict, add_root_module_ns, clear_roots, collect, disable, enable, gc_register,
-    gc_tracked_len, get_count, get_objects, get_threshold, is_enabled, is_tracked, set_threshold,
-    stats, weakref_add, weakref_alive, weakref_count_for, weakref_entry_count, weakref_is_dead,
-    weakref_take_dead, WeakEntry,
+    add_root_dict, add_root_module_ns, clear_roots, collect, disable, enable, flush_test,
+    gc_register, gc_tracked_len, get_count, get_objects, get_threshold, is_enabled, is_tracked,
+    set_threshold, stats, weakref_add, weakref_alive, weakref_count_for, weakref_entry_count,
+    weakref_is_dead, weakref_take_dead, WeakEntry,
 };
 use ap_obj::classes::{TypeFlags, TypeObject};
 use ap_obj::dict::PyDict;
@@ -180,8 +180,12 @@ fn allocation_accounting_counts_tracks_and_reclaims() {
         held.push(list_val()); // hook registers at the allocation site
     }
     assert_eq!(gc_tracked_len(), base + 3, "3 containers tracked");
+    // hp-nursery: the ledger defers the ladder counter to the flush; the
+    // flush is the registration-completion point the counter observes.
+    flush_test();
     assert_eq!(get_count().0, 3, "alloc-since counts registrations");
     gc_register(&held[0]); // duplicate registration must not double-count
+    flush_test(); // hp-nursery: the dup row flushes as a registry no-op
     assert_eq!(gc_tracked_len(), base + 3);
     assert_eq!(get_objects().len(), gc_tracked_len());
     for v in &held {
@@ -529,7 +533,10 @@ fn collect_aborts_on_mid_mutation_contention_never_skips() {
         .expect("gc_invariants.rs:510");
     drop(victim);
 
-    let alloc_before = get_count().0;
+    let alloc_before = {
+        flush_test();
+        get_count().0
+    };
 
     // Mutate `obj` while a collection runs (the real-world shape: class-
     // body exec holding attrs.borrow_mut() across an allocation past t0).
@@ -636,6 +643,7 @@ fn disable_gates_automatic_collection_only() {
     let base = stats().collections;
     let a = list_val(); // allocations bump ALLOC_SINCE to t0
     let b = list_val();
+    flush_test(); // hp-nursery: the ladder counts at the flush boundary
     assert_eq!(
         stats().collections,
         base,
@@ -653,6 +661,7 @@ fn disable_gates_automatic_collection_only() {
     assert!(is_enabled());
     let c = list_val(); // re-armed: crossing t0 again auto-collects
     let d = list_val();
+    flush_test(); // hp-nursery: ladder at the flush boundary
     assert_eq!(
         stats().collections,
         base + 2,
