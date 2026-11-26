@@ -31,7 +31,7 @@ fn ap_run_eval_dyn() -> String {
     match std::env::var("CARGO_TARGET_DIR") {
         Ok(d) => std::path::Path::new(&d).join("debug/ap-run-eval"),
         Err(_) => {
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/debug/ap-run-eval")
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target-0304c/debug/ap-run-eval") /* .cargo/config.toml redirect; cargo does not export it; CI ENOENT fix 2026-11-25 */
         }
     }
     .to_string_lossy()

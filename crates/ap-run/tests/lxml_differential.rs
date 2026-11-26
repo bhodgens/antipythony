@@ -12,7 +12,7 @@ mod common;
 fn ap_bin() -> String {
     std::env::var("CARGO_BIN_EXE_antipythony").unwrap_or_else(|_| {
         format!(
-            "{}/../../target/debug/antipythony",
+            "{}/../../target-0304c/debug/antipythony",
             env!("CARGO_MANIFEST_DIR")
         )
     })

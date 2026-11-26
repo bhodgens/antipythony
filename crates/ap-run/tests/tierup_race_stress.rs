@@ -96,7 +96,9 @@ fn ap_run_eval_bin() -> std::path::PathBuf {
         .to_path_buf();
     match std::env::var("CARGO_TARGET_DIR") {
         Ok(d) => std::path::Path::new(&d).join("debug/ap-run-eval"),
-        Err(_) => root.join("target/debug/ap-run-eval"),
+        // .cargo/config.toml redirects builds to target-0304c (cargo does
+        // not export the redirect; CI ENOENT fix 2026-11-25).
+        Err(_) => root.join("target-0304c/debug/ap-run-eval"),
     }
 }
 

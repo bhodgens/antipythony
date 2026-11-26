@@ -272,7 +272,12 @@ fn ap_run_probe_bin() -> std::path::PathBuf {
         .to_path_buf();
     match std::env::var("CARGO_TARGET_DIR") {
         Ok(d) => std::path::Path::new(&d).join("debug/ap-run-probe"),
-        Err(_) => root.join("target/debug/ap-run-probe"),
+        // The workspace .cargo/config.toml redirects all builds into
+        // target-0304c; cargo does NOT export that redirect to test
+        // processes, so the hardcoded fallback must name it (the old
+        // target/ path ENOENT'd every ap-run differential suite on CI
+        // when CARGO_BIN_EXE was absent, 2026-11-25 fix_pass gate).
+        Err(_) => root.join("target-0304c/debug/ap-run-probe"),
     }
 }
 
