@@ -218,7 +218,7 @@ pub fn type_from_spec_normalized(
         // compiled against OUR apx headers); the InitRaw (self, args, kwds)
         // signature collapses to the PyCFunctionRaw (self, args) shape on S0 —
         // the reinterpretation documented at type_from_spec_normalized — so the
-        // transmute preserves the ABI the caller already honors.
+        // the reinterpretation preserves the ABI the caller already honors.
         tp_init.map(|f| SlotFn(unsafe { std::mem::transmute::<InitRaw, PyCFunctionRaw>(f) })),
         tp_dealloc.map(SlotFn),
         methods
@@ -234,14 +234,14 @@ pub fn type_from_spec_normalized(
                         // SAFETY: GetterRaw (self, closure) collapses to the PyCFunctionRaw
                         // (self, args) shape on S0 per type_from_spec_normalized; the pointer
                         // came from the extension's PyType_Slot table compiled against our
-                        // headers, so the transmute preserves the honored ABI.
+                        // headers, so the reinterpretation preserves the honored ABI.
                         SlotFn(unsafe { std::mem::transmute::<GetterRaw, PyCFunctionRaw>(f) })
                     }),
                     s.map(|f| {
                         // SAFETY: SetterRaw (self, value, closure) collapses to the
                         // PyCFunctionRaw (self, args) shape on S0 per type_from_spec_normalized;
                         // the pointer came from the extension's PyType_Slot table compiled
-                        // against our headers, so the transmute preserves the honored ABI.
+                        // against our headers, so the reinterpretation preserves the honored ABI.
                         SlotFn(unsafe { std::mem::transmute::<SetterRaw, PyCFunctionRaw>(f) })
                     }),
                 )

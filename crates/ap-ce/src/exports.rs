@@ -805,7 +805,7 @@ pub extern "C" fn apx_init_count() -> c_int {
         fn apx_c_init_count() -> c_int;
     }
     // SAFETY: apx_c_init_count is defined in apx_shim.c (linked into this
-    // binary by the build); calling a linked extern "C" fn with its exact
+    // binary by the build); calling the linked C-ABI fn with its exact
     unsafe { apx_c_init_count() }
 }
 
