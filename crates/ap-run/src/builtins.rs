@@ -1527,6 +1527,14 @@ fn check_isinstance(v: &Value, t: &Value) -> Result<Value, Flow> {
                 // value_isinstance's hook arm covers UserInstance subjects
                 // only, so consult the hook here for the rest.
                 if let Some(meta_v) = (|| {
+                    // Issue #20 follow-up guard (see classes.rs value_isinstance):
+                    // the base type slot markers are the structural answer;
+                    // calling them from here loops.
+                    let skip_base = |h: &Value| {
+                        matches!(h, Value::Obj(ho) if ho.kind == ap_obj::ObjKind::BuiltinFn
+                            && matches!(ho.name.as_str(),
+                                "type.__instancecheck__" | "type.__subclasscheck__"))
+                    };
                     // The __class__ attr degenerates to the interned `type`
                     // for imported-module classes (the _collections_abc
                     // import flow loses the metaclass pointer in type_of's
@@ -1544,7 +1552,8 @@ fn check_isinstance(v: &Value, t: &Value) -> Result<Value, Flow> {
                                 "__instancecheck__",
                             )
                             .ok()
-                            .flatten();
+                            .flatten()
+                            .filter(|h| !skip_base(h));
                         }
                     }
                     // Degenerated: fall back to the real metaclass value.
@@ -1564,6 +1573,7 @@ fn check_isinstance(v: &Value, t: &Value) -> Result<Value, Flow> {
                     crate::interp::attr_get_public(&interp_rc, &cv, "__instancecheck__")
                         .ok()
                         .flatten()
+                        .filter(|h| !skip_base(h))
                 })() {
                     let r = crate::interp::call_value_pub(
                         &interp_rc,
@@ -6732,6 +6742,47 @@ fn builtin_type_new(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
             ));
         }
     };
+    // Issue #20 follow-up (T3 S2.5): the slots-vs-class-var validation
+    // deferred from classes.rs make_class step 5 (there skipped when a user
+    // metaclass __new__ drives creation). CPython validates in type.__new__
+    // — i.e. HERE, on the namespace the metaclass __new__ finally forwarded
+    // (pydantic's ModelMetaclass popped the instance-slot entries already).
+    if let Some(Value::Tuple(tup)) = args.get(2) {
+        let has_slots = ns.get(&Value::Str(PyString::new("__slots__")));
+        if let Some(sv) = has_slots {
+            let mut names: Vec<String> = Vec::new();
+            match sv {
+                Value::Str(s) => names.push(s.as_str().to_string()),
+                Value::List(l) => {
+                    for it in l.items().iter() {
+                        if let Value::Str(s) = it {
+                            names.push(s.as_str().to_string());
+                        }
+                    }
+                }
+                Value::Tuple(t2) => {
+                    for it in &t2.0 {
+                        if let Value::Str(s) = it {
+                            names.push(s.as_str().to_string());
+                        }
+                    }
+                }
+                _ => {}
+            }
+            for s in &names {
+                if s == "__dict__" {
+                    continue;
+                }
+                if ns.contains(&Value::Str(PyString::new(s.clone()))) {
+                    return Err(raise(
+                        "ValueError",
+                        format!("'{s}' in __slots__ conflicts with class variable"),
+                    ));
+                }
+            }
+            let _ = tup;
+        }
+    }
     let interp = crate::builtins_modules::current_interp()
         .ok_or_else(|| raise("SystemError", "no interpreter"))?;
     let mut base_types: Vec<std::sync::Arc<crate::classes::TypeRef>> = Vec::new();

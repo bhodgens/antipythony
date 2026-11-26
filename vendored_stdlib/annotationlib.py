@@ -28,6 +28,12 @@ class ForwardRef:
         self.__forward_arg__ = arg
         self.__forward_module__ = module
         self.__forward_is_class__ = is_class
+        # Issue #20 follow-up (T3 S2.5): typing.evaluate_forward_ref reads
+        # forward_ref.__owner__ (typing.py:1024/1028) and _make_forward_ref
+        # forwards it (typing.py:971) — the attribute must exist (None when
+        # unset, CPython slot default). __slots__ declared it but v0 __init__
+        # never assigned it, so reads raised AttributeError.
+        self.__owner__ = owner
 
     def __repr__(self):
         return f"ForwardRef({self.__forward_arg__!r})"

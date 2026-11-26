@@ -1156,6 +1156,27 @@ pub fn exec_class_def(
                 if s == "__dict__" {
                     continue;
                 }
+                // Issue #20 follow-up (T3 S2.5): CPython performs the
+                // slots-vs-class-var validation inside type.__new__ — AFTER
+                // the metaclass __new__ ran (pydantic's ModelMetaclass pops
+                // __pydantic_fields_set__/__extra__/__private__ from the
+                // namespace in its no-bases branch BEFORE super().__new__).
+                // Checking HERE (pre-metaclass) rejects the BaseModel body
+                // CPython accepts. When a user metaclass __new__ drives
+                // creation (checked again at step 6b), defer the validation
+                // to builtin_type_new (builtins.rs), which sees the FINAL
+                // namespace.
+                let has_user_meta_new = _resolved_meta
+                    .as_ref()
+                    .map(|m| {
+                        m.lookup("__new__").is_some_and(|f| {
+                            matches!(&f, Value::Obj(fo) if fo.kind == ap_obj::ObjKind::Function)
+                        })
+                    })
+                    .unwrap_or(false);
+                if has_user_meta_new {
+                    continue;
+                }
                 if ns.contains(&Value::Str(PyString::new(s.clone()))) {
                     return Err(raise(
                         "ValueError",
@@ -1980,6 +2001,33 @@ pub fn type_class(interp: &Interpreter) -> Arc<TypeRef> {
             "type.__new__",
         )),
     );
+    // Issue #20 (T3 S2.5): type.__instancecheck__ / type.__subclasscheck__
+    // are slot wrappers ON `type` in CPython (type.__dict__ carries them;
+    // `type.__instancecheck__(cls, obj)` is the documented super()-chain
+    // escape hatch). pydantic's chain hits this exactly: typing_extensions
+    // _ProtocolMeta.__instancecheck__ calls
+    // `type.__instancecheck__(cls, instance)` for the non-protocol root,
+    // and pydantic._internal._model_construction builds ModelMetaclass over
+    // ABCMeta whose hooks walk back into the type-level slots. The interned
+    // `type` type-class dict lacked both names -> AttributeError
+    // "'type' object has no attribute '__instancecheck__'".
+    // The markers dispatch in interp.rs call_value_inner_impl to the native
+    // check (CPython slot-wrapper semantics: identity/MRO walk, no user-MRO
+    // re-entry).
+    let _ = dict.set(
+        Value::Str(PyString::new("__instancecheck__")),
+        Value::Obj(ap_obj::PyObject::new(
+            ap_obj::ObjKind::BuiltinFn,
+            "type.__instancecheck__",
+        )),
+    );
+    let _ = dict.set(
+        Value::Str(PyString::new("__subclasscheck__")),
+        Value::Obj(ap_obj::PyObject::new(
+            ap_obj::ObjKind::BuiltinFn,
+            "type.__subclasscheck__",
+        )),
+    );
     let t = TypeObject::create(
         "type".to_string(),
         "type".to_string(),
@@ -2767,9 +2815,23 @@ pub fn value_isinstance(interp: &Interpreter, x: &Value, t: &Value) -> Result<bo
                 // _GenericAlias) and breaks their call convention.
                 if let Some(meta_v) = (|| {
                     let tcls = crate::interp::attr_get_public(&rc, t, "__class__").ok()??;
-                    crate::interp::attr_get_public(&rc, &tcls, "__instancecheck__")
+                    let hook = crate::interp::attr_get_public(&rc, &tcls, "__instancecheck__")
                         .ok()
-                        .flatten()
+                        .flatten()?;
+                    // Issue #20 follow-up: the BASE type slot markers
+                    // (type.__instancecheck__ seeded in type_class for the
+                    // super()-chain escape hatch) are the STRUCTURAL answer
+                    // this function itself implements below — consulting
+                    // them here loops (marker call -> value_isinstance ->
+                    // this arm -> marker call). CPython's slot wrapper is
+                    // terminal: skip it and take the local structural path.
+                    if matches!(&hook, Value::Obj(ho) if ho.kind == ap_obj::ObjKind::BuiltinFn
+                        && matches!(ho.name.as_str(),
+                            "type.__instancecheck__" | "type.__subclasscheck__"))
+                    {
+                        return None;
+                    }
+                    Some(hook)
                 })() {
                     let r =
                         crate::interp::call_value_pub(&rc, &meta_v, &[t.clone(), x.clone()], &[])?;
@@ -3751,14 +3813,20 @@ fn instance_attr(
         }
     }
     // 4. __getattr__ fallback (S-03-09).
-    if let Some((ga, _)) = t.lookup_with_owner("__getattr__") {
-        return call_value(
-            interp,
-            &module_frame(interp),
-            &ga,
-            &[obj.clone(), Value::Str(PyString::new(name))],
-            &[],
-        );
+    // Issue #20 follow-up: object.__getattribute__ (the SLOT read) must not
+    // re-enter __getattr__ — pydantic's BaseModel.__getattr__ probes
+    // object.__getattribute__(self, '__pydantic_extra__') inside __getattr__
+    // and the re-entry looped to RecursionError.
+    if !crate::interp::getattribute_no_hook_active() {
+        if let Some((ga, _)) = t.lookup_with_owner("__getattr__") {
+            return call_value(
+                interp,
+                &module_frame(interp),
+                &ga,
+                &[obj.clone(), Value::Str(PyString::new(name))],
+                &[],
+            );
+        }
     }
     // 02.04a (interp bug #4b): object's virtual methods answer on plain
     // instances too (types.py: MethodWrapperType = type(object().__str__)).
