@@ -13486,6 +13486,16 @@ thread_local! {
     /// marker pattern: object state lives outside the object model).
     static POLL_TABLES: std::cell::RefCell<std::collections::HashMap<usize, std::collections::HashMap<i64, i32>>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Issue #16: live epoll objects keyed by object address — the epoll
+    /// control fd. The kernel holds the interest list itself (unlike the
+    /// userspace HashMap of select.poll), so no fd bookkeeping is needed:
+    /// the CPython error taxonomy (EEXIST on double register, ENOENT on
+    /// modify/unregister of an unknown fd) falls straight out of the raw
+    /// epoll_ctl(2) errno via io_flow. A closed object drops its row, and
+    /// a missing row means "I/O operation on closed epoll object".
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+    static EPOLL_TABLES: std::cell::RefCell<std::collections::HashMap<usize, i32>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
 fn build_select(_i: &crate::frame::Interpreter) -> Value {
@@ -13544,11 +13554,11 @@ fn build_select(_i: &crate::frame::Interpreter) -> Value {
     }
     fn1(&ns, "select", "select");
     fn1(&ns, "select", "poll");
-    // linux: CPython's select.epoll is a real object type. The attribute
-    // must EXIST (selectors/probes check hasattr) — a raising placeholder
-    // makes hasattr True; the full epoll object (create/ctl/close) is a
-    // filed follow-up (no T-track corpus path uses EpollSelector today;
-    // scrapy/twisted go through poll(2), which works).
+    // linux: CPython's select.epoll is a real object type. On
+    // x86_64-linux-gnu the ctor below (call_select "epoll" + the
+    // "select.epoll.<method>" markers) implements it against
+    // epoll_create1/epoll_ctl/epoll_wait (issue #16); on other non-macos
+    // targets it keeps the pre-#16 raising-placeholder behavior.
     #[cfg(not(target_os = "macos"))]
     fn1(&ns, "select", "epoll");
     #[cfg(target_os = "macos")]
@@ -13567,7 +13577,30 @@ fn build_select(_i: &crate::frame::Interpreter) -> Value {
     finish(m, ns)
 }
 
-pub fn call_select(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Option<BResult> {
+pub fn call_select(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option<BResult> {
+    // Issue #16: on x86_64-linux-gnu the epoll attribute (built by
+    // build_select under the same cfg) is the REAL select.epoll object
+    // type: epoll(sizehint/flags) constructs via epoll_create1(EPOLL_CLOEXEC)
+    // and the bound markers ("select.epoll.<m>", routed through
+    // call_builtin_dotted → call_native → here) drive epoll_ctl(2) /
+    // epoll_wait(2) directly. The kernel holds the interest list (unlike
+    // the userspace HashMap of select.poll), so the CPython error taxonomy
+    // falls out of the raw errno: EEXIST(17)→FileExistsError on double
+    // register, ENOENT(2)→FileNotFoundError on modify/unregister of an
+    // unknown fd, EBADF(9)→OSError on a closed fd — mapped by io_flow.
+    // Every other platform keeps the pre-issue-#16 behavior (the default
+    // "unbound" SystemError below; CPython-darwin never sees these names
+    // because build_select does not export epoll there).
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+    if name == "epoll" {
+        return Some(epoll_ctor(args, kwargs));
+    }
+    #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+    if let Some(rest) = name.strip_prefix("epoll.") {
+        return select_epoll_method(rest, args, kwargs);
+    }
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")))]
+    let _ = kwargs;
     let r: BResult = (|| -> BResult {
         match name {
             // select.select(r, w, x, timeout) — the T1 reactor path: real
@@ -13827,6 +13860,400 @@ fn select_poll_method(m: &str, args: &[Value]) -> Option<BResult> {
             Some(Ok(Value::None))
         }
         _ => Some(Err(raise("SystemError", format!("poll fn {m} unbound")))),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #16: select.epoll object (x86_64-linux-gnu only). Mirrors
+// CPython 3.14 Modules/selectmodule.c pyepoll_* semantics:
+//   epoll(sizehint=-1, flags=0) -> epoll_create1(EPOLL_CLOEXEC);
+//     sizehint<=0 && !=-1 -> ValueError "negative sizehint";
+//     flags not in {0, EPOLL_CLOEXEC} -> OSError "invalid flags".
+//   register/modify/unregister -> epoll_ctl(2); the kernel holds the
+//     interest list, so the CPython taxonomy (EEXIST->FileExistsError on
+//     double ADD, ENOENT->FileNotFoundError on unknown MOD/DEL,
+//     EBADF->OSError) falls out of raw errno via io_flow. CPython's
+//     unsigned int converter rejects negatives with
+//     "unsigned integer greater than or equal to zero required, not N".
+//   poll(timeout=None [, maxevents=-1]) -> list[(fd, events)]; timeout in
+//     SECONDS rounded toward +inf to ms (_PyTime ROUND_CEILING), negative
+//     -> block forever; maxevents -1 -> FD_SETSIZE-1 (1023), <1 ->
+//     ValueError "maxevents must be greater than 0, got N"; EINTR retry.
+//   close() (idempotent), fileno() (ValueError when closed), closed attr,
+//     __enter__/__exit__ (context manager).
+// The userspace EPOLL_TABLES row only records the control fd (-1 once
+// closed) — the kernel IS the fd registry.
+// ---------------------------------------------------------------------------
+
+/// epoll fd coercion (CPython `fildes`): int/bool (negatives rejected like
+/// CPython's unsigned converter), else duck-type `fileno()`. The fileno()
+/// call runs OUTSIDE any EPOLL_TABLES borrow (it re-enters the
+/// interpreter).
+#[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+fn epoll_fd_arg(v: &Value) -> Result<i32, Flow> {
+    match v {
+        Value::Int(_) | Value::Bool(_) => {
+            let n = as_int_i64(v)?;
+            if n < 0 {
+                // CPython clinic `fildes` converter.
+                return Err(raise(
+                    "ValueError",
+                    format!("file descriptor cannot be a negative integer ({n})"),
+                ));
+            }
+            Ok(n as i32)
+        }
+        other => {
+            if current_interp().is_none() {
+                return Err(raise(
+                    "TypeError",
+                    "argument must be an int, or have a fileno() method.",
+                ));
+            }
+            match crate::builtins::call_method_pub(other, "fileno", &[]) {
+                Ok(r) => {
+                    let n = as_int_i64(&r)?;
+                    if n < 0 {
+                        return Err(raise(
+                            "ValueError",
+                            format!("file descriptor cannot be a negative integer ({n})"),
+                        ));
+                    }
+                    Ok(n as i32)
+                }
+                Err(Flow::Raise(ev))
+                    if matches!(ev.class.as_str(), "AttributeError" | "io.UnsupportedOperation") =>
+                {
+                    Err(raise(
+                        "TypeError",
+                        "argument must be an int, or have a fileno() method.",
+                    ))
+                }
+                Err(f) => Err(f),
+            }
+        }
+    }
+}
+
+/// epoll event-mask coercion (CPython clinic unsigned_int w/ bitwise).
+#[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+fn epoll_events_arg(v: &Value) -> Result<u32, Flow> {
+    let n = as_int_i64(v)?;
+    if n < 0 || n > u32::MAX as i64 {
+        return Err(raise(
+            "TypeError",
+            format!("unsigned integer greater than or equal to zero required, not {n}"),
+        ));
+    }
+    Ok(n as u32)
+}
+
+/// select.epoll(sizehint=-1, flags=0) ctor (issue #16).
+#[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+fn epoll_ctor(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
+    let mut sizehint: i64 = match args.first() {
+        Some(v) => as_int_i64(v)?,
+        None => -1,
+    };
+    for (k, v) in kwargs {
+        match k.as_str() {
+            "sizehint" => sizehint = as_int_i64(v)?,
+            "flags" => {}
+            other => {
+                return Err(raise(
+                    "TypeError",
+                    format!("epoll() got an unexpected keyword argument '{other}'"),
+                ))
+            }
+        }
+    }
+    // CPython: sizehint == -1 -> FD_SETSIZE-1; sizehint <= 0 -> ValueError.
+    if sizehint == -1 {
+        sizehint = 1023;
+    } else if sizehint <= 0 {
+        return Err(raise("ValueError", "negative sizehint"));
+    }
+    // flags: deprecated, must be 0 or EPOLL_CLOEXEC (524288).
+    let mut flags: i64 = match args.get(1) {
+        Some(v) => as_int_i64(v)?,
+        None => 0,
+    };
+    for (k, v) in kwargs {
+        if k == "flags" {
+            flags = as_int_i64(v)?;
+        }
+    }
+    if flags != 0 && flags != 524288 {
+        return Err(raise("OSError", "invalid flags"));
+    }
+    let epfd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
+    if epfd < 0 {
+        return Err(io_flow(std::io::Error::last_os_error()));
+    }
+    // Instance state (the control fd) lives in EPOLL_TABLES keyed by
+    // object address; the Opaque carries the key + per-instance `closed`
+    // mirror. Bound methods dispatch through "<select.epoll.<m>>" markers.
+    let o = PyObject::new(ap_obj::ObjKind::Opaque, "select.epoll");
+    let key = std::sync::Arc::as_ptr(&o) as *const () as usize;
+    EPOLL_TABLES.with(|t| t.borrow_mut().insert(key, epfd));
+    *o.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) = vec![i(key as i64)];
+    for m in [
+        "register",
+        "modify",
+        "unregister",
+        "poll",
+        "close",
+        "fileno",
+        "__enter__",
+        "__exit__",
+    ] {
+        let bm = PyObject::with_self(
+            ap_obj::ObjKind::BoundMethod,
+            format!("select.epoll.{m}"),
+            Value::Obj(o.clone()),
+        );
+        *bm.func.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some(marker(&format!("select.epoll.{m}")));
+        let _ = o
+            .attrs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .set(s(m), Value::Obj(bm));
+    }
+    let _ = o
+        .attrs
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .set(s("closed"), Value::Bool(false));
+    *o.repr_text.lock().unwrap_or_else(|p| p.into_inner()) =
+        Some("<select.epoll object>".to_string());
+    Ok(Value::Obj(o))
+}
+
+/// select.epoll method dispatch (marker form "<select.epoll.<method>>";
+/// the receiver rides args[0] via the BoundMethod, same convention as
+/// select_poll_method).
+#[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+fn select_epoll_method(m: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option<BResult> {
+    let key = match args.first() {
+        Some(Value::Obj(o)) => std::sync::Arc::as_ptr(o) as *const () as usize,
+        _ => return Some(Err(raise("TypeError", "missing self"))),
+    };
+    // Short borrow: fd snapshot (-1 = closed, None = unknown object)
+    // before any syscall or re-entrant call.
+    let epfd: Option<i32> = EPOLL_TABLES.with(|t| t.borrow().get(&key).copied());
+    let closed_err = || Err(raise("ValueError", "I/O operation on closed epoll object"));
+    let live_fd = match epfd {
+        Some(f) if f >= 0 => Some(f),
+        _ => None,
+    };
+    match m {
+        "register" | "modify" => {
+            let epfd = match live_fd {
+                Some(f) => f,
+                None => return Some(closed_err()),
+            };
+            let fd = match args.get(1) {
+                Some(v) => match epoll_fd_arg(v) {
+                    Ok(f) => f,
+                    Err(fl) => return Some(Err(fl)),
+                },
+                None => {
+                    return Some(Err(raise(
+                        "TypeError",
+                        format!("{m}() takes at least 1 argument (0 given)"),
+                    )))
+                }
+            };
+            let op = if m == "register" {
+                libc::EPOLL_CTL_ADD
+            } else {
+                libc::EPOLL_CTL_MOD
+            };
+            let events = match args.get(2) {
+                Some(v) => match epoll_events_arg(v) {
+                    Ok(e) => e,
+                    Err(fl) => return Some(Err(fl)),
+                },
+                None => {
+                    if m == "modify" {
+                        return Some(Err(raise(
+                            "TypeError",
+                            "modify() missing required argument",
+                        )));
+                    }
+                    // CPython register default: EPOLLIN|EPOLLPRI|EPOLLOUT.
+                    7u32
+                }
+            };
+            // CPython sets ev.data.fd = fd (packed little-endian u32 in
+            // the u64 on x86_64).
+            let mut ev = libc::epoll_event {
+                events,
+                u64: (fd as u32) as u64,
+            };
+            let rc = unsafe { libc::epoll_ctl(epfd, op, fd, &mut ev) };
+            if rc < 0 {
+                return Some(Err(io_flow(std::io::Error::last_os_error())));
+            }
+            Some(Ok(Value::None))
+        }
+        "unregister" => {
+            let epfd = match live_fd {
+                Some(f) => f,
+                None => return Some(closed_err()),
+            };
+            let fd = match args.get(1) {
+                Some(v) => match epoll_fd_arg(v) {
+                    Ok(f) => f,
+                    Err(fl) => return Some(Err(fl)),
+                },
+                None => {
+                    return Some(Err(raise(
+                        "TypeError",
+                        "unregister() takes exactly one argument (0 given)",
+                    )))
+                }
+            };
+            // Pre-2.6.9 kernels want a non-NULL event ptr for DEL; CPython
+            // passes one (stack garbage harmless). Zero it deterministically.
+            let mut ev = libc::epoll_event { events: 0u32, u64: 0u64 };
+            let rc = unsafe { libc::epoll_ctl(epfd, libc::EPOLL_CTL_DEL, fd, &mut ev) };
+            if rc < 0 {
+                return Some(Err(io_flow(std::io::Error::last_os_error())));
+            }
+            Some(Ok(Value::None))
+        }
+        "poll" => {
+            let epfd = match live_fd {
+                Some(f) => f,
+                None => return Some(closed_err()),
+            };
+            // timeout: SECONDS (float ok), None/-1 blocks forever. CPython
+            // rounds toward +inf into ms (_PyTime_AsMilliseconds
+            // ROUND_CEILING after FromSecondsObject).
+            let tval = match kwargs.iter().find(|(k, _)| k == "timeout") {
+                Some((_, v)) => Some(v.clone()),
+                None => args.get(1).cloned().filter(|v| !matches!(v, Value::None)),
+            };
+            let ms: i32 = match &tval {
+                Some(v) => {
+                    let t = match as_f64(v) {
+                        Ok(x) => x,
+                        Err(_) => {
+                            return Some(Err(raise(
+                                "TypeError",
+                                "timeout must be an integer or None",
+                            )))
+                        }
+                    };
+                    if t < 0.0 {
+                        -1
+                    } else {
+                        // CPython: seconds -> ns (round to nearest), then
+                        // ms toward +inf (ROUND_CEILING). 0.1s must give
+                        // 100ms, not 101 (float noise).
+                        let ns = (t * 1_000_000_000.0).round() as i64;
+                        let ms = (ns + 999_999) / 1_000_000;
+                        if ms > i32::MAX as i64 {
+                            return Some(Err(raise("OverflowError", "timeout is too large")));
+                        }
+                        ms as i32
+                    }
+                }
+                None => -1,
+            };
+            // maxevents: positional 2nd or keyword; -1 -> FD_SETSIZE-1.
+            let mval = match kwargs.iter().find(|(k, _)| k == "maxevents") {
+                Some((_, v)) => Some(v.clone()),
+                None => args.get(2).cloned(),
+            };
+            let maxevents: i32 = match &mval {
+                Some(v) => match as_int_i64(v) {
+                    Ok(n) => {
+                        if n == -1 {
+                            1023
+                        } else if n < 1 {
+                            return Some(Err(raise(
+                                "ValueError",
+                                format!("maxevents must be greater than 0, got {n}"),
+                            )));
+                        } else {
+                            n.min(i32::MAX as i64) as i32
+                        }
+                    }
+                    Err(f) => return Some(Err(f)),
+                },
+                None => 1023,
+            };
+            let mut evs: Vec<libc::epoll_event> =
+                vec![unsafe { std::mem::zeroed() }; maxevents as usize];
+            let nfds = loop {
+                let rc = unsafe { libc::epoll_wait(epfd, evs.as_mut_ptr(), maxevents, ms) };
+                if rc >= 0 {
+                    break rc;
+                }
+                let e = std::io::Error::last_os_error();
+                if e.raw_os_error() == Some(4) {
+                    // EINTR: CPython retries (no pending-signal machinery
+                    // to run here; the deadline recompute is a no-op for
+                    // the block-forever/no-timeout cases we exercise).
+                    continue;
+                }
+                return Some(Err(io_flow(e)));
+            };
+            let out: Vec<Value> = evs
+                .iter()
+                .take(nfds as usize)
+                .map(|ev| tuple(vec![i(ev.u64 as u32 as i32 as i64), i(ev.events as i64)]))
+                .collect();
+            Some(Ok(list(out)))
+        }
+        "close" => {
+            // Idempotent like CPython: epfd -> -1, close(fd) once.
+            let fd = EPOLL_TABLES.with(|t| {
+                let mut tables = t.borrow_mut();
+                match tables.get_mut(&key) {
+                    Some(slot) if *slot >= 0 => {
+                        let f = *slot;
+                        *slot = -1;
+                        Some(f)
+                    }
+                    _ => None,
+                }
+            });
+            if let Some(fd) = fd {
+                unsafe { libc::close(fd) };
+                let o = match args.first() {
+                    Some(Value::Obj(o)) => o.clone(),
+                    _ => unreachable!(),
+                };
+                let _ = o
+                    .attrs
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .set(s("closed"), Value::Bool(true));
+            }
+            Some(Ok(Value::None))
+        }
+        "fileno" => match live_fd {
+            Some(f) => Some(Ok(i(f as i64))),
+            None => Some(closed_err()),
+        },
+        "__enter__" => {
+            if live_fd.is_none() {
+                return Some(closed_err());
+            }
+            match args.first() {
+                Some(v) => Some(Ok(v.clone())),
+                None => Some(Err(raise("TypeError", "missing self"))),
+            }
+        }
+        "__exit__" => select_epoll_method("close", args, &[]),
+        _ => Some(Err(raise(
+            "SystemError",
+            format!("epoll fn {m} unbound"),
+        ))),
     }
 }
 
@@ -16546,6 +16973,20 @@ fn builtins_modules_stream_bytesio_alias(wrapper: &Value) -> Value {
 
 pub fn native_attr(obj: &Value, name: &str) -> Option<Value> {
     if let Value::Obj(o) = obj {
+        // Issue #16: `with select.epoll() as ep:` — special_call consults
+        // native_attr for Opaque objects before the type-MRO path, so the
+        // context dunders bind as dotted markers here (x86_64-linux-gnu).
+        #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
+        if o.kind == ap_obj::ObjKind::Opaque
+            && o.name == "select.epoll"
+            && matches!(name, "__enter__" | "__exit__")
+        {
+            let mname = format!("select.epoll.{name}");
+            let bm =
+                PyObject::with_self(ap_obj::ObjKind::BoundMethod, mname.clone(), obj.clone());
+            *bm.func.lock().unwrap_or_else(|p| p.into_inner()) = Some(marker(&mname));
+            return Some(Value::Obj(bm));
+        }
         // T2 (pytest collection): os.ScandirIterator / os.DirEntry surface.
         if o.kind == ap_obj::ObjKind::Opaque && o.name == "os.ScandirIterator" {
             match name {
@@ -17733,7 +18174,7 @@ pub fn call_native_marker_impl(
         }
         return Some(Ok(tuple(out)));
     }
-    // A-2 item 6: select.poll method markers ("<select.poll.register>" etc;
+    // A-2 item 6: select.poll method markers ("<select.poll.<method>>" etc;
     // self rides args[0] via the BoundMethod).
     if let Some(rest) = full
         .strip_prefix("<select.poll.")
