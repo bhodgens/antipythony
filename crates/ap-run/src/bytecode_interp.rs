@@ -275,19 +275,41 @@ fn fast_smi_binop(a: &Value, op: ap_ir::BinOp, b: &Value) -> Option<Value> {
 fn fast_bound_mint(obj: &Value, name: &str) -> Option<Value> {
     let family_ok = match obj {
         Value::List(_) => {
-            matches!(name, "append" | "insert" | "sort" | "reverse" | "extend" | "remove")
+            matches!(
+                name,
+                "append" | "insert" | "sort" | "reverse" | "extend" | "remove"
+            )
         }
         Value::Dict(_) => matches!(
             name,
-            "keys" | "values" | "items" | "update" | "setdefault" | "popitem" | "get"
-                | "fromkeys" | "pop"
+            "keys"
+                | "values"
+                | "items"
+                | "update"
+                | "setdefault"
+                | "popitem"
+                | "get"
+                | "fromkeys"
+                | "pop"
         ),
         Value::Set(_) | Value::Frozen(_) => matches!(
             name,
-            "difference" | "difference_update" | "intersection" | "intersection_update"
-                | "union" | "update" | "copy" | "clear" | "discard" | "remove" | "pop"
-                | "issubset" | "issuperset" | "symmetric_difference"
-                | "symmetric_difference_update" | "add"
+            "difference"
+                | "difference_update"
+                | "intersection"
+                | "intersection_update"
+                | "union"
+                | "update"
+                | "copy"
+                | "clear"
+                | "discard"
+                | "remove"
+                | "pop"
+                | "issubset"
+                | "issuperset"
+                | "symmetric_difference"
+                | "symmetric_difference_update"
+                | "add"
         ),
         _ => false,
     };
@@ -729,7 +751,11 @@ fn run_frame(
                 }
                 let args = stack.split_off(stack.len() - argc);
                 let recv = pop!();
-                let name = code.names.get(idx as usize).map(|n| n.as_str()).unwrap_or("<attr>");
+                let name = code
+                    .names
+                    .get(idx as usize)
+                    .map(|n| n.as_str())
+                    .unwrap_or("<attr>");
                 // FAST ARMS — the primitive-receiver method families whose
                 // dispatch is methods::call_method's own match arms (no
                 // dunder walk, no mint).
@@ -786,7 +812,11 @@ fn run_frame(
                     Err(f) => break Err((cur_line, f)),
                 };
                 let v = hop!(crate::interp::call_value_frame_pub(
-                    interp, frame, &callee, &args, &[]
+                    interp,
+                    frame,
+                    &callee,
+                    &args,
+                    &[]
                 ));
                 stack.push(v);
                 pc += 1;
@@ -1005,8 +1035,7 @@ fn run_frame(
                             // Identity by table id: the wrapper PyObject is
                             // minted fresh per GetIter, but its gen_id IS
                             // the unique registry id we cached against.
-                            *o.gen_id.lock().unwrap_or_else(|p| p.into_inner())
-                                == it.table_id.get()
+                            *o.gen_id.lock().unwrap_or_else(|p| p.into_inner()) == it.table_id.get()
                                 && it.table_id.get().is_some()
                         }
                         _ => false,
@@ -1123,9 +1152,9 @@ fn run_frame(
                     }
                     None => {
                         stack.pop(); // the exhausted iterator handle
-                        // Exhaustion prune (pull_iter's 02.04 discipline —
-                        // the fast path bypasses pull_iter, so it prunes
-                        // here): drop the finished iterator's table entry.
+                                     // Exhaustion prune (pull_iter's 02.04 discipline —
+                                     // the fast path bypasses pull_iter, so it prunes
+                                     // here): drop the finished iterator's table entry.
                         if id % 2 == 0 {
                             interp
                                 .iterators
