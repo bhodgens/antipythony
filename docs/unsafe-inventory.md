@@ -228,3 +228,95 @@ a8a3360 (comment rewording for baseline parity). No forbid attributes added
 beyond what main already carries; no transmute/get_unchecked eliminations
 (explicitly out of scope per the work order). The geiger CI step remains
 orchestrator-owned (CI-matrix decision), untouched.
+
+## Wave 3 — forbid rollout completion + clippy ratchet (issue #18, branch tier1-ugw20)
+
+Re-measured 2026-11-26 on `tier1-ugw20` (base main @ 74febf1, which already
+carries 6880199 + the merged wave-2 lineage). The issue body's "13 warnings"
+was stale twice over (pre-6880199 it was blind to ap-ce; wave 2 burned 115):
+
+undocumented_unsafe_blocks per crate (`cargo clippy -p <crate> --no-deps`,
+counting "unsafe block without a safety comment"):
+
+| crate | undocumented blocks |
+|---|---|
+| ap-cli | 0 |
+| xtask | 0 |
+| ap-ir | 0 |
+| ap-run | 0 |
+| ap-gc | 0 |
+| ap-obj | 0 |
+| ap-parse | 0 |
+| ap-ce | 0 |
+| ap-codegen-native | 0 |
+| ap-codegen-wasm | 0 |
+| (all others) | 0 |
+| **total** | **0** |
+
+Note: `cargo clippy -p ap-ce` still exits nonzero on 9 PRE-EXISTING
+`not_unsafe_ptr_arg_deref` deny-by-default errors (pub fns deref-ing raw
+handles without `unsafe` signatures) — documented in wave 2's "Sites needing
+human review"; out of scope here and NOT a ratchet-lint count.
+
+baseline: 0
+
+### Forbid rollout (this wave)
+
+6880199 pinned ap-cli's **bin** entry (`src/main.rs`) but missed ap-cli's
+library target and its 4 eval microbench bins. This wave completes the pin —
+each target verified zero-unsafe (`grep -c unsafe` = 0 outside the attribute;
+clippy + unsafe_report.sh 0/0/0/0) before pinning:
+
+| file | forbid added | verified zero-unsafe |
+|---|---|---|
+| crates/ap-cli/src/lib.rs | yes (this wave) | 0 blocks / 0 fns / 0 transmutes / 0 static mut |
+| crates/ap-cli/src/bin/ap_gc_eval.rs | yes (this wave) | same |
+| crates/ap-cli/src/bin/ap_mint_eval.rs | yes (this wave) | same |
+| crates/ap-cli/src/bin/ap_obj_eval.rs | yes (this wave) | same |
+| crates/ap-cli/src/bin/ap_run_eval.rs | yes (this wave) | same |
+| crates/ap-cli/src/main.rs | already (6880199) | n/a |
+| crates/xtask/src/main.rs | already (6880199) | n/a |
+| crates/ap-ir/src/lib.rs | already (6880199) | n/a |
+| crates/ap-ce | **excluded** | sibling lane owns the 109-warning fix wave; forbid deferred |
+
+Holdout: none among ap-cli/xtask/ap-ir targets — all pinned. ap-ce is the
+only remaining non-forbidden workspace crate with unsafe, by design (it IS
+the C-API layer; floor documented in "Verdict: the realistic floor").
+
+### Clippy-count ratchet (`--clippy` mode)
+
+`scripts/unsafe_report.sh --clippy` (new): runs
+`cargo clippy -p <workspace crates> --no-deps`, counts
+"unsafe block without a safety comment" warnings, and exits 1 if the count
+exceeds the `baseline: N` marker recorded above (or
+`BASELINE_CLIPPY_UNDOCUMENTED` env override). Non-ratchet clippy errors
+(e.g. the ap-ce deny lints) are noted but don't affect the count gate.
+`CLIPPY_PACKAGES` overrides the default crate list.
+
+CI (`.github/workflows/ci.yml` fast-lints job): new step
+"unsafe-ratchet clippy gate — undocumented_unsafe_blocks drift (issue #18
+wave 3)" invokes it with `continue-on-error: true` (informational first run
+— flips to blocking once the ap-ce deny-lint cleanup lands) and prints a
+visible `::warning` annotation on drift.
+
+### Baseline regeneration
+
+`docs/unsafe-baseline.txt` regenerated at wave-3 HEAD. Drift vs the wave-2
+file is NOT from this branch: ap-codegen-native fns+externC 51 -> 54 and
+rawptr-casts 45 -> 47 arrived with the merged hot-path-parity trunk
+(clif.rs +1 fn, runtime.rs +2 fns, +2 rawptr casts — JIT lowering seams).
+New totals: **236 / 394 / 22 / 3 / 183** (blocks unchanged).
+
+### What remains
+
+- ap-ce `#![forbid(unsafe_code)]`: impossible by design (C-API layer);
+  the achievable end state remains the wave-2 verdict (zero undocumented,
+  ratcheted, unsafe confined to audited modules).
+- ap-ce `not_unsafe_ptr_arg_deref` (9 errors): blocks a future
+  `-D warnings` clippy run; needs `unsafe fn` signature changes (sibling/
+  follow-up lane).
+- CI clippy step `continue-on-error: true` -> `false` once the above lands.
+- geiger-style per-crate *category* trend reporting stays with the
+  `scripts/unsafe_report.sh` default mode + baseline diff gate (6880199);
+  this wave adds the clippy-count lane beside it.
+
