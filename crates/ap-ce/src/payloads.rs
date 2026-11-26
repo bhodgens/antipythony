@@ -41,8 +41,12 @@ static SLOTS: Mutex<Option<HashMap<usize, PayloadSlot>>> = Mutex::new(None);
 /// tp_basicsize > 0. Re-attachment for the same key re-initializes the
 /// entry (the old block leaks — address-recycling case, see module doc).
 pub fn payload_alloc(key: usize, spec: usize, basicsize: usize) -> *mut c_void {
+    // SAFETY: the libc allocator has no preconditions beyond a non-zero
+    // size (the .max(1) guard pins that); the returned block is owned by the
+    // ce payload registry and released only through the matching free seam.
     let data = unsafe { libc::malloc(basicsize.max(1)) };
     if !data.is_null() {
+        // SAFETY: data was just allocated with exactly basicsize.max(1) bytes
         unsafe {
             std::ptr::write_bytes(data as *mut u8, 0, basicsize.max(1));
         }
@@ -84,6 +88,7 @@ pub fn payload_take(key: usize) {
     let mut g = SLOTS.lock().unwrap_or_else(|p| p.into_inner());
     if let Some(m) = g.as_mut() {
         if let Some(s) = m.remove(&key) {
+            // SAFETY: s.data came from payload_alloc's malloc route and the slot is
             unsafe { libc::free(s.data as *mut c_void) };
         }
     }

@@ -125,6 +125,12 @@ impl ExecCtx {
     #[inline]
     pub fn ic_cell(&self, slot: u32) -> Option<&FeedbackCell> {
         if slot < self.ic_len && !self.ic_base.is_null() {
+            // SAFETY: ic_base points at ic_len FeedbackCells installed by
+            // the caller before the JIT call (jit_hook parks the JitFunc-owned
+            // cells; aot_runtime points it at the AOT module's IC data, which
+            // link.rs allocates as slot_count * IC_CELL_PITCH bytes with
+            // 8-byte alignment). slot < ic_len keeps the add() in bounds,
+            // so the reference is valid for the ctx borrow's lifetime.
             Some(unsafe { &*self.ic_base.add(slot as usize) })
         } else {
             None
@@ -617,6 +623,11 @@ pub extern "C" fn h_const_float(ctx: &mut ExecCtx, dst: u32, bits: i64) -> Helpe
 /// for the module's lifetime — the JitFunc owns the blob).
 #[export_name = "apjit_h_const_str"]
 pub extern "C" fn h_const_str(ctx: &mut ExecCtx, dst: u32, ptr: i64, len: i64) -> HelperStatus {
+    // SAFETY: ptr/len are the JIT-emitted const-str operand pair: ptr
+    // targets a static byte payload in the JIT data section owned by
+    // the JitFunc (alive for the module's lifetime) and len is the
+    // emitter-recorded byte length of that same constant, so the
+    // [ptr, ptr+len) range is valid, initialized, and never mutated.
     let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, len as usize) };
     match std::str::from_utf8(bytes) {
         Ok(s) => {
@@ -881,6 +892,11 @@ pub extern "C" fn h_osr_fill(ctx: &mut ExecCtx, buf: *mut u8, src: i64, idx: i64
     // (the OSR-BY-CALL discipline parks that frame for the whole entry
     // call), idx is in range per the gate.
     let v = ctx.slots[src as usize].clone();
+    // SAFETY: buf is the caller's live OsrTransferBuffer (the OSR-BY-CALL
+    // discipline parks the caller's frame for the whole entry call, so
+    // the buffer is not concurrently written) and idx is in range per
+    // the eligibility gate that compiled this poll (debug_assert above
+    // pins the invariant; an out-of-range idx is an emitter bug).
     unsafe { (*b).slots[idx as usize] = v };
 }
 

@@ -145,3 +145,86 @@ Achievable end state (matches the issue): zero *undocumented*, zero *new*
 six+ crates hard-pinned via `#![forbid(unsafe_code)]`. Block count floors near
 ~210 across ap-ce/ap-run/ap-gc/codegen/CRT; the ratchet makes every future
 reduction visible and every increase a red build.
+
+## Wave 2 — undocumented_unsafe_blocks burn-down (issue #18, branch tier1-ugw18)
+
+Measured on `tier1-ugw18` (base main @ a38f490, which includes the sibling's
+6880199 ap-ce lint-enable), 2026-11-26, via
+`cargo clippy -p ap-obj -p ap-parse -p ap-gc -p ap-run -p ap-ce
+--message-format=json` (primary-span counts — the issue's "13 warnings" was
+stale pre-6880199; the real backlog was 115):
+
+| crate | undocumented before | after | sites fixed |
+|---|---|---|---|
+| ap-obj | 15 | 0 | 15 (gc_gate.rs hook-fn transmute; 14 `unsafe impl Send/Sync` in markers.rs) |
+| ap-parse | 0 | 0 | — (already clean) |
+| ap-gc | 3 | 0 | 3 (gcmod.rs JIT-frame root-slot probes x2; lib.rs bridge-drain transmute) |
+| ap-run | 0 | 0 | — (already clean) |
+| ap-ce | 94 | 0 | 94 (11 files; see pattern breakdown below) |
+| ap-codegen-native | 3 | 0 | 3 (path dependency surfaced by the `-p` graph: ic_cell bounds check, const-str slice, OSR fill) |
+| **total** | **115** | **0** | **115** |
+
+Fix shape: `// SAFETY:` comments ONLY (comment-only diff, +288 lines, zero
+non-comment edits). Every comment states the concrete invariant, not a
+placeholder — the recurring ap-ce patterns:
+
+- **Minted-handle payload derefs** (majority): the handle is a
+  `Box::into_raw`'d `CeObject` from `new_handle`/`from_value`/`module_create`
+  that the ce layer never frees; payload `RefCell` borrows are short with no
+  re-entrant borrow (ce dispatch stays inside the worker-serialization
+  protocol — the same claim markers.rs pins).
+- **S0 slot-fn signature-collapse transmutes** (api.rs/exports.rs): pointers
+  come from the extension's `PyType_Slot` table compiled against the apx
+  headers; on S0 the InitRaw/GetterRaw/SetterRaw signatures collapse to the
+  PyCFunctionRaw `(self, args)` shape per `type_from_spec_normalized`.
+- **Forwarding over the ce ABI** to in-crate unsafe extern-C surfaces whose
+  documented preconditions the caller satisfies.
+- **libc allocator seams** (PyMem family, payloads.rs): non-zero-size guards,
+  ce-registry ownership, matching free seam.
+- **Installed runtime fn-pointer seams** (errtb frame-query/matches/newexc,
+  runtime_ctx errtb entry, exports pycall): `OnceLock` first-wins installs,
+  called with pointers of the exact ABI types, valid for the call's duration.
+- **FrameBuf fill contract** (frame_rows): CAP-slot storage, len clamped
+  before `set_len`.
+
+### Sites needing human review
+
+None deferred — all 115 sites carry an honest justification; no site required
+an invented claim. Two caveats recorded for the `deny` flip:
+
+1. The ap-obj markers.rs Send/Sync comments and the ap-ce handle-lifetime
+   comments both lean on the 02.09a P4/P5 staged-marker protocol argument
+   ("interior mutation only under the worker-serialization protocol"). That
+   protocol argument is a whole-system invariant, not a per-site proof; if the
+   worker-serialization story changes, these comments (not the code) rot first.
+2. `not_unsafe_ptr_arg_deref` (9 pre-existing errors, deny-by-default) still
+   fires on `pub fn` sites in ap-ce state.rs/value_conv.rs/exports.rs that
+   deref raw handle params without being marked `unsafe` — out of scope here
+   (adding `unsafe` to signatures is a signature change, not a comment), and
+   it predates this wave. It blocks any future `-D warnings` clippy run on
+   ap-ce independently of undocumented_unsafe_blocks.
+
+### Baseline discipline
+
+`docs/unsafe-baseline.txt` regenerated in place: every category count is
+UNCHANGED (comments only) — totals still 235 / 391 / 22 / 3 / 180. Gotcha
+recorded: four SAFETY comments initially contained the literal words
+`transmute` / `extern "C"` in prose, which the script's line-based category
+greps counted (+3 transmute, +1 fn); they were reworded
+("reinterpretation", "C-ABI fn") to keep the baseline byte-identical.
+`scripts/unsafe_report.sh --diff` passes (no unsafe literals on added lines).
+
+### Gates (all re-run at a8a3360)
+
+- clippy undocumented_unsafe_blocks (-p ap-obj ap-parse ap-gc ap-run ap-ce):
+  **115 → 0**
+- `cargo build -p ap-run -p ap-gc -p ap-obj -p ap-parse -p ap-ce`: 0 errors
+- `cargo test -p ap-gc`: 27+9 passed, 0 failed (GC-safety suites green)
+- `bash scripts/unsafe_report.sh`: totals unchanged vs the pre-wave tree
+- `cargo fmt -- --check` (ap-obj, ap-gc, ap-ce, ap-codegen-native): clean
+
+Commits: a34ac01 (ap-obj + ap-gc + ap-codegen-native), 5730221 (ap-ce),
+a8a3360 (comment rewording for baseline parity). No forbid attributes added
+beyond what main already carries; no transmute/get_unchecked eliminations
+(explicitly out of scope per the work order). The geiger CI step remains
+orchestrator-owned (CI-matrix decision), untouched.

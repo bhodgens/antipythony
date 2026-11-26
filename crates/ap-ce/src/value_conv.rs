@@ -15,6 +15,11 @@ pub fn to_value(h: crate::state::CeHandle) -> Option<Value> {
     if h.is_null() {
         return None;
     }
+    // SAFETY: h is non-null (checked above) and is a live minted ce handle
+    // (Box::into_raw'd CeObject; the ce layer never frees handles), so the
+    // deref is valid; the payload RefCell borrow is short with no re-entrant
+    // borrow on this path (ce dispatch stays inside the worker-serialization
+    // protocol, the same claim the markers.rs Send/Sync comments pin).
     unsafe {
         let o = &*h;
         let p = o.payload.borrow();
@@ -90,6 +95,10 @@ pub fn to_value(h: crate::state::CeHandle) -> Option<Value> {
 /// The instance dict of a CeHandle::Instance (bridges setattr from the
 /// runtime side into C-visible state when needed later).
 pub fn instance_state(h: crate::state::CeHandle) -> Option<Gc<PyDict>> {
+    // SAFETY: caller precondition — h is a live minted ce handle (the C
+    // caller null-checks per the apx header contract); handles are
+    // Box::into_raw'd and never freed by the ce layer, so the deref is valid;
+    // the payload borrow is short with no re-entrant borrow on this path.
     unsafe {
         let o = &*h;
         match o.payload.borrow().as_ref()? {
@@ -101,6 +110,10 @@ pub fn instance_state(h: crate::state::CeHandle) -> Option<Gc<PyDict>> {
 
 /// int payload read (PyLong_AsSsize_t route in the dispatcher).
 pub fn as_i64(h: crate::state::CeHandle) -> Option<i64> {
+    // SAFETY: caller precondition — h is a live minted ce handle (the C
+    // caller null-checks per the apx header contract); handles are
+    // Box::into_raw'd and never freed by the ce layer, so the deref is valid;
+    // the payload borrow is short with no re-entrant borrow on this path.
     unsafe {
         let o = &*h;
         match o.payload.borrow().as_ref()? {

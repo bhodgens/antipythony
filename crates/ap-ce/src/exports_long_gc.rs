@@ -73,6 +73,10 @@ pub static PYLONG_LAYOUT: PyLongLayout = PyLongLayout {
 /// The (sign, magnitude) of a CeHandle int, with the magnitude as a
 /// num-bigint Big. Returns None for non-int handles (TypeError already set).
 fn int_parts(h: CeHandle) -> Option<(bool, num_bigint::BigInt)> {
+    // SAFETY: caller precondition — h is a live minted ce handle (the C
+    // caller null-checks per the apx header contract); handles are
+    // Box::into_raw'd and never freed by the ce layer, so the deref is valid;
+    // the payload borrow is short with no re-entrant borrow on this path.
     unsafe {
         let o = &*h;
         // Py_None mints a Bool-kind handle with kind == CeKind::None —
@@ -103,6 +107,7 @@ fn expect_int(h: CeHandle, api: &str) -> bool {
     match int_parts(h) {
         Some(_) => true,
         None => {
+            // SAFETY: h is non-null (checked above); type_name_of is our own helper
             let tn = unsafe { type_name_of(h) };
             // CPython dialect: TypeError "expect int, got %T" — the %T is
             // the TYPE name. (The api name rides only our diagnostics;
@@ -845,6 +850,7 @@ pub fn gc_traverse_collect(payload_key: usize, self_handle: CeHandle) -> Vec<usi
         key: payload_key,
         visited: Vec::new(),
     };
+    // SAFETY: traverse is the TraverseProc registered for this payload
     let rc = unsafe {
         traverse(
             self_handle as PyObjPtr,

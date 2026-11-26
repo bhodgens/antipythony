@@ -33,6 +33,11 @@ pub fn set_bridge_drain(f: fn() -> usize) {
 fn gc_bridge_drain() -> usize {
     let f = BRIDGE_DRAIN.load(std::sync::atomic::Ordering::Acquire);
     if f != 0 {
+        // SAFETY: BRIDGE_DRAIN stores a fn() -> usize pointer written once by
+        // set_bridge_drain (ap-run::gcsupport at run entry); transmuting the
+        // usize back to that exact fn type is lossless, and the Acquire load
+        // pairs with the install-time Release store, so a non-zero read is the
+        // live drain fn.
         let f: fn() -> usize = unsafe { std::mem::transmute(f) };
         return f();
     }

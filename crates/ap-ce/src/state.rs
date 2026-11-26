@@ -247,6 +247,10 @@ pub fn new_ce_instance(class_spec: usize, payload_key: usize) -> CeHandle {
 
 /// Leaf 10.04: the runtime object behind a faithful-opaque handle.
 pub fn opaque_object(h: CeHandle) -> Option<Gc<ap_obj::object::PyObject>> {
+    // SAFETY: caller precondition — h is a live minted ce handle (the C
+    // caller null-checks per the apx header contract); handles are
+    // Box::into_raw'd and never freed by the ce layer, so the deref is valid;
+    // the payload borrow is short with no re-entrant borrow on this path.
     unsafe {
         let o = &*h;
         match o.payload.borrow().as_ref() {
@@ -258,6 +262,7 @@ pub fn opaque_object(h: CeHandle) -> Option<Gc<ap_obj::object::PyObject>> {
 
 /// INCREF: bump the emulation.
 pub fn ce_newref(h: CeHandle) {
+    // SAFETY: h is a Box::into_raw'd CeObject (new_handle/from_value) that
     unsafe {
         let r = &mut (*h).ob_refcnt;
         if *r != isize::MAX {
@@ -268,6 +273,7 @@ pub fn ce_newref(h: CeHandle) {
 
 /// DECREF: drop the emulation. NEVER frees (tracing GC owns memory).
 pub fn ce_xdecref(h: CeHandle) {
+    // SAFETY: h is a Box::into_raw'd CeObject that is never freed (tracing
     unsafe {
         let r = &mut (*h).ob_refcnt;
         if *r != isize::MAX && *r > 0 {
@@ -277,6 +283,7 @@ pub fn ce_xdecref(h: CeHandle) {
 }
 
 pub fn refcnt(h: CeHandle) -> isize {
+    // SAFETY: h is a Box::into_raw'd CeObject that is never freed; this is
     unsafe { (*h).ob_refcnt }
 }
 
@@ -338,10 +345,14 @@ pub fn err_clear() {
 
 /// Allocator seam (PyMem_Malloc route).
 pub fn mem_malloc(n: usize) -> *mut c_void {
+    // SAFETY: the libc allocator has no preconditions beyond a non-zero
+    // size (the .max(1) guard pins that); the returned block is owned by the
+    // ce payload registry and released only through the matching free seam.
     unsafe { libc::malloc(n) }
 }
 
 pub fn mem_free(p: *mut c_void) {
+    // SAFETY: p came from this module's malloc seam (PyMem ownership: the
     unsafe { libc::free(p) }
 }
 

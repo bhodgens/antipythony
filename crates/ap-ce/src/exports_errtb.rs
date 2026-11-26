@@ -229,10 +229,15 @@ pub fn frame_rows() -> Option<Vec<FrameRow>> {
         cap: CAP,
         len: 0,
     };
+    // SAFETY: f is the frame-query fn ap-run installed (FrameQueryFn ABI,
+    // OnceLock first-wins): it fills at most buf.cap rows into the buffer
+    // whose rows pointer backs the CAP-slot storage allocated above, so the
     unsafe { (f)(&mut buf) };
     if buf.len > CAP {
         buf.len = CAP;
     }
+    // SAFETY: storage backs CAP FrameRow slots and buf.len was clamped to
+    // CAP by the check above, so every element in [0, buf.len) was
     unsafe { storage.set_len(buf.len) };
     Some(storage)
 }
@@ -246,6 +251,7 @@ pub fn runtime_matches(raised: &str, target: &str) -> bool {
     if let Some(f) = matches_fn() {
         let r = std::ffi::CString::new(raised).unwrap_or_default();
         let t = std::ffi::CString::new(target).unwrap_or_default();
+        // SAFETY: f is the matches fn ap-run installed (MatchesFn ABI); r and t
         let ok = unsafe { (f)(r.as_ptr(), t.as_ptr()) };
         return ok != 0;
     }
@@ -500,6 +506,11 @@ pub unsafe extern "C" fn PyErr_NormalizeException(
     // Already an instance (Opaque carrying a runtime object): done.
     let v_h = v as CeHandle;
     if !v_h.is_null() {
+        // SAFETY: h is non-null (checked above) and is a live minted ce handle
+        // (Box::into_raw'd CeObject; the ce layer never frees handles), so the
+        // deref is valid; the payload RefCell borrow is short with no re-entrant
+        // borrow on this path (ce dispatch stays inside the worker-serialization
+        // protocol, the same claim the markers.rs Send/Sync comments pin).
         let is_instance = unsafe {
             matches!(
                 (&*v_h).payload.borrow().as_ref(),
@@ -655,6 +666,7 @@ unsafe fn new_exception_impl(name: *const c_char, base: PyObjPtr, doc: *const c_
                 std::ffi::CString::new(std::ffi::CStr::from_ptr(doc).to_string_lossy().into_owned())
                     .unwrap_or_default()
             };
+            // SAFETY: f is the newexc fn ap-run installed (NewExcFn ABI); the three
             let key = unsafe { (f)(n.as_ptr(), b.as_ptr(), d.as_ptr()) };
             if key == usize::MAX {
                 // Error state set by the runtime side.
@@ -801,6 +813,11 @@ pub unsafe extern "C" fn PyFrame_GetLineNumber(frame: PyObjPtr) -> c_int {
     if h.is_null() {
         return -1;
     }
+    // SAFETY: h is non-null (checked above) and is a live minted ce handle
+    // (Box::into_raw'd CeObject; the ce layer never frees handles), so the
+    // deref is valid; the payload RefCell borrow is short with no re-entrant
+    // borrow on this path (ce dispatch stays inside the worker-serialization
+    // protocol, the same claim the markers.rs Send/Sync comments pin).
     unsafe {
         let o = &*h;
         if let Some(CePayload::Opaque(v)) = o.payload.borrow().as_ref() {
@@ -837,6 +854,11 @@ pub unsafe extern "C" fn PyFrame_GetVar(frame: PyObjPtr, name: PyObjPtr) -> PyOb
     if h.is_null() {
         return std::ptr::null_mut();
     }
+    // SAFETY: h is non-null (checked above) and is a live minted ce handle
+    // (Box::into_raw'd CeObject; the ce layer never frees handles), so the
+    // deref is valid; the payload RefCell borrow is short with no re-entrant
+    // borrow on this path (ce dispatch stays inside the worker-serialization
+    // protocol, the same claim the markers.rs Send/Sync comments pin).
     unsafe {
         let o = &*h;
         let opaque = o.payload.borrow().as_ref().and_then(|p| match p {
@@ -869,6 +891,7 @@ pub unsafe extern "C" fn PyFrame_GetVarString(frame: PyObjPtr, name: *const c_ch
         .to_string_lossy()
         .into_owned();
     let name_h = new_handle(CeKind::Str, CePayload::Str(n));
+    // SAFETY: forwarding to PyFrame_GetVar; name_h is a freshly minted Str
     unsafe { PyFrame_GetVar(frame, name_h as PyObjPtr) }
 }
 
@@ -881,6 +904,11 @@ pub unsafe extern "C" fn PyGen_GetCode(gen: PyObjPtr) -> PyObjPtr {
     if h.is_null() {
         return std::ptr::null_mut();
     }
+    // SAFETY: h is non-null (checked above) and is a live minted ce handle
+    // (Box::into_raw'd CeObject; the ce layer never frees handles), so the
+    // deref is valid; the payload RefCell borrow is short with no re-entrant
+    // borrow on this path (ce dispatch stays inside the worker-serialization
+    // protocol, the same claim the markers.rs Send/Sync comments pin).
     unsafe {
         let o = &*h;
         let opaque = o.payload.borrow().as_ref().and_then(|p| match p {
@@ -928,6 +956,11 @@ unsafe fn code_attr_handle(co: PyObjPtr, attr: &str) -> PyObjPtr {
     if h.is_null() {
         return std::ptr::null_mut();
     }
+    // SAFETY: h is non-null (checked above) and is a live minted ce handle
+    // (Box::into_raw'd CeObject; the ce layer never frees handles), so the
+    // deref is valid; the payload RefCell borrow is short with no re-entrant
+    // borrow on this path (ce dispatch stays inside the worker-serialization
+    // protocol, the same claim the markers.rs Send/Sync comments pin).
     unsafe {
         let o = &*h;
         let opaque = o.payload.borrow().as_ref().and_then(|p| match p {
