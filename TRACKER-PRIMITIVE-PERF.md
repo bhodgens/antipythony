@@ -146,7 +146,16 @@ fp-frame MERGED (41bf0e0 — BytecodeInterp 927-line dispatch loop,
 thread-local line bookkeeping, --tier bytecode toggle, fix_bytecode
 three-way gate 8/8, both conform slices green both toggles, 242 cargo
 tests green). Gate caught 2 bugs: unbound-vs-None locals sentinel,
-StoreSubscript operand scramble. Next: 01-core control-flow IN FLIGHT (deleg: While/For lowering +
-Jump/ForNext/BoolOp execution + gate loop coverage; targets: 1M loop
-build >=5x vs tree-walk, while-counter within 3x of CPython).
+StoreSubscript operand scramble. 01-core control-flow MERGED (80b221c): While/For lowering + ForNext
++ fused LoadAttrCall + smi dispatch + gate loop coverage. Numbers:
+1M loop build 4.4x vs tree-walk (target 5x missed — LCG bigint ops,
+ap-obj bigint fast path filed), dispatch-only 19.7x, while-counter
+3.04x. GATE FINDING (orchestrator-verified, kept open): multiline-
+binop traceback lines attribute to the statement line in bytecode
+mode (bc=54 vs py/tw=55 on the gate probe; repro /tmp/pp_s_paren.py).
+Values identical everywhere — attribution only. OWNED by 01-core/03
+exceptions (traceback line attribution is its spec). fix_bytecode
+also gained a staleness guard on default_binary (72eac3e — stale
+trunk binary was silently failing the exercise probe).
+Next: fp-calls-and-attrs, then fp-exceptions (owns the tb-line fix).
 Tree-walker default unchanged until parity proven.
