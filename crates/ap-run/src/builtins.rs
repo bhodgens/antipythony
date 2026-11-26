@@ -3026,21 +3026,31 @@ pub fn builtin_sorted(interp: &Interpreter, args: &[Value], kwargs: &[(String, V
             items = decorated.into_iter().map(|(_, v)| v).collect();
         }
     } else {
-        // s013: no-key path — same user-__lt__-first discipline.
-        // ppfix-sort: reverse=True via decorate-reverse-sort-reverse
-        // (ties keep input order); Err propagates (see above).
+        // pp2-sort (audit Fix B): no-key path through the hoisted
+        // comparator (crate::sortcmp). One O(n) classification per
+        // sort call routes all-int/all-str/all-float/numeric-mix
+        // lists to the RAW comparator arms (the methods.rs v0
+        // homogeneous strategy — measured 5.2x CPython on that path;
+        // sorted() previously paid py_lt per compare: 4x MRO
+        // special_lookup). User-instance lists resolve __lt__ ONCE
+        // per sort when single-class + reflected-free; everything
+        // else keeps the exact per-compare dispatch.
+        // ppfix-sort discipline unchanged: reverse=True via
+        // decorate-reverse-sort-reverse (ties keep input order); the
+        // comparator's Err parks in cmp_err and re-raises after
+        // sort_by returns (sort_by cannot short-circuit).
         if reverse {
             items.reverse();
         }
+        let cmp = crate::sortcmp::sort_cmp_of(&items);
         let mut cmp_err: Option<Flow> = None;
         items.sort_by(|a, b| {
             if cmp_err.is_some() {
                 return std::cmp::Ordering::Equal;
             }
-            match crate::builtins_modules::py_lt_public(a, b) {
-                Ok(true) => std::cmp::Ordering::Less,
-                Ok(false) => std::cmp::Ordering::Greater,
-                Err(f) => {
+            match cmp.cmp(a, b) {
+                crate::sortcmp::CmpOutcome::Ord(ord) => ord,
+                crate::sortcmp::CmpOutcome::Err(f) => {
                     cmp_err = Some(f);
                     std::cmp::Ordering::Equal
                 }

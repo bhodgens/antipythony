@@ -3163,6 +3163,17 @@ pub fn special_lookup(
     }
 }
 
+/// Look a special method up directly on a TYPE handle (MRO scan) — the
+/// no-value-dispatch variant of [`special_lookup`] for sites that
+/// already hold the `Arc<TypeRef>` (sortcmp's hoisted user-comparator
+/// resolution: one lookup per SORT, not per compare).
+pub fn special_lookup_typed(
+    t: &std::sync::Arc<ap_obj::classes::TypeRef>,
+    name: &str,
+) -> Option<(Value, Arc<ap_obj::classes::TypeRef>)> {
+    t.lookup_with_owner(name)
+}
+
 /// `obj.name` full protocol. Returns Err(Flow) only for real errors;
 /// misses raise AttributeError with the pinned text (caller distinguishes
 /// via the `quiet` form below when it needs Option semantics).
