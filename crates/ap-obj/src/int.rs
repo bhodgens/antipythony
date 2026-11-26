@@ -737,6 +737,9 @@ impl Int {
         // 71 bits -> 3 limbs = 12 bytes but length may be 9).
         let n = limb_bytes.min(length);
         if cfg!(target_endian = "little") {
+            // SAFETY: `limbs` is a valid u32 slice (in-bounds via len()*4);
+            // reinterpreted as u8 bytes, the first `n` (<= limb_bytes, proven
+            // above) are read and copied — alignment holds for u8.
             let src = unsafe { std::slice::from_raw_parts(limbs.as_ptr() as *const u8, n) };
             out[..n].copy_from_slice(src);
         } else {

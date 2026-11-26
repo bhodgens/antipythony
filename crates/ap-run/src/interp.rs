@@ -7973,6 +7973,10 @@ fn call_value_inner_impl(
                             // T1-d (twisted _deprecateAttribute):
                             // object.__getattribute__(obj, name) — real
                             // protocol read on the parked receiver.
+                            // fix_bytes: ALSO reachable via the
+                            // instance-read arm (native-type receivers
+                            // mint their own __getattribute__ marker via
+                            // attr_get's fix_bytes arm).
                             "getattribute" => {
                                 let parked = o
                                     .slice_parts

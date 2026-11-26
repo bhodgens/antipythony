@@ -183,7 +183,9 @@ pub enum SortCmp {
     /// FIRST (user_compare's a_slot-first, no-reflected shape) and
     /// only falls back to `py_lt` on that slot's error — the MRO walk
     /// happens once per sort, not 4x per compare.
-    Generic { hoisted_lt: Option<Value> },
+    Generic {
+        hoisted_lt: Option<Value>,
+    },
 }
 
 /// One comparison outcome. Errors ride out for the parked-cell
@@ -304,18 +306,10 @@ pub fn sort_cmp_of(items: &[Value]) -> SortCmp {
                             // on the class (a __gt__/__le__/__ge__
                             // anywhere changes user_compare's
                             // resolution order per pair).
-                            let no_reflected = crate::classes::special_lookup_typed(
-                                &fc, "__gt__",
-                            )
-                            .is_none()
-                                && crate::classes::special_lookup_typed(
-                                    &fc, "__le__",
-                                )
+                            let no_reflected = crate::classes::special_lookup_typed(&fc, "__gt__")
                                 .is_none()
-                                && crate::classes::special_lookup_typed(
-                                    &fc, "__ge__",
-                                )
-                                .is_none();
+                                && crate::classes::special_lookup_typed(&fc, "__le__").is_none()
+                                && crate::classes::special_lookup_typed(&fc, "__ge__").is_none();
                             if no_reflected {
                                 if let Some((f, _)) =
                                     crate::classes::special_lookup_typed(&fc, "__lt__")

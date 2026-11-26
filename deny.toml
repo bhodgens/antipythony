@@ -31,6 +31,10 @@ allow = [
     "Unicode-3.0",
     "Unicode-DFS-2016",
     "CDLA-Permissive-2.0",
+    # bzip2 crate (0.6, libbz2-rs backend) ships the bzip2 and libbzip2
+    # License v1.0.6 (BSD-style; permissive) — new dep of the W8 bz2/lzma
+    # leaf. Cargo-deny reports it as 'bzip2-1.0.6'.
+    "bzip2-1.0.6",
 ]
 # NOTE: cargo-deny PR 611 removed the `licenses.deny` key — the copyleft
 # policy below is enforced via the allow-list (everything not in `allow`

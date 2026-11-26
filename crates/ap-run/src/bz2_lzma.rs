@@ -284,12 +284,8 @@ fn arg_or_kw<'a>(
     idx: usize,
     name: &str,
 ) -> Option<&'a Value> {
-    args.get(idx).or_else(|| {
-        kwargs
-            .iter()
-            .find(|(k, _)| k == name)
-            .map(|(_, v)| v)
-    })
+    args.get(idx)
+        .or_else(|| kwargs.iter().find(|(k, _)| k == name).map(|(_, v)| v))
 }
 
 pub fn call_lzma(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option<BResult> {
@@ -613,7 +609,8 @@ fn lzma_decompress(data: &[u8], format: i64, filters: Option<&Value>) -> Result<
                         None,
                     );
                     let mut dec = LzmaDecoder::new(params, None).map_err(raw_decode_err)?;
-                    dec.decompress(&mut input, &mut out).map_err(raw_decode_err)?;
+                    dec.decompress(&mut input, &mut out)
+                        .map_err(raw_decode_err)?;
                     Ok(out)
                 }
                 _ => Err(lzma_error("Corrupt input data")),
@@ -660,8 +657,10 @@ fn xz_decode_err(e: lzma_rs::error::Error) -> Flow {
     let raw = e.to_string();
     if raw.contains("magic") {
         lzma_error("Input format not supported by decoder")
-    } else if matches!(e, lzma_rs::error::Error::IoError(_) | lzma_rs::error::Error::HeaderTooShort(_))
-        || raw.contains("footer")
+    } else if matches!(
+        e,
+        lzma_rs::error::Error::IoError(_) | lzma_rs::error::Error::HeaderTooShort(_)
+    ) || raw.contains("footer")
         || raw.contains("index")
         || raw.contains("header CRC32")
     {
