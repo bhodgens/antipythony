@@ -106,3 +106,26 @@ block + this tracker updated at close-out.
 - JIT/tier-1 performance (plan measures tier-0 native builtin speed by design).
 - Wasm leg of the corpus gates (native-only perf campaign; wasm rows unchanged).
 - Vendoring serde_json/memchr without explicit user approval.
+
+## W9 hot-path-parity (plan: plans/hot-path-parity/) — COMPLETE 2026-11-26
+
+| leaf | surface | status |
+|---|---|---|
+| hp-nursery | ap-gc ledger + dying-young flush + 3 re-entrancy/deadlock fixes | MERGED (3d3cd61) — mint-floor work; honest gap vs 100ns target in report |
+| hp-lazydunders | unregistered attrs payload + bound-method mint fast path | MERGED (2b19e4c) |
+| hp-forloop | Stmt::For JIT lowering (5 iterator kinds) + OSR header + liveness | MERGED (f8352db) — int-accum for 2.16x |
+| pp2-int | to_bytes bulk emit + small-int parse + D&C big parse | MERGED (97d2e45) |
+| pp2-sort | Fix B hoist + homogeneous raw arms | MERGED (871be30) |
+| pp2-memchr | SALVAGE: fix_bytes gate only (integration not landed) | MERGED (4621d5c) |
+| pp2-crc | crc32fast + simd-adler32 | MERGED (a71b6c2) |
+| pp2-bz2 | real bz2 + lzma (pure-Rust) | MERGED (8333828) |
+| pp2-tier1 | JIT bridges + verdict doc | MERGED (55982d3) |
+| orchestrator hotfix | int-needle find/count/replace/split/startswith + start/end clamp + empty-needle + __getattribute__ marker | MERGED (a3f53fd) |
+
+Closing bench (64799d4): 64 rows = 28 PASS / 36 FAIL / 0 ERROR.
+New PASS: int.to_bytes 2.97-3.79x, int(str) big 4.31x, json.loads 48KiB
+improved to 0.55x. Remaining FAILs documented in honest-gaps; largest
+levers filed: registry-insert batching/nursery, BoundMethod mint,
+tier-0 walk floor (tier-1 = Plan 02.05), str.join/split, sha256/md5
+backend class. Queued not-dispatched: hp-inlinecache, hp-typeddict
+(gated on re-measure), hp-micro.
