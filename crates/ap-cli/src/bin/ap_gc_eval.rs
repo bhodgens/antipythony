@@ -1,4 +1,6 @@
-//! `ap-gc-eval` — Fix-C raw container-mint microbench (temporary probe bin).
+//! `ap-gc-eval` — container-mint microbench (Fix-C probe, hp-nursery variant).
+//! A = full path; B = insert-only (hook registers, gc disabled);
+//! C = pure alloc (no-op hook).
 use ap_obj::int::{Gc, Int};
 use ap_obj::value::{PyList, Value};
 use std::time::Instant;
@@ -37,9 +39,28 @@ fn bench(n: usize, label: &str, keep_alive: bool) {
 }
 
 fn main() {
-    ap_obj::gc_gate::set_hook(|v| ap_gc::gc_register(v));
-    bench(160_000, "A_raw_keep", true);
-    bench(160_000, "A_raw_drop", false);
-    bench(160_000, "A_raw_keep2", true);
+    let mode = std::env::args().nth(1).unwrap_or_else(|| "full".into());
+    match mode.as_str() {
+        // B: registration happens (real hook) but the collect ladder is off.
+        "nothresh" => {
+            ap_obj::gc_gate::set_hook(|v| ap_gc::gc_register(v));
+            ap_gc::disable();
+            bench(160_000, "B_insert_only_keep", true);
+            bench(160_000, "B_insert_only_drop", false);
+            let _ = ap_gc::gc_tracked_len();
+        }
+        // C: no registration at all — pure Gc alloc + drop.
+        "nohook" => {
+            ap_obj::gc_gate::set_hook(|_v| {});
+            bench(160_000, "C_alloc_only_keep", true);
+            bench(160_000, "C_alloc_only_drop", false);
+        }
+        _ => {
+            ap_obj::gc_gate::set_hook(|v| ap_gc::gc_register(v));
+            bench(160_000, "A_full_keep", true);
+            bench(160_000, "A_full_drop", false);
+            bench(160_000, "A_full_keep2", true);
+        }
+    }
     let _ = std::hint::black_box(());
 }
