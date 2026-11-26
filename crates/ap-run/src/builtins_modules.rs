@@ -4520,6 +4520,16 @@ fn build_operator(_i: &crate::frame::Interpreter) -> Value {
     ] {
         fn1(&ns, "operator", n);
     }
+    // 02.08 gap re-verify (issue #19): the methodcaller/itemgetter factories
+    // are CLASSES in CPython — repr(factory) is `<class 'operator.X'>`.
+    // fn1 mints bare BuiltinFn markers (default repr = obj-at-0x); park the
+    // CPython repr text on the two class factories.
+    for cls in ["methodcaller", "itemgetter"] {
+        if let Some(Value::Obj(fo)) = ns.get(&s(cls)) {
+            *fo.repr_text.lock().unwrap_or_else(|p| p.into_inner()) =
+                Some(format!("<class 'operator.{cls}'>"));
+        }
+    }
     // 02.08 (s029): CPython 3.14 operator.__all__ (byte-exact order).
     let _ = ns.set(
         s("__all__"),
@@ -4889,6 +4899,14 @@ pub fn call_operator(name: &str, args: &[Value], _kwargs: &[(String, Value)]) ->
                     .unwrap_or_else(|p| p.into_inner())
                     .insert(name_full.clone(), extras);
                 let mc = marker(&name_full);
+                // 02.08 gap re-verify (issue #19): CPython repr is
+                // `operator.methodcaller('name')` (qualified class, repr of
+                // the method name); type(mc).__name__ == methodcaller.
+                if let Value::Obj(mco) = &mc {
+                    let esc = mname.replace('\'', "\\'");
+                    *mco.repr_text.lock().unwrap_or_else(|p| p.into_inner()) =
+                        Some(format!("operator.methodcaller('{esc}')"));
+                }
                 Ok(mc)
             }
             "matmul" | "imatmul" => Err(raise(

@@ -2291,6 +2291,11 @@ pub(crate) fn augment_with_vendored(interp: &Arc<Interpreter>, name: &str, m: &V
             // s015: the native interned ChainMap Type has no __getitem__
             // chain-through-.maps behavior; the vendored class carries it.
             "ChainMap",
+            // 02.08 gap re-verify (issue #19): the native stub's Any is an
+            // inert marker; the vendored Any is a REAL class (metaclass
+            // _AnyMeta + dict-assigned __repr__ = _any_repr → repr(Any)
+            // == "typing.Any"). Vendored must win.
+            "Any",
             // 02.08 gap (s028): the native pprint top-level stubs (pformat/
             // pprint/saferepr/isrecursive/isreadable) don't sort dicts or
             // break width; the vendored module implements the full

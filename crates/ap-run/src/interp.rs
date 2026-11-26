@@ -5884,6 +5884,14 @@ fn call_value_inner_impl(
                             {
                                 return Ok(builtins::interned_type(interp, "_lru_cache_wrapper"));
                             }
+                            // 02.08 gap re-verify (issue #19): type(C[int]) is
+                            // typing._GenericAlias (CPython: parameterized
+                            // user generics are _GenericAlias instances).
+                            if mo.kind == ap_obj::ObjKind::Opaque
+                                && mo.name == "typing._GenericAlias"
+                            {
+                                return Ok(builtins::interned_type(interp, "typing._GenericAlias"));
+                            }
                         }
                         if let Some(Value::Obj(so)) = args.first() {
                             if so.kind == ap_obj::ObjKind::Opaque && so.name == "thread" {
@@ -5914,6 +5922,9 @@ fn call_value_inner_impl(
                                         // report "Random" (the class value
                                         // is the dotted marker).
                                         | "random.Random"
+                                        // 02.08 gap re-verify (issue #19):
+                                        // type(C[int]) is typing._GenericAlias.
+                                        | "typing._GenericAlias"
                                 )
                             {
                                 let tname = if so.name == "random.Random" {
@@ -8422,6 +8433,19 @@ fn call_value_inner_impl(
                                         };
                                         return Ok(builtins::interned_type(interp, &tn));
                                     }
+                                    // 02.08 (s029) re-verify (issue #19):
+                                    // type(mc).__name__ == "methodcaller"/
+                                    // "itemgetter" (bare class names).
+                                    if so.kind == ap_obj::ObjKind::BuiltinFn
+                                        && so.name.starts_with("<methodcaller:")
+                                    {
+                                        return Ok(builtins::interned_type(interp, "methodcaller"));
+                                    }
+                                    if so.kind == ap_obj::ObjKind::BuiltinFn
+                                        && so.name.starts_with("<itemgetter:")
+                                    {
+                                        return Ok(builtins::interned_type(interp, "itemgetter"));
+                                    }
                                     if so.kind == ap_obj::ObjKind::Opaque && so.name == "super" {
                                         return Ok(builtins::interned_type(interp, "super"));
                                     }
@@ -8441,6 +8465,16 @@ fn call_value_inner_impl(
                                                 Some("<class 'typing.Union'>".to_string());
                                         }
                                         return Ok(t);
+                                    }
+                                    // 02.08 gap re-verify (issue #19): type(C[int])
+                                    // is typing._GenericAlias.
+                                    if so.kind == ap_obj::ObjKind::Opaque
+                                        && so.name == "typing._GenericAlias"
+                                    {
+                                        return Ok(builtins::interned_type(
+                                            interp,
+                                            "typing._GenericAlias",
+                                        ));
                                     }
                                     // 02.08-full p2: type(re.Pattern-obj) etc.
                                     if so.kind == ap_obj::ObjKind::Opaque
@@ -12765,6 +12799,20 @@ fn class_protocol_builtin(
             // sys.modules carries it.
             if let Some(Value::Obj(o)) = subject {
                 if o.kind == ap_obj::ObjKind::UserClass {
+                    // 02.08 gap re-verify (issue #19): a class-dict EXPLICIT
+                    // __repr__ (typing.Any's Any.__repr__ = _any_repr) wins
+                    // FIRST — CPython repr(cls) is type(cls).__repr__, and the
+                    // dict-assigned dunder rides the class, shadowing any
+                    // metaclass __repr__ (the old enum-module fallback here
+                    // rendered typing.Any as "<enum 'Any'>").
+                    if let Some((f, _)) =
+                        crate::classes::special_lookup(interp, subject.unwrap(), "__repr__")
+                    {
+                        let args = [subject.unwrap().clone()];
+                        if let Ok(r) = crate::interp::call_value_pub(interp, &f, &args, &[]) {
+                            return Some(Ok(r));
+                        }
+                    }
                     // 02.08f (s026): GENERALIZE — consult the class's OWN
                     // metaclass __repr__ first (typing.Any's _AnyMeta renders
                     // 'typing.Any'); the enum-module path below stays as the
@@ -12951,6 +12999,15 @@ fn class_protocol_builtin(
                         }
                         return Some(Ok(t));
                     }
+                    // 02.08 gap re-verify (issue #19): type(C[int]) is
+                    // typing._GenericAlias (CPython: parameterized user
+                    // generics are _GenericAlias instances, NOT object).
+                    if o.kind == ap_obj::ObjKind::Opaque && o.name == "typing._GenericAlias" {
+                        return Some(Ok(crate::builtins::interned_type(
+                            interp,
+                            "typing._GenericAlias",
+                        )));
+                    }
                     // 02RESID-B (s014): lru_cache wrapper markers report
                     // type(f) == _lru_cache_wrapper (CPython wraps the user
                     // function in a C closure; introspection surfaces —
@@ -12959,6 +13016,18 @@ fn class_protocol_builtin(
                         && o.name.starts_with("functools._lruwrapper_")
                     {
                         let t = crate::builtins::interned_type(interp, "_lru_cache_wrapper");
+                        return Some(Ok(t));
+                    }
+                    // 02.08 (s029) re-verify (issue #19): type(mc).__name__ is
+                    // the BARE class name ("methodcaller"/"itemgetter"; the
+                    // qualified form is only the repr).
+                    if o.kind == ap_obj::ObjKind::BuiltinFn && o.name.starts_with("<methodcaller:")
+                    {
+                        let t = crate::builtins::interned_type(interp, "methodcaller");
+                        return Some(Ok(t));
+                    }
+                    if o.kind == ap_obj::ObjKind::BuiltinFn && o.name.starts_with("<itemgetter:") {
+                        let t = crate::builtins::interned_type(interp, "itemgetter");
                         return Some(Ok(t));
                     }
                     // 02.07: threading objects report their <class> attr
@@ -13022,7 +13091,9 @@ fn class_protocol_builtin(
                     return Some(Ok(Value::Str(PyString::new("itemgetter"))));
                 }
                 if o.kind == ap_obj::ObjKind::BuiltinFn && o.name.starts_with("<methodcaller:") {
-                    return Some(Ok(Value::Str(PyString::new("operator.methodcaller"))));
+                    // 02.08 gap re-verify (issue #19): type(mc).__name__ is the
+                    // BARE class name (the qualified form is only the repr).
+                    return Some(Ok(Value::Str(PyString::new("methodcaller"))));
                 }
                 // 02.08-full p2: re.Pattern / re.Match report their Python
                 // type names (type(p).__name__ == "Pattern", isinstance gates).
@@ -13061,6 +13132,13 @@ fn class_protocol_builtin(
                 }
                 if o.kind == ap_obj::ObjKind::Opaque && o.name == "complex" {
                     let t = crate::builtins::interned_type(interp, "complex");
+                    return Some(Ok(t));
+                }
+                // 02.08 gap re-verify (issue #19): type(C[int]) is
+                // typing._GenericAlias (CPython: parameterized user generics
+                // are _GenericAlias instances, NOT object).
+                if o.kind == ap_obj::ObjKind::Opaque && o.name == "typing._GenericAlias" {
+                    let t = crate::builtins::interned_type(interp, "typing._GenericAlias");
                     return Some(Ok(t));
                 }
                 // A-3 item 5: opaque native result records report their own
@@ -13272,6 +13350,30 @@ fn repr_with_classes(interp: &Arc<Interpreter>, v: &Value) -> EResult {
                 Ok(())
             }
             Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass => {
+                // 02.08 gap re-verify (issue #19): a class-dict EXPLICIT
+                // __repr__ (typing.Any's Any.__repr__ = _any_repr) wins
+                // before the <class 'name'> default (CPython repr(cls) is
+                // type(cls).__repr__, and dict-assigned dunders ride it).
+                if let Some((f, _)) = crate::classes::special_lookup(interp, v, "__repr__") {
+                    let args = [v.clone()];
+                    if let Ok(r) = crate::interp::call_value_pub(interp, &f, &args, &[]) {
+                        if let Value::Str(sv) = r {
+                            out.push_str(&sv.as_str().to_string());
+                            return Ok(());
+                        }
+                    }
+                }
+                out.push_str(&format!("<class '{}'>", o.name));
+                Ok(())
+            }
+            Value::Obj(o) if o.kind == ap_obj::ObjKind::Type => {
+                // repr_text wins (typing._GenericAlias interned Type — CPython
+                // reprs `<class 'typing._GenericAlias'>`; the bare-name Type
+                // default would render <class '_GenericAlias'>).
+                if let Some(txt) = &*o.repr_text.lock().unwrap_or_else(|p| p.into_inner()) {
+                    out.push_str(txt);
+                    return Ok(());
+                }
                 out.push_str(&format!("<class '{}'>", o.name));
                 Ok(())
             }
@@ -14620,6 +14722,38 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                 return Ok(Some(v));
             }
         }
+        // 02.08 gap re-verify (issue #19): typing._GenericAlias placeholders
+        // answer __class__ == the interned typing._GenericAlias type
+        // (CPython: C[int].__class__ is typing._GenericAlias; without this
+        // the degenerate object answer broke type(C[int]) identity probes).
+        if let Value::Obj(o) = obj {
+            if o.kind == ap_obj::ObjKind::Opaque && o.name == "typing._GenericAlias" {
+                return Ok(Some(crate::builtins::interned_type(
+                    interp,
+                    "typing._GenericAlias",
+                )));
+            }
+        }
+        // 02.08 gap re-verify (issue #19): alias placeholders answer
+        // __module__ from the ORIGIN's module (CPython _GenericAlias.__init__
+        // seeds self.__module__ = origin.__module__; getattr(C[int],
+        // '__module__') == '__main__' / 'typing').
+        if let Value::Obj(o) = obj {
+            if o.kind == ap_obj::ObjKind::Opaque && o.name == "typing._GenericAlias" {
+                let hit = o
+                    .attrs
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .get(&Value::Str(PyString::new("__origin__")))
+                    .map(|v| v.clone());
+                if let Some(origin) = hit {
+                    if let Ok(Some(m)) = attr_get(interp, &origin, "__module__") {
+                        return Ok(Some(m));
+                    }
+                }
+                return Ok(Some(Value::Str(PyString::new("typing"))));
+            }
+        }
         // 02.07: threading native objects carry their class name (<class>).
         if matches!(obj, Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque
             && matches!(o.name.as_str(), "thread"))
@@ -14698,7 +14832,9 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
             Value::Obj(o)
                 if o.kind == ap_obj::ObjKind::BuiltinFn && o.name.starts_with("<methodcaller:") =>
             {
-                "operator.methodcaller"
+                // 02.08 gap re-verify (issue #19): bare class name (qualified
+                // form is only the repr).
+                "methodcaller"
             }
             other => other.type_name(),
         };
@@ -16329,6 +16465,40 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
                         return Ok(Some(Value::Obj(spec)));
                     }
                     return Ok(Some(Value::None));
+                }
+                Ok(None)
+            }
+            // 02.08 gap re-verify (issue #19): typing._GenericAlias aliases
+            // (C[int] placeholders) answer their data surface from attrs /
+            // the parked ORIGIN — __module__ from origin.__module__ (CPython
+            // _GenericAlias.__init__), __name__/__qualname__ from the origin
+            // name (getattr(C[int], '__name__') == 'C').
+            ap_obj::ObjKind::Opaque if o.name == "typing._GenericAlias" => {
+                let (origin, attrs_hit) = {
+                    let at = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
+                    (
+                        at.get(&Value::Str(PyString::new("__origin__")))
+                            .map(|v| v.clone()),
+                        at.get(&Value::Str(PyString::new(name))).map(|v| v.clone()),
+                    )
+                };
+                if let Some(v) = attrs_hit {
+                    return Ok(Some(v));
+                }
+                if name == "__module__" {
+                    if let Some(origin) = origin {
+                        if let Ok(Some(m)) = attr_get(interp, &origin, "__module__") {
+                            return Ok(Some(m));
+                        }
+                    }
+                    return Ok(Some(Value::Str(PyString::new("typing"))));
+                }
+                if matches!(name, "__name__" | "__qualname__") {
+                    if let Some(origin) = origin {
+                        if let Ok(Some(m)) = attr_get(interp, &origin, "__name__") {
+                            return Ok(Some(m));
+                        }
+                    }
                 }
                 Ok(None)
             }

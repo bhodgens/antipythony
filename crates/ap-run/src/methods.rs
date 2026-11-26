@@ -167,6 +167,94 @@ pub enum Key {
     Other(Value),
 }
 
+/// 02.08 gap re-verify (issue #19): park the CPython `_GenericAlias.__repr__`
+/// text on a `typing._GenericAlias` placeholder. CPython renders
+/// `_type_repr(origin)[', '.join(_type_repr(args))]` where `_type_repr` of a
+/// type is `module.qualname` with the `builtins` module stripped. Without this
+/// the placeholder falls to the default object-at-0x repr (`repr(List[int])`
+/// etc. diverge from CPython 3.14).
+///
+/// LOCKING: takes at most ONE lock at a time (attrs, then released) — this
+/// runs inside subscript dispatch on the executor thread; nested/attr-protocol
+/// calls here would self-deadlock on the same attrs mutex (hit live: the
+/// attr_get_public fallback re-locks o.attrs while our guard is held).
+pub fn park_generic_alias_repr(g: &ap_obj::PyObject, origin: &Value, key: &Value) {
+    let origin_txt = match origin {
+        Value::Obj(o)
+            if o.kind == ap_obj::ObjKind::UserClass || o.kind == ap_obj::ObjKind::Type =>
+        {
+            // CPython _type_repr(type) = module.qualname. Read module and
+            // qualname from the class value's OWN attrs dict under a single
+            // short-lived guard (class creation seeds __module__; UserClass
+            // attrs mirror the class ns). NO attr-protocol fallback here —
+            // it re-enters this same attrs lock.
+            let (mod_v, qual_v) = {
+                let attrs = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
+                (
+                    attrs.get(&Value::Str(ap_obj::PyString::new("__module__"))),
+                    attrs.get(&Value::Str(ap_obj::PyString::new("__qualname__"))),
+                )
+            };
+            let module = mod_v
+                .and_then(|v| match v {
+                    Value::Str(sv) => Some(sv.as_str().to_string()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| ap_obj::MODULE_NAME.to_string());
+            let qualname = qual_v
+                .and_then(|v| match v {
+                    Value::Str(sv) => Some(sv.as_str().to_string()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| o.name.clone());
+            if module == "builtins" {
+                qualname
+            } else {
+                format!("{}.{}", module, qualname)
+            }
+        }
+        other => ap_obj::ops::repr(other).unwrap_or_else(|_| "object".to_string()),
+    };
+    let args_txt = match key {
+        Value::Tuple(tp) => {
+            tp.0.iter()
+                .map(|a| arg_type_repr(a))
+                .collect::<Result<Vec<_>, _>>()
+                .map(|v| v.join(", "))
+                .unwrap_or_default()
+        }
+        one => arg_type_repr(one).unwrap_or_default(),
+    };
+    *g.repr_text.lock().unwrap_or_else(|p| p.into_inner()) =
+        Some(format!("{}[{}]", origin_txt, args_txt));
+}
+
+/// _type_repr for a single alias argument: types render module.qualname
+/// (builtins stripped); everything else falls back to repr().
+fn arg_type_repr(v: &Value) -> Result<String, ap_obj::PyException> {
+    if let Value::Obj(o) = v {
+        if o.kind == ap_obj::ObjKind::UserClass || o.kind == ap_obj::ObjKind::Type {
+            // Type arms answer straight off the class name (builtin types
+            // render bare — CPython _type_repr strips the builtins module);
+            // UserClass arms route through park_generic_alias_repr with a
+            // None key (renders `mod.name[]`, trimmed).
+            if o.kind == ap_obj::ObjKind::Type {
+                return Ok(o.name.clone());
+            }
+            let tmp = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "typing._GenericAlias");
+            park_generic_alias_repr(&tmp, v, &Value::None);
+            let txt = tmp
+                .repr_text
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+                .unwrap_or_default();
+            return Ok(txt.trim_end_matches("[]").to_string());
+        }
+    }
+    ap_obj::ops::repr(v)
+}
+
 /// obj[key] read.
 pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
     let k = subscript_key(key)?;
@@ -569,12 +657,26 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
                     // an Opaque, so park the marker name via __class__.
                     let _ = at.set(
                         Value::Str(ap_obj::PyString::new("__class__")),
-                        Value::Str(ap_obj::PyString::new("_GenericAlias")),
+                        // 02.08 gap re-verify (issue #19): the REAL interned
+                        // type value (CPython C[int].__class__ is
+                        // typing._GenericAlias) — the old string marker
+                        // answered a.__class__ == "_GenericAlias".
+                        match crate::builtins_modules::current_interp() {
+                            Some(rc) => crate::builtins::interned_type(&rc, "typing._GenericAlias"),
+                            None => Value::Str(ap_obj::PyString::new("_GenericAlias")),
+                        },
                     );
                     let _ = at.set(
                         Value::Str(ap_obj::PyString::new("__args__")),
                         Value::Tuple(Gc::new(ap_obj::value::Tuple(params))),
                     );
+                    // 02.08 gap re-verify (issue #19): repr(C[int]) is
+                    // `__main__.C[int]` — CPython _GenericAlias.__repr__ =
+                    // _type_repr(origin)[', '.join(_type_repr(args))], with
+                    // _type_repr(type) = module.qualname ('builtins' module
+                    // stripped). Park it as repr_text (default_repr would
+                    // render the object-at-0x form).
+                    crate::methods::park_generic_alias_repr(&g, &obj, &key);
                 }
                 *g.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) =
                     vec![obj.clone(), key.clone()];
@@ -647,6 +749,10 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
             let g = ap_obj::PyObject::new(ap_obj::ObjKind::Opaque, "typing._GenericAlias");
             *g.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) =
                 vec![obj.clone(), key.clone()];
+            // 02.08 gap re-verify (issue #19): same repr surface as the
+            // UserClass arm below — typing.List[int] etc. MUST render
+            // `typing.List[int]`, not the object-at-0x default form.
+            crate::methods::park_generic_alias_repr(&g, &obj, &key);
             Ok(Value::Obj(g))
         }
         // 02.04 completion: weak containers route subscripts through the
@@ -733,7 +839,12 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
                 );
                 let _ = at.set(
                     Value::Str(ap_obj::PyString::new("__class__")),
-                    Value::Str(ap_obj::PyString::new("_GenericAlias")),
+                    // 02.08 gap re-verify (issue #19): the REAL interned type
+                    // value (see the UserClass arm above).
+                    match crate::builtins_modules::current_interp() {
+                        Some(rc) => crate::builtins::interned_type(&rc, "typing._GenericAlias"),
+                        None => Value::Str(ap_obj::PyString::new("_GenericAlias")),
+                    },
                 );
                 let _ = at.set(
                     Value::Str(ap_obj::PyString::new("__args__")),
@@ -741,6 +852,14 @@ pub fn subscript_get(obj: &Value, key: &Value) -> MResult {
                 );
             }
             *g.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) = vec![origin, key.clone()];
+            // 02.08 gap re-verify (issue #19): re-subscribed aliases keep the
+            // CPython repr surface (B = A[T2]; C = B[int] → `__main__.A[int]`).
+            {
+                let sp = g.slice_parts.lock().unwrap_or_else(|p| p.into_inner());
+                if let (Some(orig), Some(k)) = (sp.first(), sp.get(1)) {
+                    crate::methods::park_generic_alias_repr(&g, orig, k);
+                }
+            }
             Ok(Value::Obj(g))
         }
         // A-3 item 5: stat_result (opaque, slice_parts-populated) subscripts

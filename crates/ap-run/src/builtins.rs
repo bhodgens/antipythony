@@ -73,6 +73,16 @@ pub fn py_str_of(v: &Value) -> Result<String, ap_obj::exc::PyException> {
                 }
             }
         }
+        // 02.08 gap re-verify (issue #19): a Type-kind VALUE with repr_text
+        // (typing._GenericAlias interned Type) renders it — CPython
+        // reprs/strs the class `<class 'typing._GenericAlias'>`.
+        if matches!(v, Value::Obj(o) if o.kind == ap_obj::ObjKind::Type) {
+            if let Value::Obj(o) = v {
+                if let Some(txt) = &*o.repr_text.lock().unwrap_or_else(|p| p.into_inner()) {
+                    return Ok(txt.clone());
+                }
+            }
+        }
         if matches!(
             v,
             Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance
@@ -597,6 +607,17 @@ pub fn builtin_len(args: &[Value]) -> BResult {
 /// repr(v) with the C-14 int-limit sweep (ops::repr handles it).
 pub fn builtin_repr(args: &[Value]) -> BResult {
     let v = one(args, "repr")?;
+    // 02.08 gap re-verify (issue #19): a Type-kind VALUE with repr_text
+    // (typing._GenericAlias interned Type) renders it — CPython reprs
+    // `<class 'typing._GenericAlias'>`; the bare-name Type default would
+    // render <class '_GenericAlias'>.
+    if let Value::Obj(o) = v {
+        if o.kind == ap_obj::ObjKind::Type {
+            if let Some(txt) = &*o.repr_text.lock().unwrap_or_else(|p| p.into_inner()) {
+                return Ok(Value::Str(PyString::new(txt.clone())));
+            }
+        }
+    }
     // 02.08 (s024 enum): a UserClass VALUE whose metaclass defines
     // __repr__ (EnumType → "<enum 'SC'>") must route through it — CPython
     // repr(cls) == type(cls).__repr__(cls).
@@ -1965,6 +1986,9 @@ pub fn builtin_type(interp: &Interpreter, args: &[Value], kwargs: &[(String, Val
                 // A-3 item 5: opaque native result records report their own
                 // name (type(os.uname()) == "uname_result"; stat_result too).
                 Value::Obj(o) if o.kind == ap_obj::ObjKind::Opaque => match o.name.as_str() {
+                    // CPython type(C[int]).__name__ == _GenericAlias (bare —
+                    // the __module__-qualified form is only the REPR).
+                    "typing._GenericAlias" => "_GenericAlias".to_string(),
                     "uname_result" | "stat_result" | "statvfs_result" | "struct_time"
                     | "bytearray"
                     // ppfix-random: Random instances report "Random".
@@ -1980,6 +2004,30 @@ pub fn builtin_type(interp: &Interpreter, args: &[Value], kwargs: &[(String, Val
                     | "dict_keys" | "dict_values" | "dict_items" => o.name.clone(),
                     _ => o.type_name(),
                 },
+                // 02.08 gap re-verify (issue #19): type(C[int]) is
+                // typing._GenericAlias (CPython: parameterized user generics
+                // are _GenericAlias instances, NOT object). __name__ is the
+                // bare form (the qualified form is only the repr).
+                Value::Obj(o)
+                    if o.kind == ap_obj::ObjKind::Opaque && o.name == "typing._GenericAlias" =>
+                {
+                    "_GenericAlias".to_string()
+                }
+                // 02.08 (s029) re-verify: type(mc).__name__ == "methodcaller"
+                // / "itemgetter" (bare class names; the qualified form is
+                // only the repr).
+                Value::Obj(o)
+                    if o.kind == ap_obj::ObjKind::BuiltinFn
+                        && o.name.starts_with("<methodcaller:") =>
+                {
+                    "methodcaller".to_string()
+                }
+                Value::Obj(o)
+                    if o.kind == ap_obj::ObjKind::BuiltinFn
+                        && o.name.starts_with("<itemgetter:") =>
+                {
+                    "itemgetter".to_string()
+                }
                 Value::Obj(o) => o.type_name(),
                 other => other.type_name().to_string(),
             };
@@ -4465,6 +4513,15 @@ pub fn interned_type(interp: &Interpreter, name: &str) -> Value {
         return v;
     }
     let t = Value::Obj(ap_obj::PyObject::new(ap_obj::ObjKind::Type, name));
+    // 02.08 gap re-verify (issue #19): the typing._GenericAlias interned
+    // type reprs `<class 'typing._GenericAlias'>` (CPython: the class lives
+    // in typing; the bare-name default would render <class '_GenericAlias'>).
+    if name == "typing._GenericAlias" {
+        if let Value::Obj(to) = &t {
+            *to.repr_text.lock().unwrap_or_else(|p| p.into_inner()) =
+                Some("<class 'typing._GenericAlias'>".to_string());
+        }
+    }
     interp
         .type_objects
         .lock()
