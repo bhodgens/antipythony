@@ -126,7 +126,9 @@ version = "0.1.0"
 dependencies = [
  "ap-codegen-native",
  "ap-codegen-wasm",
+ "ap-gc",
  "ap-host",
+ "ap-obj",
  "ap-pack",
  "ap-parse",
  "ap-run",
@@ -254,6 +256,7 @@ dependencies = [
  "ap-parse",
  "blake2",
  "corosensei",
+ "crc32fast",
  "flate2",
  "libc",
  "libm",
@@ -268,6 +271,7 @@ dependencies = [
  "sha1",
  "sha2",
  "sha3",
+ "simd-adler32",
  "unicode-normalization",
  "unicode_names2",
 ]
