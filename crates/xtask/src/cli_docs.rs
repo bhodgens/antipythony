@@ -45,10 +45,31 @@ CI gate: `cargo run -p xtask -- cli-docs --check` fails if this file is stale.
 fn debug_dir(root: &Path) -> PathBuf {
     // Under `cargo run -p xtask`, cargo sets CARGO_TARGET_DIR to the real
     // target dir (may differ from root/target with sccache/custom configs).
-    match std::env::var("CARGO_TARGET_DIR") {
-        Ok(d) if !d.is_empty() => PathBuf::from(d).join("debug"),
-        _ => root.join("target").join("debug"),
+    // If the env var is ABSENT the redirect may still live in
+    // .cargo/config.toml (this workspace: target-0304c) — cargo does NOT
+    // export that to child processes, so parse it before falling back to
+    // root/target (CI 45807583196 false red: the gate built bins into
+    // target-0304c via cargo build but the check looked in root/target).
+    if let Ok(d) = std::env::var("CARGO_TARGET_DIR") {
+        if !d.is_empty() {
+            return PathBuf::from(d).join("debug");
+        }
     }
+    let config = root.join(".cargo/config.toml");
+    if let Ok(text) = std::fs::read_to_string(&config) {
+        for line in text.lines() {
+            let t = line.trim();
+            if let Some(rest) = t.strip_prefix("target-dir") {
+                let rest = rest.trim_start();
+                let rest = rest.strip_prefix('=').map(str::trim_start).unwrap_or(rest);
+                let val = rest.trim().trim_matches('"');
+                if !val.is_empty() {
+                    return root.join(val).join("debug");
+                }
+            }
+        }
+    }
+    root.join("target").join("debug")
 }
 
 /// Run one bin with `arg`, returning stdout on success. None = bin missing

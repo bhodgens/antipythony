@@ -147,8 +147,8 @@ jobs:
         # renders a "NOT BUILT" placeholder section that then reads as
         # committed-doc drift (CI 45773257321 false red, 2026-11-26).
         run: |
-          cargo build -p ap-parse --bins
-          cargo run -p xtask -- cli-docs --check
+          cargo build --workspace --bins
+          env -u CARGO_TARGET_DIR cargo run -p xtask -- cli-docs --check
 
   deny:
     name: cargo deny (master.md:45; finding #2)
