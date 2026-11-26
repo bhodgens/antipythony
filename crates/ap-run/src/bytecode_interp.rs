@@ -346,9 +346,13 @@ fn run_frame(
     let n_instr = code.instrs.len();
     let reg = crate::interp::current_registry_pub();
 
-    // Fixed locals vec, slot-indexed. Params prefill from the frame the
-    // call boundary built (Loc::Slot or a cell-bound param).
-    let mut locals: Vec<Value> = vec![Value::None; code.n_locals];
+    // Fixed locals vec, slot-indexed. `None` = UNBOUND (the
+    // never-assigned sentinel); `Some(Value::None)` is a real `x = None`
+    // store — the two must stay distinct (a stored None reads fine; an
+    // unbound slot raises the tree-walker's exact UnboundLocalError text).
+    // Params prefill from the frame the call boundary built (Loc::Slot or
+    // a cell-bound param).
+    let mut locals: Vec<Option<Value>> = vec![None; code.n_locals];
     {
         let fl = frame.locals.borrow();
         for (i, p) in entry.def.params.iter().enumerate() {
@@ -360,7 +364,7 @@ fn run_frame(
                 Some(Loc::CellSlot(cell)) => cell.borrow().clone(),
                 None => None,
             };
-            locals[i] = v.unwrap_or(Value::None);
+            locals[i] = v;
         }
     }
 
@@ -448,12 +452,10 @@ fn run_frame(
                     ));
                 }
                 match &locals[s] {
-                    Value::None => {
+                    None => {
                         // Unbound local: the tree-walker's exact error shape.
-                        // (None-as-value written by a StoreFast is stored in
-                        // the frame's Loc::Slot Option too — the walker has
-                        // the same sentinel, so `x = None` then `x` reads
-                        // fine; only NEVER-ASSIGNED slots hit this arm.)
+                        // (Some(Value::None) is a real `x = None` store and
+                        // reads fine — the Option IS the unbound marker.)
                         let name = code
                             .local_names
                             .get(s)
@@ -470,7 +472,7 @@ fn run_frame(
                             ),
                         ));
                     }
-                    v => stack.push(v.clone()),
+                    Some(v) => stack.push(v.clone()),
                 }
                 pc += 1;
             }
@@ -483,7 +485,7 @@ fn run_frame(
                     ));
                 }
                 let v = pop!();
-                locals[s] = v;
+                locals[s] = Some(v);
                 pc += 1;
             }
             Instr::LoadGlobal(idx) => {
@@ -835,23 +837,31 @@ fn take_many(stack: &mut Vec<Value>, count: usize) -> Option<Vec<Value>> {
 }
 
 /// Sync local slots back into the frame (call exit — success AND unwind),
-/// mirroring jit_hook::store_slots_into_frame's None-if-unbound discipline:
-/// the tree-walker never fabricates a binding for a never-assigned name, so
-/// a None slot with no existing binding is skipped (UnboundLocal reads stay
-/// UnboundLocalError, not None). Bytecode bodies have no cells and no
-/// declared globals (lowerer rejects those shapes), so plain store_local is
-/// the exact store chain for every reachable slot.
-fn sync_slots_into_frame(frame: &Frame, entry: &FnEntry, code: &CodeObject, locals: &[Value]) {
+/// mirroring jit_hook::store_slots_into_frame's unbound discipline: the
+/// tree-walker never fabricates a binding for a never-assigned name, so an
+/// unbound slot (None) with no existing binding is skipped (UnboundLocal
+/// reads stay UnboundLocalError, not None). Bytecode bodies have no cells
+/// and no declared globals (lowerer rejects those shapes), so plain
+/// store_local is the exact store chain for every reachable slot.
+fn sync_slots_into_frame(
+    frame: &Frame,
+    entry: &FnEntry,
+    code: &CodeObject,
+    locals: &[Option<Value>],
+) {
     let _ = entry;
     for (i, name) in code.local_names.iter().enumerate() {
         if i >= locals.len() {
             break;
         }
-        let v = &locals[i];
+        let Some(v) = &locals[i] else {
+            continue; // never assigned: no binding to fabricate
+        };
+        let v = v.clone();
         if matches!(v, Value::None) && !frame.has_binding(name) {
             continue;
         }
-        frame.store_local(name, v.clone());
+        frame.store_local(name, v);
     }
 }
 
