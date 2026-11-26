@@ -2111,17 +2111,73 @@ fn pat_table_insert(key: usize, pat_rc: PatRc) {
 
 fn match_table_insert(key: usize, mb: Arc<MatchBox>) {
     use crate::runtime_state as rs;
+    // T3-S2 (issue #20): the match payload must live as long as the MATCH
+    // OBJECT, not the last-1024 window. The old fixed-cap ledger evicted the
+    // row under a live object (finditer over a >1024-line source mints more
+    // Matches than SRE_TABLE_CAP; a later match[0] on an EARLIER object then
+    // raised "bad receiver for Match.__getitem__" — the vendored ast.py
+    // _splitlines_no_ff path hit exactly this and blocked the
+    // pydantic.json_schema import). Now: NO cap eviction. Reclamation is
+    // liveness-driven via weak pins (same shape as SLOT_STORAGE_PINS, c018):
+    // sre_match_evict_dead() drops rows whose pin died, and it rides the
+    // existing evict_stale_tables major-GC sweep. A recycled address simply
+    // overwrites its row (match_object always inserts).
     rs::with_active_mut(rs::MATCH_TABLE_T_acc(), |row| {
         let (ref mut m, ref mut ledger) = *row;
         if !m.contains_key(&key) {
             ledger.push(key);
-            if ledger.len() > SRE_TABLE_CAP {
-                let oldest = ledger.remove(0);
-                m.remove(&oldest);
-            }
         }
         m.insert(key, mb);
     });
+    // Pin the owning object (a fresh insert or an overwrite refreshes it).
+    // The pin is a Weak to the match OBJECT (the Value::Obj the caller
+    // holds); when the object dies the sweep drops the row.
+    rs::with_active_mut(rs::SRE_MATCH_PINS_T_acc(), |pins| {
+        pins.insert(key, pin_slot_for_last_match());
+    });
+}
+
+/// Weak pin to the most recently minted match object (match_object sets it
+/// right after PyObject::new, before any matching callee can run — single-
+/// threaded under the GIL protocol, so the "last" slot is exact).
+thread_local! {
+    static LAST_MATCH_PIN: std::cell::RefCell<Option<std::sync::Weak<ap_obj::PyObject>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn pin_slot_for_last_match() -> std::sync::Weak<ap_obj::PyObject> {
+    LAST_MATCH_PIN.with(|c| c.borrow().clone().unwrap_or_else(|| std::sync::Weak::new()))
+}
+
+/// Drop MATCH_TABLE rows whose owning Match object is dead. Called from the
+/// evict_stale_tables major-GC sweep (threading.rs) — main thread only.
+pub(crate) fn sre_match_evict_dead() -> usize {
+    use crate::runtime_state as rs;
+    let dead: Vec<usize> = rs::with_active(rs::SRE_MATCH_PINS_T_acc(), |pins| {
+        pins.iter()
+            .filter(|(_, p)| p.upgrade().is_none())
+            .map(|(k, _)| *k)
+            .collect()
+    });
+    if dead.is_empty() {
+        return 0;
+    }
+    let mut freed = 0usize;
+    rs::with_active_mut(rs::MATCH_TABLE_T_acc(), |row| {
+        let (ref mut m, ref mut ledger) = *row;
+        for k in &dead {
+            if m.remove(k).is_some() {
+                freed += 1;
+            }
+        }
+        ledger.retain(|k| m.contains_key(k));
+    });
+    rs::with_active_mut(rs::SRE_MATCH_PINS_T_acc(), |pins| {
+        for k in &dead {
+            pins.remove(k);
+        }
+    });
+    freed
 }
 
 fn compiled_identity(o: &GcPyObject) -> usize {
@@ -2310,6 +2366,9 @@ pub(crate) fn pat_exec(
 
 pub(crate) fn match_object(mb: Arc<MatchBox>) -> Value {
     let o = PyObject::new(ap_obj::ObjKind::Opaque, "re.Match");
+    // Stamp the pin BEFORE match_table_insert reads it (match_object is the
+    // only mint path; GIL protocol = single-threaded here).
+    LAST_MATCH_PIN.with(|c| *c.borrow_mut() = Some(std::sync::Arc::downgrade(&o)));
     let key = compiled_identity(&o);
     let repr = match_repr(&mb);
     match_table_insert(key, mb);

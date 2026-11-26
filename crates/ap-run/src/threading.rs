@@ -1586,6 +1586,10 @@ fn evict_stale_tables_inner() -> usize {
     // E-safety: drop reclaimed worker payloads FIRST (main thread, GIL
     // held — the only safe place for these Arc clones to die).
     drain_worker_reclaim();
+    // T3-S2 (issue #20): sre MATCH_TABLE rows are liveness-pinned; drop the
+    // rows whose Match object died (replaces the old SRE_TABLE_CAP ledger
+    // eviction that invalidated live matches past 1024 mints).
+    let _ = crate::sre::sre_match_evict_dead();
     // Worker-allocated objects live in the forward channel until drained —
     // sweep after a drain or a live thread-local dict reads "absent".
     let drained = crate::gcsupport::drain_worker_registrations();
