@@ -109,6 +109,7 @@ fn block_eligible(func: &Func, bi: usize, info: &InferInfo) -> bool {
             | Inst::LoadAttr(..)
             | Inst::StoreAttr(..)
             | Inst::Subscript(..)
+            | Inst::StoreSubscript(..)
             | Inst::Print(..)
             | Inst::PushExcInfo(_)
             | Inst::PopExcInfo(_)
@@ -245,6 +246,7 @@ fn first_disqualifier(block: &crate::cfg::Block, info: &InferInfo) -> &'static s
             Inst::LoadAttr(..) => "attr load",
             Inst::StoreAttr(..) => "attr store",
             Inst::Subscript(..) => "subscript",
+            Inst::StoreSubscript(..) => "subscript store",
             Inst::Print(..) => "print",
             Inst::PushExcInfo(_) | Inst::PopExcInfo(_) | Inst::MatchExc(..) | Inst::Reraise => {
                 "exception machinery"

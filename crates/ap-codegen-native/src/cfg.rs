@@ -84,6 +84,10 @@ pub enum Inst {
     StoreAttr(TempId, String, TempId),
     /// `obj[key]`.
     Subscript(TempId, TempId, TempId),
+    /// `obj[key] = v` (pp2-tier1: dict/list subscript stores — the
+    /// dict.build loop shape — were Unsupported and never reached any
+    /// compiled path). Boxed protocol via the host SUBSCRIPT_SET_FN.
+    StoreSubscript(TempId, TempId, TempId),
     /// Truthiness test (result temp = boxed bool).
     Truthy(TempId, TempId),
     /// Push an exception-handling record (pon PushExcInfo analogue).
@@ -627,8 +631,14 @@ impl<'a> Lowerer<'a> {
                 let o = self.lower_expr(obj)?;
                 self.push_inst(Inst::StoreAttr(o, attr.clone(), v));
             }
-            Target::Subscript(_obj, _idx) => {
-                return Err(CodegenError::Unsupported("Subscript store"));
+            Target::Subscript(obj, idx) => {
+                // pp2-tier1: was Unsupported("Subscript store") — the
+                // dict.build shape (d[i] = i) never reached any compiled
+                // path. Lower as StoreSubscript (boxed protocol; the
+                // region finder excludes it from typed regions).
+                let o = self.lower_expr(obj)?;
+                let k = self.lower_expr(idx)?;
+                self.push_inst(Inst::StoreSubscript(o, k, v));
             }
             Target::Tuple(_) | Target::Starred(_) => {
                 return Err(CodegenError::Unsupported("tuple unpack store"));
@@ -728,6 +738,17 @@ impl<'a> Lowerer<'a> {
                 let t = self.temp();
                 self.push_inst(Inst::Subscript(to, ti, t));
                 Ok(t)
+            }
+            Expr::Dict(items) if items.is_empty() => {
+                // pp2-tier1: `{}` in a JIT-eligible body — lower as
+                // dict() (LoadGlobal + Call), the same name-resolution
+                // path the tree-walker's global chain uses. A shimmed
+                // dict builtin shadowing is out of scope (documented).
+                let f = self.temp();
+                let l = self.temp();
+                self.push_inst(Inst::LoadGlobal("dict".to_string(), f));
+                self.push_inst(Inst::Call(f, vec![], l));
+                Ok(l)
             }
             Expr::BoolOp(BoolOp::And, terms) | Expr::BoolOp(BoolOp::Or, terms) => {
                 // Short-circuit via blocks (S-01-30 value rule). The

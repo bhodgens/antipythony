@@ -92,7 +92,9 @@ fn unsupported_constructs_fail_closed() {
         lower_fn(&f).expect_err("cfg_tests.rs:91"),
         ap_codegen_native::CodegenError::Unsupported("Break/Continue")
     ));
-    // Subscript store likewise.
+    // Subscript store: SUPPORTED since pp2-tier1 (StoreSubscript — the
+    // dict.build loop shape `d[i] = i` reaches the baseline twin now).
+    // The old expectation here pinned Unsupported("Subscript store").
     let f = fn_def(vec![ap_ir::item::Stmt::Assign(
         vec![ap_ir::item::Target::Subscript(
             Box::new(Expr::Name("d".to_string())),
@@ -100,10 +102,14 @@ fn unsupported_constructs_fail_closed() {
         )],
         Expr::LitInt(1),
     )]);
-    assert!(matches!(
-        lower_fn(&f).expect_err("cfg_tests.rs:103"),
-        ap_codegen_native::CodegenError::Unsupported("Subscript store")
-    ));
+    let cfg = lower_fn(&f).expect("subscript store lowers since pp2-tier1");
+    assert!(
+        cfg.blocks[0]
+            .insts
+            .iter()
+            .any(|i| matches!(i, ap_codegen_native::cfg::Inst::StoreSubscript(..))),
+        "assign to a subscript target must emit StoreSubscript"
+    );
 }
 
 #[test]
