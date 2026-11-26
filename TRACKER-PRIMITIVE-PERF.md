@@ -129,3 +129,13 @@ levers filed: registry-insert batching/nursery, BoundMethod mint,
 tier-0 walk floor (tier-1 = Plan 02.05), str.join/split, sha256/md5
 backend class. Queued not-dispatched: hp-inlinecache, hp-typeddict
 (gated on re-measure), hp-micro.
+
+## FAST-PATH plan (plans/fast-path/) — bytecode lowering to kill the walk floor
+
+New hierarchical plan created 2026-11-26 (commit 08b8bed). 8 leaves in
+4 groups: 00-infra (ap-bytecode crate + dispatch interpreter),
+01-core (control flow, calls/attrs, exceptions), 02-perf (inline
+caches, superinstructions), 03-rollout (adaptive default + closing
+bench). Target: walk floor 190ns/step -> ~10-15ns dispatch; the
+walk-bound rows (dict/sort/json.loads/join/split) to parity-or-better.
+Byte-exactness contract unchanged; tree-walker stays as fallback.
