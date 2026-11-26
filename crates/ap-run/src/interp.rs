@@ -14391,6 +14391,112 @@ fn w112_attr_fallback(o: &Value, name: &str) -> Option<Value> {
 }
 
 fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option<Value>, Flow> {
+    // hp-lazydunders: bound-method mint fast path for PRIMITIVE receivers
+    // (dict/list/set/frozenset/str). The full walk below is ~1200 lines of
+    // sequential kind/name checks; a Dict receiver asking for "get" (the
+    // hottest shape — every `d.get(k)` / bound-method read in a loop) paid
+    // all of it. This arm answers the names the deep walk would answer for
+    // these receivers with the SAME mint sites:
+    //   - family-gated method names -> fresh BoundMethod per read (CPython
+    //     identity pin: `d.get is d.get` on an instance is False — never
+    //     memoize the Value),
+    //   - set/frozenset dunder surface -> object-virtual markers,
+    //   - dict `_`-prefixed EnumDict keys -> backing-dict item read,
+    //   - `__doc__` -> None, str `_value_`/`__init__` member shims.
+    // CRITICAL (first attempt's lesson — the str.split regression): any
+    // read this arm does NOT answer FALLS THROUGH to the original full
+    // walk below (str surfaces ride native_attr/name-gated arms here it
+    // does not replicate; returning Ok(None) early broke them with
+    // "'NoneType' object is not callable" at the call site). Obj receivers
+    // (UserInstance/UserClass/Opaque/...) never enter: their surfaces
+    // (define-after-read ordering, __getattr__ fallback, MRO) are exactly
+    // the semantics Fix C's reverted early-bind arm broke.
+    let fast_eligible = matches!(
+        obj,
+        Value::Dict(_) | Value::List(_) | Value::Set(_) | Value::Frozen(_)
+    );
+    if fast_eligible {
+        // The deep walk routes builtin-value methods through
+        // builtins_modules::native_attr FIRST (pydict.update / pylist.sort /
+        // pyset.add markers wired to the call_native dispatcher); the flat
+        // family mint at the bottom of the walk is a LAST RESORT for names
+        // native_attr does not claim. Mirror that order exactly — minting a
+        // bare name here for a native_attr-claimed name produces a func-less
+        // BoundMethod whose call dies with 'NoneType' object is not
+        // callable (the d.update regression the first attempt hit).
+        if let Some(v) = crate::builtins_modules::native_attr(obj, name) {
+            return Ok(Some(v));
+        }
+        if name == "__doc__" {
+            return Ok(Some(Value::None));
+        }
+        let dict_only = matches!(
+            name,
+            "keys"
+                | "values"
+                | "items"
+                | "update"
+                | "setdefault"
+                | "popitem"
+                | "get"
+                | "fromkeys"
+                | "pop"
+        );
+        let set_only = matches!(
+            name,
+            "difference"
+                | "difference_update"
+                | "intersection"
+                | "union"
+                | "issubset"
+                | "issuperset"
+                | "symmetric_difference"
+                | "symmetric_difference_update"
+                | "add"
+        );
+        let list_only = matches!(
+            name,
+            "append" | "insert" | "sort" | "reverse" | "extend" | "remove"
+        );
+        let family_ok = !dict_only && !set_only && !list_only
+            || matches!(obj, Value::Dict(_)) && dict_only
+            || matches!(obj, Value::Set(_) | Value::Frozen(_)) && set_only
+            || matches!(obj, Value::List(_)) && list_only;
+        if family_ok && (builtin_method_exists(name) || crate::methods::builtin_method_routed(name))
+        {
+            let m = ap_obj::PyObject::with_self(ap_obj::ObjKind::BoundMethod, name, obj.clone());
+            return Ok(Some(Value::Obj(m)));
+        }
+        // set/frozenset dunder surface (the deep walk's SCOPE-guarded arm —
+        // same excluded copy-protocol/wrapped names).
+        if matches!(obj, Value::Set(_) | Value::Frozen(_))
+            && name.starts_with("__")
+            && name.ends_with("__")
+            && name.len() > 4
+            && !matches!(
+                name,
+                "__class__" | "__dict__" | "__doc__" | "__deepcopy__" | "__copy__" | "__wrapped__"
+            )
+        {
+            let m = ap_obj::PyObject::new(
+                ap_obj::ObjKind::BuiltinFn,
+                format!("__object_virtual_{}__", name.trim_matches('_')),
+            );
+            *m.slice_parts.lock().unwrap_or_else(|p| p.into_inner()) = vec![obj.clone()];
+            return Ok(Some(Value::Obj(m)));
+        }
+        // Dict EnumDict underscore fallback (the deep walk's `_`-prefix
+        // dict item arm — enum.py's EnumDict reads its own ns keys).
+        if let Value::Dict(d) = obj {
+            if name.starts_with('_') && name != "__doc__" {
+                if let Some(v) = d.get(&Value::Str(PyString::new(name))) {
+                    return Ok(Some(v));
+                }
+            }
+        }
+        // FALL-THROUGH: everything else (str surfaces, __class__,
+        // __getattribute__, __iter__ family, ...) takes the original walk.
+    }
     // W112: log native _rawentry reads on UserClass receivers -
     // identifies the non-Expr::Attribute caller of the failing
     // class-receiver read in the unraisable collector flow.
