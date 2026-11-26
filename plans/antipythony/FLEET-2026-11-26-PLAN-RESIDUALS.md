@@ -39,3 +39,38 @@ deleg_981aab5f (merged; worktrees deleted; issues #15/#16/#17 closed,
 
 1. io19 (small, self-contained) -> 2. ugw18 (doc/comment heavy, spans crates) -> 3. t3s2 (runtime surface, deepest verification: minimal-repro + staged-pydantic chain progress).
 Each: first-hand gate re-run in its worktree before merge; fmt --all --check + stdlib differential 48/0 + unsafe_report.sh totals unchanged on trunk after the full wave.
+
+---
+
+# Wave 3 (2026-11-26, post-disk-reclaim)
+
+Delegation unit: deleg_5b88e0bc (3 parallel leaves). Disk reclaimed first:
+17 merged worktrees + branches deleted (~17 GB) + 4 container-verify target
+dirs (~18 GB) — 12 GB free -> 80 GB free.
+
+## In flight
+
+| leaf | branch | worktree | issue | scope |
+|---|---|---|---|---|
+| t3chk | tier1-t3chk | ~/.git/worktrees/leaf-t3chk | #20 | type.__instancecheck__ wall (T3 S2.5) — real-context repro first, general-mechanism fix |
+| io19v2 | tier1-io19v2 | ~/.git/worktrees/leaf-io19v2 | #19 | 02.08 surface gaps: Counter repr, functools CacheInfo, ast.unparse, typing repr/origin, enum mangle, pprint, argparse, warnings attribution — re-verify each first |
+| ugw20 | tier1-ugw20 | ~/.git/worktrees/leaf-ugw20 | #18 | forbid rollout (ap-cli/xtask/ap-ir), clippy ratchet CI step, baseline regen |
+
+## Ownership boundaries (binding)
+
+- t3chk: interp.rs/classes.rs/methods.rs type-protocol regions + logs-t3s2/ probes. builtins_modules.rs FROZEN (io19v2 owns surfaces there; errno/select/math/importer frozen from prior waves). builtins.rs bytes-find region = sibling stash (stash@{1}), resolve conflicts keeping TRUNK semantics.
+- io19v2: builtins_modules.rs surface additions (frozen regions read-only), methods.rs, fix_pass_differential.rs, vendored_stdlib (with DEVIATIONS discipline).
+- ugw20: ap-cli/xtask/ap-ir (forbid verify + rollout), scripts/unsafe_report.sh --clippy mode, ONE ci.yml step in fast-lints, docs/baselines. ap-ce EXCLUDED (sibling lane). Do not disturb the existing unsafe-ratchet gate step.
+
+## Merge order when unit completes
+
+io19v2 (surfaces, medium) -> ugw20 (policy/docs, small) -> t3chk (runtime, deepest verify: real-context repro + next-wall record).
+Post-merge trunk sweep: fmt --all --check, stdlib differential 48/0, classes_differential 29/0, method_surface 34/0, unsafe_report.sh --diff, ap-conform 50/50 + 48/48.
+
+## Open items NOT dispatched (parked)
+
+- T121 gate re-baseline ADOPTION: needs user ruling (issue #19 item 1).
+- Plan 10.04 pydantic_core real shim + Plan 10 S2 buffer protocol (issue #20 deps for T4/T5).
+- epoll object methods beyond the probe (fromfd/EINTR/socket-fds).
+- Inline-Python pin policing (docs/host-adaptive-pins.md backlog).
+- 12 linux-CI host-conditional pins (a1_* family): the impl matches linux CPython; needs linux sibling pins per #17 mechanism OR keep the darwin gate (current state, green on mac).
