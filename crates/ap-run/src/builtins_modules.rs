@@ -20545,10 +20545,7 @@ pub fn call_builtin_values(
                         Some(Value::Int(n)) => {
                             let v = n.to_i64().unwrap_or(-1);
                             if !(0..=255).contains(&v) {
-                                return Err(raise(
-                                    "ValueError",
-                                    "byte must be in range(0, 256)",
-                                ));
+                                return Err(raise("ValueError", "byte must be in range(0, 256)"));
                             }
                             (None, Some(v as u8))
                         }
@@ -20603,10 +20600,7 @@ pub fn call_builtin_values(
                         Some(Value::Int(n)) => {
                             let v = n.to_i64().unwrap_or(-1);
                             if !(0..=255).contains(&v) {
-                                return Err(raise(
-                                    "ValueError",
-                                    "byte must be in range(0, 256)",
-                                ));
+                                return Err(raise("ValueError", "byte must be in range(0, 256)"));
                             }
                             (None, Some(v as u8))
                         }
@@ -20617,9 +20611,7 @@ pub fn call_builtin_values(
                             if sub.is_empty() {
                                 Ok(i(b.len() as i64 + 1))
                             } else {
-                                Ok(i(
-                                    b.windows(sub.len()).filter(|w| *w == sub).count() as i64,
-                                ))
+                                Ok(i(b.windows(sub.len()).filter(|w| *w == sub).count() as i64))
                             }
                         }
                         (None, Some(byte)) => {
