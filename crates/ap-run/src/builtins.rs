@@ -5519,11 +5519,38 @@ pub fn call_builtin(
                 }
                 Some(Value::Bytes(b)) => Ok(bytearray_value(b.as_ref().clone())),
                 Some(Value::Str(sv)) => Ok(bytearray_value(sv.as_str().as_bytes().to_vec())),
+                // CPython bytearray(iterable_of_ints): per-element 0..=255
+                // (int(f, base) report: int-fixture list ctor is a corpus
+                // family; ValueError text matches bytes too).
+                Some(other) => {
+                    // bytearray(iterable of ints) — same per-element
+                    // validation contract as the bytes() ctor above.
+                    let it = iterable_of(other)?;
+                    let items = crate::iter::collect(&it);
+                    let mut out = Vec::with_capacity(items.len());
+                    for x in items {
+                        match x.as_int().and_then(|i| i.to_i64()) {
+                            Some(b) if (0..=255).contains(&b) => out.push(b as u8),
+                            Some(_) => {
+                                // CPython bytearray says "byte must be in
+                                // range(0, 256)" (no 's' — differs from
+                                // bytes()'s message).
+                                return Err(raise("ValueError", "byte must be in range(0, 256)"));
+                            }
+                            None => {
+                                return Err(raise(
+                                    "TypeError",
+                                    format!(
+                                        "'{}' object cannot be interpreted as an integer",
+                                        x.type_name()
+                                    ),
+                                ))
+                            }
+                        }
+                    }
+                    Ok(bytearray_value(out))
+                }
                 None => Ok(bytearray_value(Vec::new())),
-                Some(other) => Err(crate::Flow::Raise(crate::exc_hier::ExceptionValue::msg(
-                    "TypeError",
-                    format!("cannot convert '{}' to bytearray", other.type_name()),
-                ))),
             }
         }
         // 02.04a fix pass: memoryview(data) — inert bytes-backed stub; only

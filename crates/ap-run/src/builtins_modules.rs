@@ -21172,24 +21172,15 @@ pub fn call_builtin_values(
             }
             // ==== int extras ====
             ("pyint", "from_bytes") => {
-                // classmethod: int.from_bytes(bytes, byteorder) — the data
-                // arrives as the "receiver" slot in the unbound path.
-                // classmethod: always unbound through the type marker. The
-                // data lands in the receiver slot when it is a bytes-like /
-                // int-sequence value; otherwise (list receiver case) it is
-                // args[1]... which is the receiver here. Simplify: the DATA
-                // is whichever of recv / a(1) is a bytes-like or int
-                // sequence; the OTHER is the byteorder string slot.
-                let data = match &recv {
-                    Value::Bytes(_) | Value::List(_) | Value::Tuple(_) => recv.clone(),
-                    _ => a(1).ok_or_else(|| raise("TypeError", "from_bytes expected bytes"))?,
-                };
-                let order_at =
-                    if matches!(&recv, Value::Bytes(_) | Value::List(_) | Value::Tuple(_)) {
-                        1
-                    } else {
-                        2
-                    };
+                // classmethod: int.from_bytes(bytes, byteorder='big', *,
+                // signed=False) — ALWAYS unbound through the type marker, so
+                // the DATA is args[0] (the receiver slot) and the byteorder
+                // is args[1]. The old heuristic ("data is whichever of recv
+                // / a(1) is bytes-like") misrouted any non-Bytes/List/Tuple
+                // data (iterators, generators, ranges) to the byteorder
+                // string: int.from_bytes(iter([1,2]),'big') parsed b"big".
+                let data = recv.clone();
+                let order_at = 1usize;
                 let order = match a(order_at) {
                     Some(Value::Str(x)) => x.as_str().to_string(),
                     _ => kw(kwargs, "byteorder")
@@ -21205,11 +21196,43 @@ pub fn call_builtin_values(
                 };
                 let bytes: Vec<u8> = match &data {
                     Value::Bytes(b) => b.to_vec(),
-                    Value::Str(x) => x.as_str().bytes().collect(),
-                    other => snapshot(other)?
-                        .into_iter()
-                        .filter_map(|v| v.as_int().and_then(|i| i.to_i64()).map(|i| i as u8))
-                        .collect(),
+                    // CPython: str data has no buffer protocol ->
+                    // TypeError("cannot convert 'str' object to bytes").
+                    Value::Str(_) => {
+                        return Err(raise("TypeError", "cannot convert 'str' object to bytes"))
+                    }
+                    other => {
+                        // CPython int_from_bytes_iterable raises per element:
+                        // ValueError("bytes must be in range(0, 256)") — never
+                        // mask (the old filter_map silently `as u8`'d 300->44).
+                        // bytearray/memoryview arrive as Bytes-equivalents via
+                        // the recv arm above; this path is list/tuple/iter.
+                        let mut out: Vec<u8> = Vec::new();
+                        for v in snapshot(other)? {
+                            let n = match v.as_int() {
+                                Some(i) => i,
+                                None => {
+                                    return Err(raise(
+                                        "TypeError",
+                                        format!(
+                                            "'{}' object cannot be interpreted as an integer",
+                                            v.type_name()
+                                        ),
+                                    ))
+                                }
+                            };
+                            match n.to_i64() {
+                                Some(x) if (0..=255).contains(&x) => out.push(x as u8),
+                                _ => {
+                                    return Err(raise(
+                                        "ValueError",
+                                        "bytes must be in range(0, 256)",
+                                    ))
+                                }
+                            }
+                        }
+                        out
+                    }
                 };
                 // Limb-based conversion via Int::from_bytes_exact — the old
                 // i128 accumulator truncated past 16 bytes and big_or_int's
