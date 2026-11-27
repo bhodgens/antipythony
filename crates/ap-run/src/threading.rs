@@ -628,6 +628,10 @@ pub fn prim_of<T: PrimPayload>(addr: usize) -> Option<Arc<T>> {
     // SAFETY: type identity by key provenance (above); the input handle is
     // consumed by into_raw, so no double-drop; GIL v1 serializes the table.
     let raw = Arc::into_raw(slot) as *const T;
+    // SAFETY: raw is the data pointer just produced by Arc::into_raw on the
+    // cloned dyn-slot handle, coerced back to the concrete T recorded in this
+    // key's provenance (doc block above); rebuilding consumes exactly the one
+    // strong ref that into_raw relinquished — no double-drop.
     Some(unsafe { Arc::from_raw(raw) })
 }
 

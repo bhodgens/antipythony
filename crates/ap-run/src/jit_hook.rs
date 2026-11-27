@@ -595,6 +595,10 @@ pub fn aot_rebuild(ev: PyException) -> crate::exc_hier::ExceptionValue {
 
 /// Read the HostState out of an ExecCtx (raw-pointer seam).
 fn host(ctx: &mut ExecCtx) -> &mut HostState {
+    // SAFETY: ctx.host_data was set to the raw pointer of the caller's live
+    // Box<HostState> (jit_call_body / aot_runtime::call_body) before the compiled
+    // code runs and is not nulled or overwritten while this accessor is called,
+    // so the recovery is to the unique live HostState behind &mut ctx.
     unsafe {
         let p = ctx.host_data as *mut HostState;
         &mut *p
@@ -1050,10 +1054,16 @@ pub fn jit_call_body(
     // arm). The tier-1 fast path keeps its own call (its status contract
     // 0/2 hand-off is unchanged); the twin's outcome rides call_status.
     let call_outcome = match fast_for_call {
+        // SAFETY: fast_ptr is a live finalized fast-path entry from the TierUpDriver
+        // snapshot for this JitEntry, and ctx is exclusively borrowed for the call —
+        // call_fast's documented contract, satisfied here.
         Some(fast_ptr) => match unsafe { tierup::call_fast(fast_ptr, &je.jit, &mut ctx) } {
             Ok(()) => ap_codegen_native::clif::CallOutcome::Completed,
             Err(e) => ap_codegen_native::clif::CallOutcome::Parked(e),
         },
+        // SAFETY: call_status is unsafe by contract (compiled code writes ctx slots);
+        // ctx is a local exclusively borrowed for the call and the capture point was
+        // set before the call arm, cleared after (see below).
         None => unsafe { je.jit.call_status(&mut ctx) },
     };
     let call_r = match &call_outcome {

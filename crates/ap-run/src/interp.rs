@@ -417,9 +417,10 @@ impl FnRegistry {
         let leaked: &'static ScopeInfoModule = Box::leak(Box::new(scopes));
         let mut index: HashMap<String, &'static ap_parse::ScopeInfo> = HashMap::new();
         for s in leaked.scopes.iter() {
-            let sp = unsafe {
-                std::mem::transmute::<&ap_parse::ScopeInfo, &'static ap_parse::ScopeInfo>(s)
-            };
+            // Safe rewrite (issue #22): `leaked` is a Box::leak (=&'static), so
+            // iterating its scopes already yields &'static ScopeInfo — the old
+            // transmute was a no-op lifetime cast.
+            let sp: &'static ap_parse::ScopeInfo = s;
             let key = sp.path.join(".");
             match index.get(&key) {
                 // Within ONE module duplicate paths shouldn't exist; keep
@@ -477,6 +478,9 @@ impl FnRegistry {
         // — e.g. exec_module's pre-registration adopt): scan it directly.
         for s in table.scopes.iter() {
             if s.path.join(".").as_str() == path {
+                // SAFETY: scope tables are process-lifetime (Box::leak'd via register_scopes;
+                // the adopt path in exec_module stores the same leaked table). AUDIT: verify no
+                // caller can reach this arm with a table that is not leaked.
                 return Some(unsafe {
                     std::mem::transmute::<&ap_parse::ScopeInfo, &'static ap_parse::ScopeInfo>(s)
                 });
@@ -516,9 +520,9 @@ impl FnRegistry {
         let mut by_path = HashMap::new();
         let mut index: HashMap<String, &'static ap_parse::ScopeInfo> = HashMap::new();
         for s in scopes.scopes.iter() {
-            let sp = unsafe {
-                std::mem::transmute::<&ap_parse::ScopeInfo, &'static ap_parse::ScopeInfo>(s)
-            };
+            // Safe rewrite (issue #22): `scopes` is &'static, so iteration already
+            // yields &'static ScopeInfo — the old transmute was a no-op lifetime cast.
+            let sp: &'static ap_parse::ScopeInfo = s;
             index.entry(sp.path.join(".")).or_insert(sp);
         }
         let reg = FnRegistry {
