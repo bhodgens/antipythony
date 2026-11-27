@@ -229,15 +229,16 @@ pub fn frame_rows() -> Option<Vec<FrameRow>> {
         cap: CAP,
         len: 0,
     };
-    // SAFETY: f is the frame-query fn ap-run installed (FrameQueryFn ABI,
-    // OnceLock first-wins): it fills at most buf.cap rows into the buffer
-    // whose rows pointer backs the CAP-slot storage allocated above, so the
+    // SAFETY: f is ap-run's installed frame-query fn (FrameQueryFn ABI,
+    // OnceLock first-wins); it fills at most buf.cap rows into the CAP-slot
+    // storage behind buf.rows, so callee writes stay in-bounds.
     unsafe { (f)(&mut buf) };
     if buf.len > CAP {
         buf.len = CAP;
     }
     // SAFETY: storage backs CAP FrameRow slots and buf.len was clamped to
     // CAP by the check above, so every element in [0, buf.len) was
+    // initialised by the callee and set_len is sound.
     unsafe { storage.set_len(buf.len) };
     Some(storage)
 }
@@ -288,6 +289,8 @@ pub unsafe extern "C" fn apx_PyErr_Format_s(exc: PyObjPtr, msg: *const c_char) -
 /// The exception CLASS NAME behind a PyExc_* token handle (a Str handle
 /// carrying the class name per the S0 convention; a real class Value
 /// (Opaque) reads its object name).
+// SAFETY: callers pass exc as a live minted ce handle (PyExc_* token or Opaque) or null
+// (handled below); the payload RefCell borrow is short (worker-serialization protocol).
 unsafe fn exception_class_of_token(exc: PyObjPtr) -> String {
     if exc.is_null() {
         return "Exception".to_string();
@@ -506,11 +509,9 @@ pub unsafe extern "C" fn PyErr_NormalizeException(
     // Already an instance (Opaque carrying a runtime object): done.
     let v_h = v as CeHandle;
     if !v_h.is_null() {
-        // SAFETY: h is non-null (checked above) and is a live minted ce handle
-        // (Box::into_raw'd CeObject; the ce layer never frees handles), so the
-        // deref is valid; the payload RefCell borrow is short with no re-entrant
-        // borrow on this path (ce dispatch stays inside the worker-serialization
-        // protocol, the same claim the markers.rs Send/Sync comments pin).
+        // SAFETY: h is non-null (checked above) and a live minted ce handle
+        // (Box::into_raw'd, never freed), so the deref is valid; the payload RefCell
+        // borrow is short (worker-serialization protocol, the markers.rs claim).
         let is_instance = unsafe {
             matches!(
                 (&*v_h).payload.borrow().as_ref(),
@@ -639,6 +640,8 @@ pub unsafe extern "C" fn PyErr_NewExceptionWithDoc(
     new_exception_impl(name, base, doc)
 }
 
+// SAFETY: name is NULL (handled) or a caller-supplied NUL-terminated C string per the
+// PyErr_NewException contract; base/doc are live minted ce handles or null.
 unsafe fn new_exception_impl(name: *const c_char, base: PyObjPtr, doc: *const c_char) -> PyObjPtr {
     if name.is_null() {
         errtb_set("SystemError", "PyErr_NewException: NULL name");
@@ -697,7 +700,7 @@ unsafe fn new_exception_impl(name: *const c_char, base: PyObjPtr, doc: *const c_
 /// A `<code>` marker handle for frame row `row` (co_name/co_filename/
 /// co_firstlineno set; CPython spelling via apx_TypeName-compatible
 /// naming stays in the header — this handle reads as Namespace "<code>").
-unsafe fn code_handle_for(row: &FrameRow) -> PyObjPtr {
+fn code_handle_for(row: &FrameRow) -> PyObjPtr {
     let v = crate::runtime_ctx::make_code_value(&row.0, &row.1, row.2);
     match v {
         Some(v) => crate::state::from_value(&v) as PyObjPtr,
@@ -706,7 +709,7 @@ unsafe fn code_handle_for(row: &FrameRow) -> PyObjPtr {
 }
 
 /// A `<frame>` handle for the live frame at py_frames index `idx`.
-unsafe fn frame_handle_for(idx: usize) -> PyObjPtr {
+fn frame_handle_for(idx: usize) -> PyObjPtr {
     match crate::runtime_ctx::make_frame_value(idx) {
         Some(v) => crate::state::from_value(&v) as PyObjPtr,
         None => std::ptr::null_mut(),
@@ -778,7 +781,7 @@ pub unsafe extern "C" fn PyFrame_GetBuiltins(frame: PyObjPtr) -> PyObjPtr {
     frame_dict_attr(frame, "f_globals")
 }
 
-unsafe fn frame_dict_attr(frame: PyObjPtr, attr: &str) -> PyObjPtr {
+fn frame_dict_attr(frame: PyObjPtr, attr: &str) -> PyObjPtr {
     let h = frame as CeHandle;
     if h.is_null() {
         return std::ptr::null_mut();
@@ -813,11 +816,9 @@ pub unsafe extern "C" fn PyFrame_GetLineNumber(frame: PyObjPtr) -> c_int {
     if h.is_null() {
         return -1;
     }
-    // SAFETY: h is non-null (checked above) and is a live minted ce handle
-    // (Box::into_raw'd CeObject; the ce layer never frees handles), so the
-    // deref is valid; the payload RefCell borrow is short with no re-entrant
-    // borrow on this path (ce dispatch stays inside the worker-serialization
-    // protocol, the same claim the markers.rs Send/Sync comments pin).
+    // SAFETY: h is non-null (checked above) and a live minted ce handle
+    // (Box::into_raw'd, never freed), so the deref is valid; the payload RefCell
+    // borrow is short (worker-serialization protocol, the markers.rs claim).
     unsafe {
         let o = &*h;
         if let Some(CePayload::Opaque(v)) = o.payload.borrow().as_ref() {
@@ -854,11 +855,9 @@ pub unsafe extern "C" fn PyFrame_GetVar(frame: PyObjPtr, name: PyObjPtr) -> PyOb
     if h.is_null() {
         return std::ptr::null_mut();
     }
-    // SAFETY: h is non-null (checked above) and is a live minted ce handle
-    // (Box::into_raw'd CeObject; the ce layer never frees handles), so the
-    // deref is valid; the payload RefCell borrow is short with no re-entrant
-    // borrow on this path (ce dispatch stays inside the worker-serialization
-    // protocol, the same claim the markers.rs Send/Sync comments pin).
+    // SAFETY: h is non-null (checked above) and a live minted ce handle
+    // (Box::into_raw'd, never freed), so the deref is valid; the payload RefCell
+    // borrow is short (worker-serialization protocol, the markers.rs claim).
     unsafe {
         let o = &*h;
         let opaque = o.payload.borrow().as_ref().and_then(|p| match p {
@@ -904,11 +903,9 @@ pub unsafe extern "C" fn PyGen_GetCode(gen: PyObjPtr) -> PyObjPtr {
     if h.is_null() {
         return std::ptr::null_mut();
     }
-    // SAFETY: h is non-null (checked above) and is a live minted ce handle
-    // (Box::into_raw'd CeObject; the ce layer never frees handles), so the
-    // deref is valid; the payload RefCell borrow is short with no re-entrant
-    // borrow on this path (ce dispatch stays inside the worker-serialization
-    // protocol, the same claim the markers.rs Send/Sync comments pin).
+    // SAFETY: h is non-null (checked above) and a live minted ce handle
+    // (Box::into_raw'd, never freed), so the deref is valid; the payload RefCell
+    // borrow is short (worker-serialization protocol, the markers.rs claim).
     unsafe {
         let o = &*h;
         let opaque = o.payload.borrow().as_ref().and_then(|p| match p {
@@ -951,16 +948,16 @@ pub unsafe extern "C" fn PyCode_GetFreevars(co: PyObjPtr) -> PyObjPtr {
     code_attr_handle(co, "co_freevars")
 }
 
+// SAFETY: callers pass co as a live minted ce handle (or null, handled below); the inner
+// derefs keep to that contract and short payload borrows (worker-serialization protocol).
 unsafe fn code_attr_handle(co: PyObjPtr, attr: &str) -> PyObjPtr {
     let h = co as CeHandle;
     if h.is_null() {
         return std::ptr::null_mut();
     }
-    // SAFETY: h is non-null (checked above) and is a live minted ce handle
-    // (Box::into_raw'd CeObject; the ce layer never frees handles), so the
-    // deref is valid; the payload RefCell borrow is short with no re-entrant
-    // borrow on this path (ce dispatch stays inside the worker-serialization
-    // protocol, the same claim the markers.rs Send/Sync comments pin).
+    // SAFETY: h is non-null (checked above) and a live minted ce handle
+    // (Box::into_raw'd, never freed), so the deref is valid; the payload RefCell
+    // borrow is short (worker-serialization protocol, the markers.rs claim).
     unsafe {
         let o = &*h;
         let opaque = o.payload.borrow().as_ref().and_then(|p| match p {
@@ -1081,6 +1078,8 @@ pub unsafe extern "C" fn PyUnicode_GetLength(o: PyObjPtr) -> isize {
 /// The py_frames INDEX a `<frame>` handle represents (CPython frame
 /// handles ours mint carry slice_parts[0] = index from the TOP/innermost;
 /// resolved live through the runtime's own stub value).
+// SAFETY: callers pass frame as a live minted ce handle (or null, handled below); the
+// payload RefCell borrow is short (worker-serialization protocol, the markers.rs claim).
 unsafe fn frame_index_of(frame: PyObjPtr) -> Option<usize> {
     let h = frame as CeHandle;
     if h.is_null() {

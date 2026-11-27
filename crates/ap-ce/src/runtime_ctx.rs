@@ -121,10 +121,9 @@ fn errtb_fn() -> Option<ErrTbFn> {
 fn op_value(op: ErrTbOp) -> Option<Value> {
     let f = errtb_fn()?;
     let mut out = ErrTbOut::None_;
-    // SAFETY: f is the fn pointer ap-run installed through the
-    // corresponding install_* OnceLock seam (first-wins, never uninstalled),
-    // called with pointers of the exact ABI types, valid and aligned for the
-    // call's duration; the callee treats the op as total.
+    // SAFETY: f is the fn pointer ap-run installed via the install_* OnceLock
+    // seam (first-wins, never uninstalled), called with pointers of the exact
+    // ABI types, valid for the call's duration; the callee treats op as total.
     let rc = unsafe { (f)(&op, &mut out) };
     if rc != 0 {
         return None;
@@ -138,10 +137,9 @@ fn op_value(op: ErrTbOp) -> Option<Value> {
 fn op_idx(op: ErrTbOp) -> Option<usize> {
     let f = errtb_fn()?;
     let mut out = ErrTbOut::NoIdx;
-    // SAFETY: f is the fn pointer ap-run installed through the
-    // corresponding install_* OnceLock seam (first-wins, never uninstalled),
-    // called with pointers of the exact ABI types, valid and aligned for the
-    // call's duration; the callee treats the op as total.
+    // SAFETY: f is the fn pointer ap-run installed via the install_* OnceLock
+    // seam (first-wins, never uninstalled), called with pointers of the exact
+    // ABI types, valid for the call's duration; the callee treats op as total.
     let rc = unsafe { (f)(&op, &mut out) };
     if rc != 0 {
         return None;
