@@ -1037,7 +1037,11 @@ fn opcode_names_table_in_sync() {
             kind: BinKind::Add,
             sym: "+",
         },
-        Instr::LoadAttrCall { idx: 0, argc: 1 },
+        Instr::LoadAttrCall {
+            idx: 0,
+            argc: 1,
+            site: 0,
+        },
         Instr::StoreAttr { idx: 0 },
         Instr::CallFunctionKw {
             argc: 0,
