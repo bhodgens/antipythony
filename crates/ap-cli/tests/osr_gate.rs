@@ -14,10 +14,11 @@
 //! flock, per-run deadline fence, piped-output drain.
 
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 include!("gate_watchdog.rs");
+#[path = "../../ap-run/tests/common/diagnostic_env.rs"]
+mod diagnostic_env;
 
 fn interpreter_gate() {
     gate_watchdog_acquire();
@@ -26,7 +27,7 @@ fn interpreter_gate() {
 fn run_eval(args: &[&str], env: &[(&str, &str)]) -> (Vec<u8>, Vec<u8>, i32) {
     interpreter_gate();
     let bin = env!("CARGO_BIN_EXE_ap-run-eval");
-    let mut cmd = Command::new(bin);
+    let mut cmd = diagnostic_env::clean_command(bin);
     cmd.args(args);
     for (k, v) in env {
         cmd.env(k, v);
@@ -152,16 +153,9 @@ fn hot_loop_osr_transfers_and_matches_tier0() {
         "hot-loop OSR probe: stdout must be byte-identical across tiers"
     );
     // Non-stats stderr identical too (stats lines are the variance surface).
-    let strip_stats = |b: &[u8]| -> String {
-        String::from_utf8_lossy(b)
-            .lines()
-            .filter(|l| !l.starts_with("[OSR-STATS]") && !l.starts_with("[TIER"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
     assert_eq!(
-        strip_stats(&err0),
-        strip_stats(&erra),
+        diagnostic_env::strip_diagnostic_lines(&String::from_utf8_lossy(&err0)),
+        diagnostic_env::strip_diagnostic_lines(&String::from_utf8_lossy(&erra)),
         "hot-loop OSR probe: non-stats stderr must match"
     );
     // THE EXERCISE PROOF: at least one OSR transfer fired.

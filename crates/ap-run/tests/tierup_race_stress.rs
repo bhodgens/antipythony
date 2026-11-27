@@ -22,10 +22,11 @@
 //! interpreter gate, debug-build budget, per-run deadline fence.
 
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 include!("common/gate_watchdog.rs");
+#[path = "common/diagnostic_env.rs"]
+mod diagnostic_env;
 
 fn interpreter_gate() {
     gate_watchdog_acquire();
@@ -108,7 +109,7 @@ fn run_probe(tier: &str, probe: &PathBuf, extra_env: &[(&str, &str)]) -> (Vec<u8
     preflight_or_panic();
     interpreter_gate();
     let bin = ap_run_eval_bin();
-    let mut cmd = Command::new(&bin);
+    let mut cmd = diagnostic_env::clean_command(&bin);
     cmd.args(["--tier", tier]).arg(probe);
     for (k, v) in extra_env {
         cmd.env(k, v);
@@ -269,24 +270,9 @@ fn async_tierup_race_stress_100_runs_identical() {
         // The stats lines on stderr may legitimately differ per run (the
         // install timing races the probe's loops); byte-compare ONLY the
         // non-stats part.
-        let err_clean: String = String::from_utf8_lossy(&err)
-            .lines()
-            .filter(|l| {
-                !l.starts_with("[TIER1-STATS]")
-                    && !l.starts_with("[TIER-STATS]")
-                    && !l.starts_with("[TIERUP-STATS]")
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        let ref_err_clean: String = String::from_utf8_lossy(&ref_err)
-            .lines()
-            .filter(|l| {
-                !l.starts_with("[TIER1-STATS]")
-                    && !l.starts_with("[TIER-STATS]")
-                    && !l.starts_with("[TIERUP-STATS]")
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+        let err_clean = diagnostic_env::strip_diagnostic_lines(&String::from_utf8_lossy(&err));
+        let ref_err_clean =
+            diagnostic_env::strip_diagnostic_lines(&String::from_utf8_lossy(&ref_err));
         assert_eq!(
             err_clean, ref_err_clean,
             "run {run}: non-stats stderr diverged"

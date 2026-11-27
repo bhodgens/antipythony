@@ -15,8 +15,6 @@
 //! (EnumType/ABCMeta) — a Plan-02 follow-up. Vendored tree lives at
 //! vendored_stdlib/ (PSF-2.0, see vendored_stdlib/NOTICE.md).
 
-use std::process::Command;
-
 // Reference discovery is shared (leaf 00.02): env AP_CONFORM_REFERENCE_PYTHON
 // -> PATH python3.14 (version-STRING checked; the old spawn-only probe could
 // accept a non-3.14 interpreter that merely happened to be named python3.14).
@@ -63,14 +61,14 @@ fn assert_differential_with_path(src: &str, fixture: &std::path::Path) {
         stamp
     ));
     std::fs::write(&tmp, src).expect("write temp case");
-    let expected = Command::new(py)
+    let expected = common::diagnostic_env::clean_command(py)
         .arg(&tmp)
         .env("PYTHONPATH", fixture)
         .output()
         .expect("spawn python3.14");
     // Interpreter side runs under the OOM fence (2026-11-06 mitigation 2).
     let actual = common::fenced_output(
-        Command::new(ap_run_eval())
+        common::diagnostic_env::clean_command(ap_run_eval())
             .arg(&tmp)
             .env("ANTIPTYHONY_PATH", fixture),
     );
@@ -172,14 +170,14 @@ fn import_error_texts_byte_exact() {
             case.replace([' ', '.'], "_")
         ));
         std::fs::write(&tmp, case).expect("import_differential.rs:173");
-        let expected = Command::new(py)
+        let expected = common::diagnostic_env::clean_command(py)
             .arg(&tmp)
             .env("PYTHONPATH", &root)
             .output()
             .expect("spawn python3.14");
         // Interpreter side runs under the OOM fence (2026-11-06 mitigation 2).
         let actual = common::fenced_output(
-            Command::new(ap_run_eval())
+            common::diagnostic_env::clean_command(ap_run_eval())
                 .arg(&tmp)
                 .env("ANTIPTYHONY_PATH", &root),
         );
@@ -229,12 +227,13 @@ fn vendored_types_and_abc_import() {
     let src = "import types\nimport _collections_abc\nprint('ok')\n";
     let tmp = std::env::temp_dir().join(format!("ap_vendored_{}", std::process::id()));
     std::fs::write(&tmp, src).expect("import_differential.rs:230");
-    let expected = Command::new(py)
+    let expected = common::diagnostic_env::clean_command(py)
         .arg(&tmp)
         .output()
         .expect("spawn python3.14");
     // Interpreter side runs under the OOM fence (2026-11-06 mitigation 2).
-    let actual = common::fenced_output(Command::new(ap_run_eval()).arg(&tmp));
+    let actual =
+        common::fenced_output(common::diagnostic_env::clean_command(ap_run_eval()).arg(&tmp));
     std::fs::remove_file(&tmp).ok();
     // Our execution diverges at the ABC register(coroutine) interplay —
     // documented v0 gap (metaclass __new__). Assert we get PAST the imports
@@ -260,12 +259,13 @@ fn script_dir_on_sys_path() {
         Some(py) => py,
         None => return, // no reference + AP_REQUIRE_REFERENCE unset: skip
     };
-    let expected = Command::new(py)
+    let expected = common::diagnostic_env::clean_command(py)
         .arg(&main)
         .output()
         .expect("spawn python3.14");
     // Interpreter side runs under the OOM fence (2026-11-06 mitigation 2).
-    let actual = common::fenced_output(Command::new(ap_run_eval()).arg(&main));
+    let actual =
+        common::fenced_output(common::diagnostic_env::clean_command(ap_run_eval()).arg(&main));
     assert_eq!(
         String::from_utf8_lossy(&expected.stdout),
         String::from_utf8_lossy(&actual.stdout)

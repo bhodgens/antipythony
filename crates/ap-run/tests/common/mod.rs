@@ -17,6 +17,7 @@
 
 #![allow(dead_code)] // each suite target compiles the subset it uses
 
+pub mod diagnostic_env;
 mod gate_watchdog;
 
 use std::os::fd::AsFd as _;
@@ -181,6 +182,10 @@ impl Drop for HeavyGateLock {
 /// RAM) also covers these spawns; this fence adds the tighter 6 GB test cap
 /// + deadline + the cross-process lock.
 pub fn fenced_output(cmd: &mut std::process::Command) -> std::process::Output {
+    // Diagnostic env keys must not leak from the invoking shell into a
+    // probe: an inherited APX_TIER_STATS stats line can become stderr's
+    // last line and break exception-tail byte pins (false RED).
+    diagnostic_env::sanitize(cmd);
     preflight_or_panic();
     let _lock = HeavyGateLock::acquire();
     let mut child = cmd
@@ -356,6 +361,14 @@ fn preflight_or_panic() {
 /// is counted; N consecutive failures kill the probe (fail closed) instead
 /// of polling forever blind.
 pub fn run_aprun_eval(src: &str) -> (Vec<u8>, Vec<u8>, i32) {
+    run_aprun_eval_with_env(src, &[])
+}
+
+/// Same fenced probe executor, with EXPLICIT per-child env (applied AFTER
+/// the diagnostic-env scrub). Used by suites such as risk4_ic_version that
+/// must set `APX_TIER`/`APX_IC_AUDIT` per probe without mutating process-
+/// global state (parallel test threads share the parent environment).
+pub fn run_aprun_eval_with_env(src: &str, extra_env: &[(&str, &str)]) -> (Vec<u8>, Vec<u8>, i32) {
     preflight_or_panic();
     let _lock = HeavyGateLock::acquire();
     let dir = std::env::temp_dir().join(format!(
@@ -378,7 +391,15 @@ pub fn run_aprun_eval(src: &str) -> (Vec<u8>, Vec<u8>, i32) {
         .saturating_mul(1024 * 1024 * 1024);
 
     let bin = ap_run_probe_bin();
-    let mut child = std::process::Command::new(&bin)
+    // Same diagnostic-env scrub as fenced_output: no inherited APX_TIER /
+    // APX_TIER_STATS from the invoking shell (false-RED stats line).
+    // PER-CHILD env is applied AFTER the scrub, so explicit gate controls
+    // (APX_TIER, APX_IC_AUDIT) reach this probe and no other test thread.
+    let mut cmd = diagnostic_env::clean_command(&bin);
+    for (k, v) in extra_env {
+        cmd.env(k, v);
+    }
+    let mut child = cmd
         .arg(&path)
         .current_dir(&dir)
         .stdout(std::process::Stdio::piped())

@@ -25,6 +25,10 @@
 
 #![allow(dead_code)] // each suite target compiles the subset it uses
 
+// Single source of truth for the APX_* diagnostic-env scrub lives under
+// ap-run/tests/common; share it here by path so both crates use one helper.
+#[path = "../../../ap-run/tests/common/diagnostic_env.rs"]
+pub mod diagnostic_env;
 mod gate_watchdog;
 
 use std::os::fd::AsFd as _;
@@ -242,6 +246,9 @@ fn preflight_or_panic() {
 /// RAM) also covers these spawns; this fence adds the tighter 6 GB test cap
 /// + deadline + the cross-process lock.
 pub fn fenced_output(cmd: &mut std::process::Command) -> std::process::Output {
+    // Scrub inherited APX_* diagnostics from the shell (false-RED stats
+    // line); explicit per-test env is re-applied by sanitize().
+    diagnostic_env::sanitize(cmd);
     preflight_or_panic();
     let _lock = HeavyGateLock::acquire();
     let mut child = cmd

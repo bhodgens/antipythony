@@ -72,3 +72,24 @@ A green `pytest` run with `xpassed` entries means an `xfail` marker is
 stale: the covered behavior now works. Flip it (remove the marker, keep
 the test) rather than leaving it — a stale xfail hides future regressions
 of the very behavior it celebrated.
+
+### Clean-env gate runs
+
+Diagnostic `APX_*` knobs (`APX_TIER`, `APX_TIER_STATS`, `APX_TIER_DEBUG`, …)
+are opt-in debugging switches, not gate configuration. An exported knob in
+the invoking shell can leak into a probe child, append a `[TIER-STATS]` line
+to stderr, and replace the pinned exception tail in a byte-exact differential
+test. Launch gates with the diagnostic keys unset so parent and child agree:
+
+```
+env -u APX_TIER -u APX_TIER_STATS -u APX_TIER_DEBUG -u APX_TIER1_STATS \
+    -u APX_TIERUP_STATS -u APX_OSR_STATS -u APX_CALLDBG -u APX_CE_TRACE \
+    -u APX_GC_THRESHOLD -u APX_HASHDBG -u APX_TDEBUG -u APX_SCHED_TRACE \
+    -u APX_BP_DEBUG \
+    cargo test -p ap-run --test import_guard_differential
+```
+
+The harnesses also scrub these keys from probe children
+(`crates/ap-run/tests/common/diagnostic_env.rs`); explicit per-test opt-ins
+are re-applied after the scrub, so the command above only removes inherited
+shell values. See `docs/development.md` → "Clean-env gate runs" for details.
