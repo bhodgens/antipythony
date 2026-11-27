@@ -122,4 +122,24 @@ impl SiteTable {
     pub fn iter(&self) -> impl Iterator<Item = &SiteInfo> {
         self.sites.iter()
     }
+
+    /// fp-superinstructions: remap every site's recorded instruction index
+    /// after the peephole shrinks the stream, and rebuild the dense
+    /// instr_idx -> site-id map. `remap[old] = new`; site ids themselves are
+    /// stable (they are the interpreter's cache-array indices).
+    pub fn remap_instr(&mut self, remap: &[u32]) {
+        let new_len = (0..self.by_instr.len())
+            .filter_map(|old| remap.get(old).copied())
+            .max()
+            .map_or(0, |m| m as usize + 1);
+        self.by_instr = vec![NO_SITE; new_len];
+        for (id, info) in self.sites.iter_mut().enumerate() {
+            let old = info.instr_idx as usize;
+            let new = remap.get(old).copied().unwrap_or(info.instr_idx);
+            info.instr_idx = new;
+            if (new as usize) < self.by_instr.len() {
+                self.by_instr[new as usize] = id as u32;
+            }
+        }
+    }
 }

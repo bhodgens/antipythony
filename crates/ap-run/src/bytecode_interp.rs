@@ -909,6 +909,21 @@ fn fast_bound_mint(obj: &Value, name: &str) -> Option<Value> {
     Some(Value::Obj(m))
 }
 
+/// fp-superinstructions: fused BinOp semantics. ONE dispatch boundary
+/// replaces `(load a, load b, BinOp)`. The guard IS the semantics —
+/// `fast_smi_binop` only answers for two Smi Ints; every other operand
+/// shape (bigint, str, list, user dunder, ...) falls through to the SAME
+/// `eval_binop` the unfused BinOp arm calls. No specialization is trusted
+/// without its guard, so there is no miscompile surface.
+#[inline]
+fn fused_binop(a: Value, b: Value, kind: BinKind) -> Result<Value, Flow> {
+    let op = bin_ir(kind);
+    if let Some(v) = fast_smi_binop(&a, op, &b) {
+        return Ok(v);
+    }
+    crate::interp::eval_binop(&a, op, &b)
+}
+
 /// Truthiness for the hot shapes with the EXACT semantics of
 /// interp::truthy_public (Int: != 0; Bool: itself; None: false). Every
 /// other shape (str/list/tuple/dict/user) falls to the shared helper.
@@ -1319,6 +1334,82 @@ fn run_frame(
                 let b = pop!();
                 let a = pop!();
                 let v = hop!(crate::interp::eval_binop(&a, op, &b));
+                stack.push(v);
+                pc += 1;
+            }
+            Instr::LoadConst2BinOp { a, b, op } => {
+                sync_frame_line(frame, cur_line);
+                let av = match const_value(code, a) {
+                    Ok(v) => v,
+                    Err(f) => break Err((cur_line, f)),
+                };
+                let bv = match const_value(code, b) {
+                    Ok(v) => v,
+                    Err(f) => break Err((cur_line, f)),
+                };
+                let v = hop!(fused_binop(av, bv, op));
+                stack.push(v);
+                pc += 1;
+            }
+            Instr::LoadFastConstBinOp { slot, b, op } => {
+                sync_frame_line(frame, cur_line);
+                let s = slot as usize;
+                let av = match locals.get(s).and_then(|x| x.as_ref()) {
+                    Some(v) => v.clone(),
+                    None => {
+                        let name = code
+                            .local_names
+                            .get(s)
+                            .map(String::as_str)
+                            .unwrap_or("<slot>");
+                        raise_or_propagate!(raise_flow(
+                            "UnboundLocalError",
+                            format!(
+                                "cannot access local variable '{name}' where it is not \
+                                 associated with a value"
+                            ),
+                        ));
+                    }
+                };
+                let bv = match const_value(code, b) {
+                    Ok(v) => v,
+                    Err(f) => break Err((cur_line, f)),
+                };
+                let v = hop!(fused_binop(av, bv, op));
+                stack.push(v);
+                pc += 1;
+            }
+            Instr::LoadFast2BinOp { a, b, op } => {
+                sync_frame_line(frame, cur_line);
+                let fetch = |slot: u16| -> Result<Value, Flow> {
+                    let s = slot as usize;
+                    match locals.get(s).and_then(|x| x.as_ref()) {
+                        Some(v) => Ok(v.clone()),
+                        None => {
+                            let name = code
+                                .local_names
+                                .get(s)
+                                .map(String::as_str)
+                                .unwrap_or("<slot>");
+                            Err(raise_flow(
+                                "UnboundLocalError",
+                                format!(
+                                    "cannot access local variable '{name}' where it is not \
+                                     associated with a value"
+                                ),
+                            ))
+                        }
+                    }
+                };
+                let av = match fetch(a) {
+                    Ok(v) => v,
+                    Err(f) => break Err((cur_line, f)),
+                };
+                let bv = match fetch(b) {
+                    Ok(v) => v,
+                    Err(f) => break Err((cur_line, f)),
+                };
+                let v = hop!(fused_binop(av, bv, op));
                 stack.push(v);
                 pc += 1;
             }

@@ -42,6 +42,15 @@ pub fn render_instr(code: &CodeObject, idx: usize) -> String {
             format!("{base}{idx}  # {name} site={site}")
         }
         Instr::CallFunction { argc, site } => format!("{base}{argc}  site={site}"),
+        Instr::LoadConst2BinOp { a, b, op } => {
+            format!("{base}{} {} {}  # consts", op.as_str(), a, b)
+        }
+        Instr::LoadFastConstBinOp { slot, b, op } => {
+            format!("{base}{} {} {}  # slot,consts", op.as_str(), slot, b)
+        }
+        Instr::LoadFast2BinOp { a, b, op } => {
+            format!("{base}{} {} {}  # slots", op.as_str(), a, b)
+        }
         Instr::CallFunctionKw {
             argc,
             kw_first,

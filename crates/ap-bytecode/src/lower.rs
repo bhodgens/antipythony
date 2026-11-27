@@ -314,6 +314,11 @@ impl Lowerer {
         self.lower_stmts(&fn_def.body.blocks)?;
         // Implicit `return None` on fall-off-the-end (S-02-11).
         self.emit(Instr::ReturnNone);
+        // fp-superinstructions (02-perf/02): data-driven peephole. Rewrites
+        // the histogram's top (load,load,BinOp) triples into ONE dispatch
+        // boundary. Must run AFTER all jumps are backpatched (it rewrites
+        // instruction indices in place, fixing up every jump target).
+        self.peephole_fuse_binop_triples();
 
         Ok(CodeObject {
             name: fn_def.name.clone(),
@@ -339,6 +344,120 @@ impl Lowerer {
         let mut v: Vec<(u16, String)> = self.slots.iter().map(|(n, s)| (*s, n.clone())).collect();
         v.sort_by_key(|(s, _)| *s);
         v.into_iter().map(|(_, n)| n).collect()
+    }
+
+    /// fp-superinstructions (02-perf/02): fuse the HISTOGRAM-SUPPORTED
+    /// `(load a, load b, BinOp)` triples into one instruction. The three
+    /// shapes come straight from `APX_BP_STATS`:
+    ///   LoadConst,LoadConst,BinOp (9.24M) -> LoadConst2BinOp
+    ///   LoadFast,LoadConst,BinOp  (2.35M) -> LoadFastConstBinOp
+    ///   LoadFast,LoadFast,BinOp   (0.42M) -> LoadFast2BinOp
+    ///
+    /// Correctness invariants:
+    /// - Each fused instruction is semantically the unfused triple (the
+    ///   dispatcher uses the SAME fast_smi_binop + eval_binop fallback).
+    /// - Rewriting shrinks the stream; jump targets, line-table indices,
+    ///   site instr_idx and exception ranges are ALL remapped through a
+    ///   single `old -> new` table so control flow / tracebacks stay exact.
+    /// - Only ADJACENT instructions with no intervening jump target are
+    ///   fused. A block boundary (any jump targeting instr i) pins i, so
+    ///   a fused op never spans a control-flow join.
+    /// - No site/carry on LoadConst/LoadFast/BinOp — the site table is
+    ///   untouched by the rewrite (sites carry their own instr_idx, which
+    ///   the remap fixes up).
+    #[allow(clippy::too_many_lines)]
+    fn peephole_fuse_binop_triples(&mut self) {
+        let n = self.instrs.len();
+        if n < 3 {
+            return;
+        }
+        // Pinned = any jump target (a control-flow entry point). A fused
+        // op must not swallow a pinned instruction into its middle.
+        let mut pinned = vec![false; n];
+        for ins in &self.instrs {
+            if let Some(t) = ins.jump_target() {
+                if (t as usize) < n {
+                    pinned[t as usize] = true;
+                }
+            }
+        }
+        // old index -> new index (identity until a fusion removes slots).
+        let mut remap: Vec<u32> = (0..n as u32).collect();
+        let mut out: Vec<Instr> = Vec::with_capacity(n);
+        let mut i = 0;
+        while i < n {
+            let fused = if i + 2 < n && !pinned[i + 1] && !pinned[i + 2] {
+                match (self.instrs[i], self.instrs[i + 1], self.instrs[i + 2]) {
+                    (Instr::LoadConst(a), Instr::LoadConst(b), Instr::BinOp(op)) => {
+                        Some(Instr::LoadConst2BinOp { a, b, op })
+                    }
+                    (Instr::LoadFast(slot), Instr::LoadConst(b), Instr::BinOp(op)) => {
+                        Some(Instr::LoadFastConstBinOp { slot, b, op })
+                    }
+                    (Instr::LoadFast(a), Instr::LoadFast(b), Instr::BinOp(op)) => {
+                        Some(Instr::LoadFast2BinOp { a, b, op })
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+            if let Some(f) = fused {
+                // The fused instruction lands at `out.len()`; the three
+                // old instructions map there (targets INTO the middle of
+                // the triple would have been pinned, so none land at i+1
+                // or i+2).
+                let dst = out.len() as u32;
+                remap[i] = dst;
+                remap[i + 1] = dst;
+                remap[i + 2] = dst;
+                out.push(f);
+                i += 3;
+            } else {
+                remap[i] = out.len() as u32;
+                out.push(self.instrs[i]);
+                i += 1;
+            }
+        }
+        let new_n = out.len();
+        if new_n == n {
+            return; // no fusion matched — leave every table untouched
+        }
+        // Remap jump targets.
+        for ins in &mut out {
+            if let Some(t) = ins.jump_target() {
+                let nt = remap.get(t as usize).copied().unwrap_or(t);
+                let replaced = match *ins {
+                    Instr::Jump(_) => Some(Instr::Jump(nt)),
+                    Instr::JumpIfFalse(_) => Some(Instr::JumpIfFalse(nt)),
+                    Instr::JumpIfTrue(_) => Some(Instr::JumpIfTrue(nt)),
+                    Instr::JumpIfFalseOrPop(_) => Some(Instr::JumpIfFalseOrPop(nt)),
+                    Instr::JumpIfTrueOrPop(_) => Some(Instr::JumpIfTrueOrPop(nt)),
+                    Instr::ForNext(_) => Some(Instr::ForNext(nt)),
+                    Instr::CheckExcept(_) => Some(Instr::CheckExcept(nt)),
+                    _ => None,
+                };
+                if let Some(x) = replaced {
+                    *ins = x;
+                }
+            }
+        }
+        // Remap the sparse line table (rebuild through the public API to
+        // keep its monotonicity invariant).
+        let old_lines = self.lines.clone();
+        self.lines = crate::linetable::LineTable::from_remapped(old_lines.iter(), |i| {
+            remap.get(i as usize).copied().unwrap_or(i)
+        });
+        // Remap site instr_idx (fused ops carry no sites, so no site is
+        // dropped; sites on OTHER instructions move with their op).
+        self.sites.remap_instr(&remap);
+        // Remap exception ranges (start/ inclusive, end exclusive).
+        for e in self.excs.entries_mut() {
+            e.start = remap.get(e.start as usize).copied().unwrap_or(e.start);
+            e.end = remap.get(e.end as usize).copied().unwrap_or(e.end);
+            e.handler = remap.get(e.handler as usize).copied().unwrap_or(e.handler);
+        }
+        self.instrs = out;
     }
 
     fn lower_stmts(&mut self, stmts: &[Stmt]) -> Result<(), Unsupported> {

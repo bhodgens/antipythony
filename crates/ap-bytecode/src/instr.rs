@@ -272,6 +272,19 @@ pub enum Instr {
     /// Bare `except:` matcher: always matches; pushes the instance (or
     /// None filler) and falls through.
     CheckExceptBare,
+    // === fp-superinstructions (data-driven; 02-perf/02) ===================
+    // Each fused opcode replaces a 3-instruction `(load a, load b, BinOp)`
+    // triple with ONE dispatch boundary. All three share the SAME semantics
+    // as the unfused sequence: fast_smi_binop guarded by a type check, then
+    // the shared eval_binop for anything else. The guard is the semantics —
+    // an unguarded specialization would be a miscompile; here every fused
+    // arm falls through to the generic helper on a guard miss.
+    /// `consts[a] op consts[b]` (histogram: LoadConst,LoadConst,BinOp 9.24M).
+    LoadConst2BinOp { a: u32, b: u32, op: BinKind },
+    /// `locals[slot] op consts[b]` (LoadFast,LoadConst,BinOp 2.35M).
+    LoadFastConstBinOp { slot: u16, b: u32, op: BinKind },
+    /// `locals[a] op locals[b]` (LoadFast,LoadFast,BinOp 0.42M).
+    LoadFast2BinOp { a: u16, b: u16, op: BinKind },
 }
 
 impl Instr {
@@ -366,13 +379,16 @@ impl Instr {
             Self::ResumeUnwind => 37,
             Self::CheckExcept(_) => 38,
             Self::CheckExceptBare => 39,
+            Self::LoadConst2BinOp { .. } => 40,
+            Self::LoadFastConstBinOp { .. } => 41,
+            Self::LoadFast2BinOp { .. } => 42,
         }
     }
 }
 
 /// One name per opcode, discriminant order (kept in sync with
 /// `Instr::opcode_index`; `decode::disassemble` and tests rely on it).
-pub const OPCODE_NAMES: [&str; 40] = [
+pub const OPCODE_NAMES: [&str; 43] = [
     "LoadConst",
     "LoadFast",
     "LoadGlobal",
@@ -413,4 +429,7 @@ pub const OPCODE_NAMES: [&str; 40] = [
     "ResumeUnwind",
     "CheckExcept",
     "CheckExceptBare",
+    "LoadConst2BinOp",
+    "LoadFastConstBinOp",
+    "LoadFast2BinOp",
 ];

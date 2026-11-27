@@ -77,4 +77,18 @@ impl LineTable {
     pub fn iter(&self) -> impl Iterator<Item = &LineEntry> {
         self.entries.iter()
     }
+
+    /// fp-superinstructions: rebuild from remapped instruction indices
+    /// (peephole rewrite). Caller supplies entries in monotonic order.
+    pub fn from_remapped<'a, I, F>(entries: I, mut map: F) -> Self
+    where
+        I: IntoIterator<Item = &'a LineEntry>,
+        F: FnMut(u32) -> u32,
+    {
+        let mut t = Self::new();
+        for e in entries {
+            t.record(map(e.instr_idx), e.line as usize);
+        }
+        t
+    }
 }
