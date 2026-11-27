@@ -203,7 +203,7 @@ fn sys_err_null(api: &str) -> PyObjPtr {
 /// (probed 3.14.7: getattr(obj, 42) => TypeError "attribute name must be
 /// string, not 'int'" even when the object would answer). `quiet` selects
 /// the GetOptionalAttr contract (NULL + NO error on miss).
-unsafe fn get_attr_impl(o: PyObjPtr, name: PyObjPtr, quiet: bool) -> PyObjPtr {
+fn get_attr_impl(o: PyObjPtr, name: PyObjPtr, quiet: bool) -> PyObjPtr {
     if o.is_null() {
         return sys_err_null("PyObject_GetAttr");
     }
@@ -319,7 +319,7 @@ pub unsafe extern "C" fn PyObject_GetOptionalAttrString(
 
 /// The name-must-be-string gate shared by set/del (probed 3.14.7:
 /// setattr/delattr raise the same text as getattr). None => error set.
-unsafe fn name_string(name: PyObjPtr, api: &str) -> Option<String> {
+fn name_string(name: PyObjPtr, api: &str) -> Option<String> {
     let name_v = value_of(name);
     match name_v {
         Some(Value::Str(s)) => Some(s.as_str().to_string()),
@@ -508,7 +508,7 @@ pub const PY_NE: c_int = 3;
 pub const PY_GT: c_int = 4;
 pub const PY_GE: c_int = 5;
 
-unsafe fn rich_impl(o1: PyObjPtr, o2: PyObjPtr, op: c_int, bool_form: bool) -> PyObjPtr {
+fn rich_impl(o1: PyObjPtr, o2: PyObjPtr, op: c_int, bool_form: bool) -> PyObjPtr {
     let (Some(a), Some(b)) = (value_of(o1), value_of(o2)) else {
         err_set("SystemError", "PyObject_RichCompare: NULL argument");
         return std::ptr::null_mut();

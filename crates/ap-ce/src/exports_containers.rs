@@ -42,11 +42,9 @@ fn dict_of(h: CeHandle) -> Option<ap_obj::int::Gc<PyDict>> {
     if h.is_null() {
         return None;
     }
-    // SAFETY: h is non-null (checked above) and is a live minted ce handle
-    // (Box::into_raw'd CeObject; the ce layer never frees handles), so the
-    // deref is valid; the payload RefCell borrow is short with no re-entrant
-    // borrow on this path (ce dispatch stays inside the worker-serialization
-    // protocol, the same claim the markers.rs Send/Sync comments pin).
+    // SAFETY: h is non-null (checked above) and a live minted ce handle
+    // (Box::into_raw'd, never freed), so the deref is valid; the payload RefCell
+    // borrow is short (worker-serialization protocol, the markers.rs claim).
     unsafe {
         match (&*h).payload.borrow().as_ref() {
             Some(CePayload::Dict(d)) => Some(d.clone()),
@@ -59,11 +57,9 @@ fn list_of(h: CeHandle) -> Option<ap_obj::int::Gc<PyList>> {
     if h.is_null() {
         return None;
     }
-    // SAFETY: h is non-null (checked above) and is a live minted ce handle
-    // (Box::into_raw'd CeObject; the ce layer never frees handles), so the
-    // deref is valid; the payload RefCell borrow is short with no re-entrant
-    // borrow on this path (ce dispatch stays inside the worker-serialization
-    // protocol, the same claim the markers.rs Send/Sync comments pin).
+    // SAFETY: h is non-null (checked above) and a live minted ce handle
+    // (Box::into_raw'd, never freed), so the deref is valid; the payload RefCell
+    // borrow is short (worker-serialization protocol, the markers.rs claim).
     unsafe {
         let p = (&*h).payload.borrow();
         match p.as_ref() {
@@ -83,11 +79,9 @@ fn tuple_items_of(h: CeHandle) -> Option<Vec<CeHandle>> {
     if h.is_null() {
         return None;
     }
-    // SAFETY: h is non-null (checked above) and is a live minted ce handle
-    // (Box::into_raw'd CeObject; the ce layer never frees handles), so the
-    // deref is valid; the payload RefCell borrow is short with no re-entrant
-    // borrow on this path (ce dispatch stays inside the worker-serialization
-    // protocol, the same claim the markers.rs Send/Sync comments pin).
+    // SAFETY: h is non-null (checked above) and a live minted ce handle
+    // (Box::into_raw'd, never freed), so the deref is valid; the payload RefCell
+    // borrow is short (worker-serialization protocol, the markers.rs claim).
     unsafe {
         match (&*h).payload.borrow().as_ref() {
             Some(CePayload::Tuple(items)) => Some(items.clone()),
@@ -110,11 +104,9 @@ fn type_name_of(h: CeHandle) -> String {
     if h.is_null() {
         return "<null>".to_string();
     }
-    // SAFETY: h is non-null (checked above) and is a live minted ce handle
-    // (Box::into_raw'd CeObject; the ce layer never frees handles), so the
-    // deref is valid; the payload RefCell borrow is short with no re-entrant
-    // borrow on this path (ce dispatch stays inside the worker-serialization
-    // protocol, the same claim the markers.rs Send/Sync comments pin).
+    // SAFETY: h is non-null (checked above) and a live minted ce handle
+    // (Box::into_raw'd, never freed), so the deref is valid; the payload RefCell
+    // borrow is short (worker-serialization protocol, the markers.rs claim).
     unsafe { (&*h).type_name().to_string() }
 }
 
@@ -644,7 +636,7 @@ pub unsafe extern "C" fn PyDict_Copy(mp: PyObjPtr) -> PyObjPtr {
 /// dict_update_impl: dict source merges (override=false keeps existing);
 /// non-dict source => the keys()-AttributeError chain CPython surfaces as
 /// AttributeError: '<t>' object has no attribute 'keys' (measured).
-unsafe fn dict_update_from_dict(
+fn dict_update_from_dict(
     d: &ap_obj::int::Gc<PyDict>,
     other: &ap_obj::int::Gc<PyDict>,
     override_: c_int,
@@ -686,7 +678,8 @@ pub unsafe extern "C" fn PyDict_Merge(mp: PyObjPtr, other: PyObjPtr, override_: 
 
 #[no_mangle]
 pub unsafe extern "C" fn PyDict_Update(mp: PyObjPtr, other: PyObjPtr) -> c_int {
-    // SAFETY: forwarding to PyDict_Merge with the same (mp, other) handles;
+    // SAFETY: PyDict_Merge re-validates both handles (live minted, never
+    // freed), so forwarding the caller's (mp, other) unchanged is sound.
     unsafe { PyDict_Merge(mp, other, 1) }
 }
 
@@ -907,11 +900,9 @@ fn list_items_of(h: CeHandle) -> Option<Vec<CeHandle>> {
     if h.is_null() {
         return None;
     }
-    // SAFETY: h is non-null (checked above) and is a live minted ce handle
-    // (Box::into_raw'd CeObject; the ce layer never frees handles), so the
-    // deref is valid; the payload RefCell borrow is short with no re-entrant
-    // borrow on this path (ce dispatch stays inside the worker-serialization
-    // protocol, the same claim the markers.rs Send/Sync comments pin).
+    // SAFETY: h is non-null (checked above) and a live minted ce handle
+    // (Box::into_raw'd, never freed), so the deref is valid; the payload RefCell
+    // borrow is short (worker-serialization protocol, the markers.rs claim).
     unsafe {
         match (&*h).payload.borrow().as_ref() {
             Some(CePayload::List(items)) => Some(items.clone()),

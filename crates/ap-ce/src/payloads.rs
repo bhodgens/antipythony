@@ -89,6 +89,7 @@ pub fn payload_take(key: usize) {
     if let Some(m) = g.as_mut() {
         if let Some(s) = m.remove(&key) {
             // SAFETY: s.data came from payload_alloc's malloc route and the slot is
+            // removed under the same lock, so no alias remains — a single free.
             unsafe { libc::free(s.data as *mut c_void) };
         }
     }

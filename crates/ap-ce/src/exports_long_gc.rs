@@ -73,10 +73,9 @@ pub static PYLONG_LAYOUT: PyLongLayout = PyLongLayout {
 /// The (sign, magnitude) of a CeHandle int, with the magnitude as a
 /// num-bigint Big. Returns None for non-int handles (TypeError already set).
 fn int_parts(h: CeHandle) -> Option<(bool, num_bigint::BigInt)> {
-    // SAFETY: caller precondition — h is a live minted ce handle (the C
-    // caller null-checks per the apx header contract); handles are
-    // Box::into_raw'd and never freed by the ce layer, so the deref is valid;
-    // the payload borrow is short with no re-entrant borrow on this path.
+    // SAFETY: caller precondition — h is a live minted ce handle (the C callers
+    // null-check per the apx header contract; handles are Box::into_raw'd and
+    // never freed), so the deref is valid; the payload borrow is short.
     unsafe {
         let o = &*h;
         // Py_None mints a Bool-kind handle with kind == CeKind::None —
@@ -120,6 +119,9 @@ fn expect_int(h: CeHandle, api: &str) -> bool {
     }
 }
 
+// SAFETY: callers pass h as a live minted ce handle (Box::into_raw'd, never freed) or
+// null (handled below); the payload RefCell borrow is short (worker-serialization
+// protocol, the markers.rs claim).
 unsafe fn type_name_of(h: CeHandle) -> String {
     if h.is_null() {
         return "<null>".to_string();
@@ -471,6 +473,8 @@ fn full_twos_complement(mag: &num_bigint::BigInt, neg: bool, mag_bits: u64) -> V
 
 /// The compact arm of AsNativeBytes (a single i64), reproducing CPython's
 /// `_fits_in_n_bits` return-value and fill logic exactly.
+// SAFETY: buffer is caller-supplied per the AsNativeBytes contract: writable for at
+// least n bytes when non-null (n clamped to 1..=8 by the callers, i64 copy below).
 unsafe fn compact_path(
     sv: i64,
     buffer: *mut c_void,
@@ -570,6 +574,8 @@ pub unsafe extern "C" fn PyLong_FromUnsignedNativeBytes(
 /// top byte; leading insignificant bytes trimmed (0x00 positive, 0xff
 /// negative, +1 safety bump); 2's-complement correction LSB-first with a
 /// rippling carry (upstream's twodigits accumulation, byte-at-a-time form).
+// SAFETY: buffer is caller-supplied per the _PyLong_FromByteArray contract: readable for
+// n bytes (null/n==0 handled below); bytes come from a live Python buffer object.
 unsafe fn from_byte_array(
     buffer: *const c_void,
     n: usize,
@@ -787,6 +793,8 @@ unsafe extern "C" fn gc_visit_fn(visited: PyObjPtr, closure: *mut c_void) -> c_i
 
 /// The GC-registry address of a CeHandle's runtime object (0 when the
 /// handle fronts no tracked heap object).
+// SAFETY: callers pass h as a live minted ce handle (Box::into_raw'd, never freed); the
+// payload RefCell borrow is short (worker-serialization protocol, the markers.rs claim).
 unsafe fn ce_handle_gc_addr(h: CeHandle) -> usize {
     let o = &*h;
     match o.payload.borrow().as_ref() {
