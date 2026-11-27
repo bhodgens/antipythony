@@ -65,6 +65,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use ap_bytecode::caches::{AttrPlan, CallPlan, IC_MAGIC};
 use ap_bytecode::code::CodeObject;
 use ap_bytecode::instr::{BinKind, CompareOp, Instr, UnaryKind};
 use ap_bytecode::pool::Const;
@@ -74,6 +75,7 @@ use ap_obj::value::{PyList, PyString, Tuple, Value};
 
 use crate::exc_hier::ExceptionValue;
 use crate::frame::{FnEntry, Frame, Interpreter, Loc};
+use crate::ic::IcTable;
 use crate::iter::IterState;
 use crate::Flow;
 
@@ -100,6 +102,210 @@ thread_local! {
     /// THE hot-path line cell (leaf spec: thread-local Cell<u32> written per
     /// instruction; frame atomics touched only at instrument/error points).
     static BC_LINE: Cell<u32> = const { Cell::new(0) };
+    /// Leaf fp-inlinecache: per-(thread, code-ptr) inline-cache tables (see
+    /// crate::ic header for the no-GIL shape). The compiled-body Arc pin
+    /// guarantees the code-ptr key never aliases (the registry holds the
+    /// def Arc for the process); tables die with the thread.
+    static BC_IC: RefCell<HashMap<usize, std::rc::Rc<IcTable>>> = RefCell::new(HashMap::new());
+}
+
+/// IC hit/fill counters (APX_TIER_STATS=1 -> bc_stats_line). Relaxed.
+static IC_GLOBAL_HITS: AtomicU64 = AtomicU64::new(0);
+static IC_GLOBAL_FILL: AtomicU64 = AtomicU64::new(0);
+static IC_ATTR_HITS: AtomicU64 = AtomicU64::new(0);
+static IC_ATTR_FILL: AtomicU64 = AtomicU64::new(0);
+static IC_CALL_HITS: AtomicU64 = AtomicU64::new(0);
+
+/// This thread's cache table for one compiled body (sized once from the
+/// code object's site census).
+fn ic_table_for(code: &Arc<CodeObject>) -> std::rc::Rc<IcTable> {
+    let key = Arc::as_ptr(code) as usize;
+    BC_IC.with(|c| {
+        let mut map = c.borrow_mut();
+        map.entry(key)
+            .or_insert_with(|| {
+                let n = code.sites.len();
+                std::rc::Rc::new(IcTable::sized(n))
+            })
+            .clone()
+    })
+}
+
+/// The site id an instruction at `pc` carries (None = no site on that
+/// instruction). Dense SiteTable::by_instr lookup — O(1).
+#[inline]
+fn ic_site_of(code: &CodeObject, pc: usize) -> Option<u32> {
+    code.sites.site_at(pc as u32)
+}
+
+/// The receiver's class payload for cacheable attr sites: user instances
+/// (their type payload) and user classes (themselves). Primitive receivers
+/// (dict/list/str/..) have no class counter to stamp — None (their reads
+/// ride the value-family fast arms; classes.rs's interned-Type payload
+/// syntheses answer via full walks and stay uncached).
+fn receiver_class_ref(obj: &Value) -> Option<Arc<ap_obj::classes::TypeRef>> {
+    match obj {
+        Value::Obj(o) => match o.kind {
+            ap_obj::ObjKind::UserInstance => o
+                .type_ref
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .and_then(|w| w.upgrade()),
+            ap_obj::ObjKind::UserClass => o
+                .class_ref
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone(),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Fill an AttrLoad site from a slow-path answer. Mirrors instance_attr /
+/// class_attr_get's resolution ORDER (classes.rs) to classify the plan;
+/// anything the classifier can't pin to a stamp-guarded surface records
+/// NOTHING (the site stays empty — every read re-walks, exact semantics).
+///
+/// Classification (must match classes.rs instance_attr order):
+/// 1. data descriptor on the class -> NOT cacheable (_descr_get dispatch).
+/// 2. instance dict hit + NOT a class member shadow -> InstDict.
+/// 3. class member: plain Function + not a slot -> BindFunc (func + owner).
+///    Plain non-function member (int/str/obj read off the class or via the
+///    class receiver) -> ClassValue. Any descriptor kind -> NOT cacheable.
+fn ic_attr_fill(ic: &IcTable, site: u32, obj: &Value, name: &str, v: &Value) {
+    // try_borrow_mut fill (None = a nested frame of this same body is
+    // mid-dispatch on this thread — skip; the site re-fills on a later
+    // non-nested miss).
+    let Some(t) = receiver_class_ref(obj) else {
+        return;
+    };
+    let stamps = crate::ic::class_stamps(&t);
+    // Descriptor check FIRST (data descriptor wins over the instance dict —
+    // instance_attr step 1): a property/descriptor answer is dynamic.
+    if let Some((entry, _)) = t.lookup_with_owner(name) {
+        if crate::classes::is_data_descriptor_scratch(&entry) {
+            return;
+        }
+    }
+    let is_inst = matches!(obj, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance);
+    let is_cls = matches!(obj, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass);
+    if is_inst {
+        // Instance receiver: step 2 — instance dict supplies it?
+        let in_inst = {
+            let Value::Obj(o) = obj else {
+                return;
+            };
+            o.attrs
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .contains_str(name)
+        };
+        if in_inst && !t.is_slot(name) {
+            // BUT only recordable when the class does NOT supply a member
+            // of this name at all (a class member UNDER an instance-dict
+            // name is shadowed today, but a later C.x = .. would need the
+            // stamps to catch it — they do: names_epoch bumps; still, the
+            // dunder/getattribute surfaces make the classification risky,
+            // so require NO class member for the record — simplest sound
+            // subset, covers the `self.x = ..; read x` loop shape).
+            if t.lookup_with_owner(name).is_none() {
+                let recorded = ic.with_attrs_mut(|attrs| {
+                    let e = &mut attrs[site as usize];
+                    e.magic = IC_MAGIC;
+                    e.plan = AttrPlan::InstDict as u8;
+                    e.type_ptr = stamps.0;
+                    e.type_version = stamps.1;
+                    e.chain_version = stamps.2;
+                    e.names_epoch = stamps.3;
+                    e.owner_ptr = 0;
+                    // InstDict: the VALUE is never cached (the hit
+                    // re-probes the live attrs dict) — leave v = None.
+                    let _ = v;
+                });
+                if recorded.is_some() {
+                    IC_ATTR_FILL.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+            return;
+        }
+    }
+    // Class-member resolution (instance step 3 / class step 2). Only PLAIN
+    // members record: functions (BindFunc for instances; the class
+    // receiver reads the function itself — ClassValue) and non-descriptor
+    // values (ClassValue).
+    if let Some((entry, owner)) = t.lookup_with_owner(name) {
+        let descr = crate::classes::descriptor_kind_pub(&entry);
+        if descr.is_some() {
+            return; // dynamic surface
+        }
+        let is_plain_fn = matches!(&entry, Value::Obj(fo) if fo.kind == ap_obj::ObjKind::Function);
+        let plan = if is_inst && is_plain_fn && !t.is_slot(name) {
+            AttrPlan::BindFunc
+        } else if is_cls || is_inst {
+            // Class receiver reading its member (the value IS the answer)
+            // or an instance reading a non-function plain member.
+            AttrPlan::ClassValue
+        } else {
+            return;
+        };
+        let recorded = ic.with_attrs_mut(|attrs| {
+            let e = &mut attrs[site as usize];
+            e.magic = IC_MAGIC;
+            e.plan = plan as u8;
+            e.type_ptr = stamps.0;
+            e.type_version = stamps.1;
+            e.chain_version = stamps.2;
+            e.names_epoch = stamps.3;
+            e.owner_ptr = Arc::as_ptr(&owner) as usize as u64;
+            e.v = entry.clone();
+        });
+        if recorded.is_some() {
+            IC_ATTR_FILL.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    // No class member, no instance-dict hit: the answer came from a
+    // dynamic surface (object virtuals, __getattr__, ...) — record nothing.
+}
+
+/// The value-family tag of a primitive receiver (the LoadAttrCall dispatch
+/// key — same mapping as the arm's inline match; a fn so the fill helper
+/// shares it).
+fn tag_of(recv: &Value) -> Option<&'static str> {
+    match recv {
+        Value::Str(_) => Some("pystr"),
+        Value::Dict(_) => Some("pydict"),
+        Value::List(_) => Some("pylist"),
+        Value::Bytes(_) => Some("pybytes"),
+        Value::Int(_) | Value::Bool(_) => Some("pyint"),
+        Value::Set(_) | Value::Frozen(_) => Some("pyset"),
+        Value::Tuple(_) => Some("pytuple"),
+        Value::Float(_) => Some("pyfloat"),
+        _ => None,
+    }
+}
+
+/// A borrowed attr-entry view for the consult arms (the fields the plan
+/// dispatch reads after the stamps validated).
+struct AttrHitView {
+    plan: u8,
+    owner_ptr: u64,
+    v: Value,
+}
+
+/// Record a fused-call dispatcher decision (leaf fp-inlinecache). Only the
+/// routing memoizes — the decision is a pure function of (tag, name, argc),
+/// all re-derived at each hit, so there is no invalidation surface.
+fn ic_call_fill(ic: &IcTable, site: u32, argc: u16, plan: CallPlan) {
+    // Same try_borrow_mut discipline as ic_attr_fill (nested fills skip).
+    let _ = ic.with_calls_mut(|calls| {
+        debug_assert!((site as usize) < calls.len(), "ic call site OOB");
+        let e = &mut calls[site as usize];
+        e.magic = IC_MAGIC;
+        e.plan = plan as u8;
+        e.argc = argc;
+    });
 }
 
 /// Exercise counters (APX_TIER_STATS=1 -> bc_stats_line). Transparency
@@ -117,11 +323,17 @@ pub fn bc_stats_line() -> Option<String> {
     let compiles = BC_COMPILES.load(Ordering::Relaxed);
     let fallbacks = BC_FALLBACKS.load(Ordering::Relaxed);
     let execs = BC_EXECS.load(Ordering::Relaxed);
+    let gh = IC_GLOBAL_HITS.load(Ordering::Relaxed);
+    let gf = IC_GLOBAL_FILL.load(Ordering::Relaxed);
+    let ah = IC_ATTR_HITS.load(Ordering::Relaxed);
+    let af = IC_ATTR_FILL.load(Ordering::Relaxed);
+    let ch = IC_CALL_HITS.load(Ordering::Relaxed);
     if compiles == 0 && fallbacks == 0 && execs == 0 {
         return None;
     }
     Some(format!(
-        "[BC-STATS] compiles={compiles} fallbacks={fallbacks} execs={execs}"
+        "[BC-STATS] compiles={compiles} fallbacks={fallbacks} execs={execs} \
+         ic: ghit={gh} gfill={gf} ahit={ah} afill={af} chit={ch}"
     ))
 }
 
@@ -432,6 +644,12 @@ fn run_frame(
     // iterator Arc, matched against the peeked stack handle by pointer
     // identity — skips the iterators-table Mutex on every loop step.
     let mut cached_it: Option<std::sync::Arc<crate::iter::PyIterator>> = None;
+    // Leaf fp-inlinecache: this thread's per-code cache table (shared Rc
+    // across frames of the same body on this thread; filled on miss). The
+    // local binding must stay MUTABLE and unique for fills — `ic` is the
+    // only Rc handle on this thread's stack during dispatch (the map holds
+    // its own clone).
+    let ic = ic_table_for(code);
 
     // Macro: propagate a helper failure as (current line, flow) so the exit
     // path can sync the frame line before the traceback is built. The macro
@@ -578,14 +796,71 @@ fn run_frame(
                 // emits LoadGlobal only for names with no slot — closure
                 // reads of enclosing locals resolve through the free-cell
                 // wiring exactly as the walker does.
+                //
+                // INLINE CACHE (leaf fp-inlinecache): module/builtin reads
+                // resolve from the (globals, builtins) dict pair; the cache
+                // stamps that pair's epochs + identity, so a warm hit is
+                // two epoch loads + two ptr compares + a direct unpack.
+                // LookupName chain shapes (closure cells, class-ns frames,
+                // the T1-d module-globals/exc-class fallbacks) are NOT
+                // cacheable — they record nothing and stay fully dynamic.
                 let name = code
                     .names
                     .get(idx as usize)
                     .map(|n| n.as_str())
                     .unwrap_or("<name>");
-                let v = hop!(crate::interp::lookup_name_pub(interp, frame, name));
-                stack.push(v);
-                pc += 1;
+                if let Some(site) = ic_site_of(code, pc) {
+                    let g_epoch = frame.globals.mutation_epoch();
+                    let b_epoch = interp.builtins.mutation_epoch();
+                    let g_ptr = crate::ic::gc_ptr(&frame.globals);
+                    let b_ptr = crate::ic::gc_ptr(&interp.builtins);
+                    let hit = ic.with_globals(|g| {
+                        debug_assert!((site as usize) < g.len(), "ic global site OOB");
+                        g[site as usize].is_hit(g_epoch, b_epoch, g_ptr, b_ptr)
+                    });
+                    if let Some(v) = hit {
+                        IC_GLOBAL_HITS.fetch_add(1, Ordering::Relaxed);
+                        stack.push(v);
+                        pc += 1;
+                        continue;
+                    }
+                    match crate::interp::lookup_name_pub(interp, frame, name) {
+                        Ok(v) => {
+                            // Recordable = answered from the dict pair. The
+                            // cheap probe: the name present in globals OR
+                            // builtins right now — that's exactly where the
+                            // chain found it (locals/cells/class-ns would
+                            // have made it unbound in the FRAME map the
+                            // lowerer proves absent; module-globals/exc
+                            // fallbacks answer when BOTH dict probes miss,
+                            // so a present-check mirrors the provenance).
+                            let recordable = frame.globals.contains_str(name)
+                                || interp.builtins.contains_str(name);
+                            if recordable {
+                                let recorded = ic.with_globals_mut(|g| {
+                                    let e = &mut g[site as usize];
+                                    e.magic = IC_MAGIC;
+                                    e.kind = ap_bytecode::caches::global_kind::POSITIVE;
+                                    e.globals_epoch = g_epoch;
+                                    e.builtins_epoch = b_epoch;
+                                    e.globals_ptr = g_ptr;
+                                    e.builtins_ptr = b_ptr;
+                                    e.v = v.clone();
+                                });
+                                if recorded.is_some() {
+                                    IC_GLOBAL_FILL.fetch_add(1, Ordering::Relaxed);
+                                }
+                            }
+                            stack.push(v);
+                            pc += 1;
+                        }
+                        Err(f) => break Err((cur_line, f)),
+                    }
+                } else {
+                    let v = hop!(crate::interp::lookup_name_pub(interp, frame, name));
+                    stack.push(v);
+                    pc += 1;
+                }
             }
             Instr::StoreGlobal(idx) => {
                 // Module-namespace store. Unreachable for bytecode-routed
@@ -692,7 +967,7 @@ fn run_frame(
             }
 
             // ---- attribute / subscript (instrument ops) --------------------
-            Instr::LoadAttr { idx, .. } => {
+            Instr::LoadAttr { idx, site } => {
                 sync_frame_line(frame, cur_line);
                 let obj = pop!();
                 let name = code
@@ -700,6 +975,122 @@ fn run_frame(
                     .get(idx as usize)
                     .map(|n| n.as_str())
                     .unwrap_or("<attr>");
+                // INLINE CACHE (leaf fp-inlinecache): user-class receiver
+                // reads (the c.x / c.m loop shape). The entry stamps the
+                // receiver's class payload identity + type_version +
+                // chain_surgery_version + names-dict epoch; a warm hit is
+                // four stamp compares + the plan's direct answer. Primitive
+                // receivers ride fast_bound_mint below (their method tables
+                // are value-family constants — no class counter to stamp).
+                let mut ic_answered = false;
+                if let Some(t) = receiver_class_ref(&obj) {
+                    let stamps = crate::ic::class_stamps(&t);
+                    let plan_hit = ic.with_attrs(|attrs| {
+                        debug_assert!((site as usize) < attrs.len(), "ic attr site OOB");
+                        let e = &attrs[site as usize];
+                        if !e.stamps_valid(stamps.0, stamps.1, stamps.2, stamps.3) {
+                            return None;
+                        }
+                        Some((e.plan, e.owner_ptr, e.v.clone()))
+                    });
+                    if let Some((plan, owner_ptr, cached_v)) = plan_hit {
+                        let e = AttrHitView {
+                            plan,
+                            owner_ptr,
+                            v: cached_v,
+                        };
+                        match e.plan {
+                            p if p == AttrPlan::InstDict as u8 => {
+                                // Instance-dict supplies the name. The VALUE
+                                // re-probes (one lock probe, no walk): the
+                                // entry caches the class-level RESOLUTION
+                                // (name answered by the instance dict under
+                                // these class stamps), not the value — an
+                                // `o.x = new` rebind re-reads correctly even
+                                // though no class counter moved.
+                                let v = match &obj {
+                                    Value::Obj(o) => o
+                                        .attrs
+                                        .lock()
+                                        .unwrap_or_else(|p| p.into_inner())
+                                        .get(&Value::Str(PyString::new(name))),
+                                    _ => None,
+                                };
+                                if let Some(v) = v {
+                                    IC_ATTR_HITS.fetch_add(1, Ordering::Relaxed);
+                                    stack.push(v);
+                                    pc += 1;
+                                    ic_answered = true;
+                                }
+                                // None = the name vanished from the attrs
+                                // dict without a class-stamp change (a del
+                                // route that bypasses the stamps — instance
+                                // dict pops don't bump class counters). The
+                                // cached CLASS resolution is now wrong: fall
+                                // through to the slow path, which answers
+                                // AttributeError or the class member — and
+                                // the miss below REFILLS with the fresh
+                                // plan (overwriting the stale entry).
+                            }
+                            p if p == AttrPlan::BindFunc as u8 => {
+                                // The MRO supplies a plain function (the
+                                // cached answer). Mint the BoundMethod
+                                // FRESH per read (CPython identity pin:
+                                // c.m is c.m is False — never cache the
+                                // mint), with the DEFINING class as the
+                                // method owner (zero-arg super() start,
+                                // S-03-18). The entry stores the function
+                                // Value + the defining class's Arc ptr;
+                                // the stamps guarantee the class surface
+                                // is unchanged, and the owner re-derives
+                                // from the LIVE MRO (one scan answering
+                                // only the owner — the function itself
+                                // comes from the entry).
+                                let f = e.v.clone();
+                                if e.owner_ptr != 0 {
+                                    let owner = t
+                                        .lookup_with_owner(name)
+                                        .map(|(_, o)| o)
+                                        .filter(|o| Arc::as_ptr(o) as usize as u64 == e.owner_ptr);
+                                    if let Some(owner_t) = owner {
+                                        let bm = ap_obj::PyObject::with_self(
+                                            ap_obj::ObjKind::BoundMethod,
+                                            name.to_string(),
+                                            obj.clone(),
+                                        );
+                                        *bm.func.lock().unwrap_or_else(|p| p.into_inner()) =
+                                            Some(f);
+                                        *bm.method_owner
+                                            .lock()
+                                            .unwrap_or_else(|p| p.into_inner()) =
+                                            Some(std::sync::Arc::downgrade(&owner_t));
+                                        IC_ATTR_HITS.fetch_add(1, Ordering::Relaxed);
+                                        stack.push(Value::Obj(bm));
+                                        pc += 1;
+                                        ic_answered = true;
+                                    }
+                                    // Owner ptr drifted (stamps passed, so
+                                    // unexpected — belt-and-braces): fall
+                                    // through to the slow walk.
+                                }
+                            }
+                            p if p == AttrPlan::ClassValue as u8 => {
+                                // Plain class-dict member read off a CLASS
+                                // receiver (C.member): value stable under
+                                // the stamps.
+                                let v = e.v.clone();
+                                IC_ATTR_HITS.fetch_add(1, Ordering::Relaxed);
+                                stack.push(v);
+                                pc += 1;
+                                ic_answered = true;
+                            }
+                            _ => {} // unknown plan byte: re-walk
+                        }
+                    }
+                }
+                if ic_answered {
+                    continue;
+                }
                 // FAST MINT (leaf 01-core/01): the per-iteration
                 // `out.append`/`d.get` bound-method read. attr_get's deep
                 // walk costs ~1.7us per mint; this guard covers the exact
@@ -715,11 +1106,21 @@ fn run_frame(
                     continue;
                 }
                 match crate::interp::attr_get_public(interp, &obj, name) {
-                    Ok(Some(v)) => stack.push(v),
+                    Ok(Some(v)) => {
+                        // FILL (miss arm): classify the answer the slow
+                        // path produced and record the plan + stamps. Only
+                        // sound-with-stamps shapes record; everything else
+                        // (descriptors, properties, __getattr__ answers,
+                        // dynamic surfaces) stays uncached — Slow = the
+                        // slot stays empty and every read re-walks.
+                        ic_attr_fill(&ic, site, &obj, name, &v);
+                        stack.push(v);
+                    }
                     Ok(None) => {
                         // The tree-walker's exact AttributeError shape
                         // (interp.rs Expr::Attribute arm, module suffix
-                        // included).
+                        // included). Erroring sites record nothing — the
+                        // AttributeError stays dynamic.
                         let extra = match &obj {
                             Value::Obj(mo) if mo.kind == ap_obj::ObjKind::Module => {
                                 format!(" (module '{}')", mo.name)
@@ -855,7 +1256,7 @@ fn run_frame(
                 pc += 1;
             }
 
-            Instr::LoadAttrCall { idx, argc } => {
+            Instr::LoadAttrCall { idx, argc, site } => {
                 // FUSED method call (leaf 01-core/01). Stack: receiver,
                 // then args. Semantics = attr_get + call_value EXACTLY;
                 // the fast arms below are pure routing shortcuts for the
@@ -878,9 +1279,34 @@ fn run_frame(
                     .get(idx as usize)
                     .map(|n| n.as_str())
                     .unwrap_or("<attr>");
-                // FAST ARMS — the primitive-receiver method families whose
-                // dispatch is methods::call_method's own match arms (no
-                // dunder walk, no mint).
+                // INLINE CACHE (leaf fp-inlinecache): the (receiver tag,
+                // name, argc) -> dispatcher decision memoizes here. The
+                // key re-derives from the live stack receiver each hit
+                // (value-family tags are constants — no mutation, no
+                // version stamp needed); the entry saves only the
+                // tag/classification work on the slow shapes.
+                let recv_tag: Option<&'static str> = match &recv {
+                    Value::Str(_) => Some("pystr"),
+                    Value::Dict(_) => Some("pydict"),
+                    Value::List(_) => Some("pylist"),
+                    Value::Bytes(_) => Some("pybytes"),
+                    Value::Int(_) | Value::Bool(_) => Some("pyint"),
+                    Value::Set(_) | Value::Frozen(_) => Some("pyset"),
+                    Value::Tuple(_) => Some("pytuple"),
+                    Value::Float(_) => Some("pyfloat"),
+                    _ => None,
+                };
+                let cached_plan = ic
+                    .with_calls(|calls| {
+                        debug_assert!((site as usize) < calls.len(), "ic call site OOB");
+                        calls[site as usize].is_hit(argc as u16)
+                    })
+                    .map(|p| {
+                        (
+                            p == CallPlan::PrimValues as u8,
+                            p == CallPlan::CallMethod as u8,
+                        )
+                    });
                 let fast: Option<Result<Value, Flow>> = match (&recv, name) {
                     (Value::List(l), "append") if argc == 1 => {
                         l.append(args[0].clone());
@@ -919,80 +1345,93 @@ fn run_frame(
                 // single-sourced, only the mint intermediate is bypassed.
                 // Uncovered shapes (user receivers, dunders, module attrs)
                 // fall to the mint route below unchanged.
-                let tag = match &recv {
-                    Value::Str(_) => Some("pystr"),
-                    Value::Dict(_) => Some("pydict"),
-                    Value::List(_) => Some("pylist"),
-                    Value::Bytes(_) => Some("pybytes"),
-                    Value::Int(_) | Value::Bool(_) => Some("pyint"),
-                    Value::Set(_) | Value::Frozen(_) => Some("pyset"),
-                    Value::Tuple(_) => Some("pytuple"),
-                    Value::Float(_) => Some("pyfloat"),
-                    _ => None,
+                let via_call_method = matches!(
+                    name,
+                    "upper"
+                        | "lower"
+                        | "join"
+                        | "format"
+                        | "partition"
+                        | "encode"
+                        | "translate"
+                        | "__len__"
+                );
+                // The cached decision short-circuits the tag-match +
+                // table-exists probes; the dispatcher call itself is
+                // identical (the cache never answers, only routes).
+                let try_call_method = match cached_plan {
+                    Some((_, cm)) => cm,
+                    None => recv_tag.is_some() && via_call_method,
                 };
-                if let Some(tag) = tag {
-                    // str.upper/lower/join/format/partition/encode and
-                    // bytes.translate have DIRECT arms in methods::call_method
-                    // (not the call_builtin_values table) — try that FIRST
-                    // (the exact dispatcher the BoundMethod route uses).
-                    let via_call_method = matches!(
+                let try_values = match cached_plan {
+                    Some((pv, _)) => pv,
+                    None => match recv_tag {
+                        Some(tag) => {
+                            !via_call_method
+                                && crate::builtins_modules::builtin_value_method_exists_pub(
+                                    tag, name,
+                                )
+                        }
+                        None => false,
+                    },
+                };
+                if try_call_method {
+                    let r = match crate::builtins_modules::current_interp() {
+                        Some(i) => crate::methods::call_method(&i, &recv, name, &args),
+                        None => None,
+                    };
+                    match r {
+                        Some(Ok(v)) => {
+                            if cached_plan.is_none() {
+                                ic_call_fill(&ic, site, argc as u16, CallPlan::CallMethod);
+                            }
+                            stack.push(v);
+                            pc += 1;
+                            continue;
+                        }
+                        Some(Err(f)) => break Err((cur_line, f)),
+                        // call_method answered None = name unknown on
+                        // this receiver. NOT always an AttributeError:
+                        // e.g. dict.set_int_max_str_digits-style marker
+                        // arms return None for shape mismatches. Fall
+                        // through to the generic mint route, whose
+                        // attr_get owns the full AttributeError/None
+                        // semantics.
+                        None => {}
+                    }
+                } else if try_values {
+                    // The call_builtin_values table (pystr.startswith,
+                    // pybytes.split, pyint.bit_length, ...). Receiver
+                    // first — call_builtin_values treats args[0] as recv.
+                    let Some(i) = crate::builtins_modules::current_interp() else {
+                        break Err((
+                            cur_line,
+                            raise_flow("RuntimeError", "no interpreter on this thread"),
+                        ));
+                    };
+                    let _ = &i;
+                    let mut a2: Vec<Value> = Vec::with_capacity(argc + 1);
+                    a2.push(recv.clone());
+                    a2.extend_from_slice(&args);
+                    match crate::builtins_modules::call_builtin_values(
+                        tag_of(&recv).unwrap_or(""),
                         name,
-                        "upper"
-                            | "lower"
-                            | "join"
-                            | "format"
-                            | "partition"
-                            | "encode"
-                            | "translate"
-                            | "__len__"
-                    );
-                    if via_call_method {
-                        let r = match crate::builtins_modules::current_interp() {
-                            Some(i) => crate::methods::call_method(&i, &recv, name, &args),
-                            None => None,
-                        };
-                        match r {
-                            Some(Ok(v)) => {
-                                stack.push(v);
-                                pc += 1;
-                                continue;
+                        &a2,
+                        &[],
+                    ) {
+                        Some(Ok(v)) => {
+                            if cached_plan.is_none() {
+                                ic_call_fill(&ic, site, argc as u16, CallPlan::PrimValues);
                             }
-                            Some(Err(f)) => break Err((cur_line, f)),
-                            // call_method answered None = name unknown on
-                            // this receiver. NOT always an AttributeError:
-                            // e.g. dict.set_int_max_str_digits-style marker
-                            // arms return None for shape mismatches. Fall
-                            // through to the generic mint route, whose
-                            // attr_get owns the full AttributeError/None
-                            // semantics.
-                            None => {}
+                            stack.push(v);
+                            pc += 1;
+                            continue;
                         }
-                    } else if crate::builtins_modules::builtin_value_method_exists_pub(tag, name) {
-                        // The call_builtin_values table (pystr.startswith,
-                        // pybytes.split, pyint.bit_length, ...). Receiver
-                        // first — call_builtin_values treats args[0] as recv.
-                        let Some(i) = crate::builtins_modules::current_interp() else {
-                            break Err((
-                                cur_line,
-                                raise_flow("RuntimeError", "no interpreter on this thread"),
-                            ));
-                        };
-                        let _ = &i;
-                        let mut a2: Vec<Value> = Vec::with_capacity(argc + 1);
-                        a2.push(recv.clone());
-                        a2.extend_from_slice(&args);
-                        match crate::builtins_modules::call_builtin_values(tag, name, &a2, &[]) {
-                            Some(Ok(v)) => {
-                                stack.push(v);
-                                pc += 1;
-                                continue;
-                            }
-                            Some(Err(f)) => break Err((cur_line, f)),
-                            // Table claims the name but no arm answered
-                            // (marker/subclass shapes) — fall to the generic
-                            // route, identical semantics.
-                            None => {}
-                        }
+                        Some(Err(f)) => break Err((cur_line, f)),
+                        // Table claims the name but no arm answered
+                        // (marker/subclass shapes) — fall to the generic
+                        // route, identical semantics.
+                        None => {}
                     }
                 }
                 // FALLBACK: mint through the walk + call (two-opcode shape).

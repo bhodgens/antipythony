@@ -215,7 +215,7 @@ pub enum Instr {
     /// only for the exact Expr::Attribute-callee + Call shape, and the
     /// DISPATCHER falls back to mint+call_value for any receiver the fast
     /// arms don't cover (identical semantics, slower route).
-    LoadAttrCall { idx: u32, argc: u16 },
+    LoadAttrCall { idx: u32, argc: u16, site: u32 },
     /// `obj.attr = v` — value under obj on the stack (value pushed first by
     /// the Assign arm, obj second): TOS=obj, TOS-1=value. Pops both. Routed
     /// to classes::attr_set_protocol — the tree-walker's exact store arm
@@ -270,15 +270,13 @@ impl Instr {
         }
     }
 
-    /// True for opcodes that carry an inline-cache site id. LoadGlobal
-    /// sites are tracked via the SiteTable (the opcode payload slot is
-    /// the name index), so `site_id` reports None for it; the site's
-    /// instr_idx identifies the LoadGlobal instruction.
+    /// True for opcodes that carry an inline-cache site id.
     pub fn site_id(self) -> Option<u32> {
         match self {
             Self::LoadAttr { site, .. }
             | Self::CallFunction { site, .. }
-            | Self::CallFunctionKw { site, .. } => Some(site),
+            | Self::CallFunctionKw { site, .. }
+            | Self::LoadAttrCall { site, .. } => Some(site),
             _ => None,
         }
     }

@@ -139,10 +139,11 @@ impl Lowerer {
         idx
     }
 
-    fn emit_at_line(&mut self, i: Instr, line: usize) {
+    fn emit_at_line(&mut self, i: Instr, line: usize) -> u32 {
         let idx = self.emit(i);
         self.lines.record(idx, line);
         self.cur_line = line;
+        idx
     }
 
     fn intern_name(&mut self, name: &str) -> u32 {
@@ -834,7 +835,13 @@ impl Lowerer {
                     self.cur_line = line;
                 }
                 let idx = self.intern_name(attr);
-                self.emit_at_line(Instr::LoadAttrCall { idx, argc }, self.cur_line);
+                // Fused calls get their own Call-kind site (leaf
+                // fp-inlinecache): the dispatcher's (receiver-tag, name)
+                // decision memoizes here.
+                let site = self.sites.alloc(SiteKind::Call, 0);
+                let ins_idx =
+                    self.emit_at_line(Instr::LoadAttrCall { idx, argc, site }, self.cur_line);
+                self.sites.retarget(ins_idx, site);
                 return Ok(());
             }
             self.lower_expr(callee)?;
@@ -925,9 +932,15 @@ impl Lowerer {
         self.lower_expr(&clauses[0].iter)?;
         self.emit_at_line(Instr::GetIter, self.cur_line);
         match shape {
-            CompShape::List => self.emit_at_line(Instr::BuildList(0), self.cur_line),
-            CompShape::Set => self.emit_at_line(Instr::BuildSet(0), self.cur_line),
-            CompShape::Dict => self.emit_at_line(Instr::BuildDict(0), self.cur_line),
+            CompShape::List => {
+                self.emit_at_line(Instr::BuildList(0), self.cur_line);
+            }
+            CompShape::Set => {
+                self.emit_at_line(Instr::BuildSet(0), self.cur_line);
+            }
+            CompShape::Dict => {
+                self.emit_at_line(Instr::BuildDict(0), self.cur_line);
+            }
         }
         self.emit_at_line(Instr::StoreFast(acc_slot), self.cur_line);
 
@@ -974,26 +987,32 @@ impl Lowerer {
                 self.lower_expr(elt)?;
                 // acc.append(elt); PopTop — append's None result discards
                 // (the fused opcode never mints the BoundMethod).
-                self.emit_at_line(
+                let append_site = self.sites.alloc(SiteKind::Call, 0);
+                let ins_idx = self.emit_at_line(
                     Instr::LoadAttrCall {
                         idx: append_idx,
                         argc: 1,
+                        site: append_site,
                     },
                     self.cur_line,
                 );
+                self.sites.retarget(ins_idx, append_site);
                 self.emit_at_line(Instr::PopTop, self.cur_line);
             }
             CompShape::Set => {
                 let add_idx = self.intern_name("add");
                 self.emit_at_line(Instr::LoadFast(acc_slot), self.cur_line);
                 self.lower_expr(elt)?;
-                self.emit_at_line(
+                let add_site = self.sites.alloc(SiteKind::Call, 0);
+                let ins_idx = self.emit_at_line(
                     Instr::LoadAttrCall {
                         idx: add_idx,
                         argc: 1,
+                        site: add_site,
                     },
                     self.cur_line,
                 );
+                self.sites.retarget(ins_idx, add_site);
                 self.emit_at_line(Instr::PopTop, self.cur_line);
             }
             CompShape::Dict => {

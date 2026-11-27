@@ -33,6 +33,7 @@ pub mod format;
 pub mod frame;
 pub mod gcsupport;
 pub mod generators;
+pub mod ic;
 pub mod importer;
 pub mod interp;
 pub mod iter;

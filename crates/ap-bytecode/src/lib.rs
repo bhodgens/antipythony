@@ -26,6 +26,7 @@
 //! For/Try/With/Match (falls back), and BoolOp/Break/Continue lowering
 //! lands with 01-core.
 
+pub mod caches;
 pub mod code;
 pub mod decode;
 pub mod instr;
@@ -36,6 +37,7 @@ pub mod sites;
 #[cfg(test)]
 mod tests;
 
+pub use caches::{AttrPlan, CallPlan, IC_MAGIC};
 pub use code::CodeObject;
 pub use decode::disassemble;
 pub use instr::{CompareOp, Instr, UnaryKind, OPCODE_NAMES};

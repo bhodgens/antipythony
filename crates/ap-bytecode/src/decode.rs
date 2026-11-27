@@ -48,6 +48,10 @@ pub fn render_instr(code: &CodeObject, idx: usize) -> String {
             n_kw,
             site,
         } => format!("{base}{argc}+{n_kw}kw  site={site} kw@{kw_first}"),
+        Instr::LoadAttrCall { idx, argc, site } => {
+            let name = code.names.get(idx as usize).cloned().unwrap_or_default();
+            format!("{base}{idx}({argc})  # {name} site={site}")
+        }
         Instr::StoreAttr { idx } => {
             let name = code.names.get(idx as usize).cloned().unwrap_or_default();
             format!("{base}{idx}  # {name}")

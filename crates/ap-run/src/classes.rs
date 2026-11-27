@@ -2076,6 +2076,86 @@ pub fn descriptor_kind(interp: &Interpreter, v: &Value) -> Option<DescrKind> {
 }
 
 /// Is the descriptor DATA (type defines __set__ or __delete__, S-03-20)?
+/// Pub shims for the bytecode IC's fill classifier (leaf fp-inlinecache):
+/// the interp-free descriptor shape reads WITHOUT an &Interpreter (the
+/// Descriptor-kind arm doesn't consult one; the UserInstance __set__ arm
+/// does — that arm only fires for user-descriptor members, which the IC
+/// classifier rejects anyway, so passing a scratch interpreter is safe).
+pub fn descriptor_kind_pub(v: &Value) -> Option<DescrKind> {
+    match v {
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Descriptor => {
+            // Same shape as descriptor_kind's Descriptor arm.
+            match o
+                .descr_kind
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_deref()
+            {
+                Some("property") => Some(DescrKind::Property),
+                Some("classmethod") => Some(DescrKind::ClassMethod),
+                Some("staticmethod") => Some(DescrKind::StaticMethod),
+                Some("member") => Some(DescrKind::Property),
+                _ => None,
+            }
+        }
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
+            // User descriptor instances: consult the class __get__ surface
+            // (interp-free — the weak->upgrade identity path).
+            let t = o
+                .type_ref
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .and_then(|w| w.upgrade());
+            t.and_then(|t| {
+                if t.lookup("__get__").is_some() {
+                    Some(DescrKind::UserDescr)
+                } else {
+                    None
+                }
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Interp-free data-descriptor check for the bytecode IC's fill classifier
+/// (leaf fp-inlinecache). Same Descriptor/member + cached_property arms as
+/// is_data_descriptor; the UserInstance __set__/__delete__ arm consults the
+/// class payload directly (identity path — instance_class minus its unused
+/// interp arg). Any answer change here must land in BOTH bodies.
+pub fn is_data_descriptor_scratch(v: &Value) -> bool {
+    match v {
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Descriptor => matches!(
+            o.descr_kind
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_deref(),
+            Some("property") | Some("member")
+        ),
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
+            let t = o
+                .type_ref
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .and_then(|w| w.upgrade());
+            matches!(t, Some(t) if t.lookup("__set__").is_some() || t.lookup("__delete__").is_some())
+        }
+        Value::Obj(o)
+            if o.kind == ap_obj::ObjKind::Function
+                && o.attrs
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .get(&Value::Str(PyString::new("__ap_cached_property__")))
+                    .is_some_and(|x| x.is_truthy()) =>
+        {
+            true
+        }
+        _ => false,
+    }
+}
+
 pub fn is_data_descriptor(interp: &Interpreter, v: &Value) -> bool {
     match v {
         Value::Obj(o) if o.kind == ap_obj::ObjKind::Descriptor => matches!(
