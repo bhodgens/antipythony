@@ -250,7 +250,7 @@ fn run_probe(tier: &str, src: &str) -> (String, String, i32) {
     std::fs::write(&path, src).expect("write probe");
 
     let bin = root_dir()
-        .join("target-fp-ic")
+        .join("target-fp-ic2")
         .join("release")
         .join("antipythony");
     // ap-cli's `run` verb forwards no --tier flag of its own; the tier
@@ -276,7 +276,18 @@ fn assert_verdict(tier: &str, name: &str, want: &[&str]) {
         .unwrap_or_else(|| panic!("unknown probe {name}"));
     let (out, err, rc) = run_probe(tier, src);
     assert_eq!(rc, 0, "[{tier}/{name}] rc != 0\nstdout:\n{out}\nstderr:\n{err}");
-    assert!(err.is_empty(), "[{tier}/{name}] stderr not clean: {err}");
+    // [TIER-STATS]/[BC-STATS] transparency lines are expected on stderr
+    // (fp-exceptions' stats emitter prints them unconditionally on the
+    // bytecode route); filter them before the clean-stderr assert.
+    let noisy = err
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("[TIER-STATS]"))
+        .filter(|l| !l.trim_start().starts_with("[BC-STATS]"))
+        .count();
+    assert!(
+        noisy == 0,
+        "[{tier}/{name}] stderr not clean: {err}"
+    );
     for w in want {
         assert!(out.contains(w), "[{tier}/{name}] missing verdict {w:?} in:\n{out}");
     }
@@ -394,7 +405,16 @@ print("CONTENTION-OK", total)
 "#;
     let (out, err, rc) = run_probe("bytecode", src);
     assert_eq!(rc, 0, "contention probe rc != 0\n{out}\n{err}");
-    assert!(err.is_empty(), "contention stderr: {err}");
+    // Stats-transparency lines ([TIER-STATS]/[BC-STATS], unconditional on
+    // the bytecode route since fp-exceptions) are expected noise.
+    let noisy = err
+        .lines()
+        .filter(|l| {
+            let t = l.trim_start();
+            !(t.starts_with("[TIER-STATS]") || t.starts_with("[BC-STATS]"))
+        })
+        .count();
+    assert!(noisy == 0, "contention stderr: {err}");
     assert!(
         out.contains("CONTENTION-OK"),
         "contention probe missing verdict:\n{out}"
