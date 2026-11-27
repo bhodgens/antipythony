@@ -1,177 +1,133 @@
-# fp-inlinecache — inline caches for LoadGlobal/LoadAttr/LoadAttrCall
+# fp-inlinecache2 — inline caches REBASED onto current main
 
 Leaf: plans/fast-path/02-perf/01-inline-caches.md
 Branch: tier1-fp-inlinecache2 (worktree ~/.git/worktrees/leaf-fp-inlinecache)
-Base: main @ 02617fc
-Commits: 62118d8 (impl) + 83f63bd (tests/probe)
+Base: main @ 1897b4a (post fp-exceptions c633a0b + fp-calls + unsafe waves)
+Recovered from: the prior fp-inlinecache attempt (62118d8 impl + 83f63bd
+tests/probe + bada6b3 report, cut BEFORE fp-exceptions/fp-calls merged).
+Supersedes that attempt's inline-caches-report.md (same path — this file).
 
-## What landed
+## What landed (rebase commits)
 
-Per-(thread, CodeObject) inline-cache tables consulted/filled at three
-dispatch arms of the bytecode interpreter:
+- 0492106 feat: the prior work's caches.rs / sites.rs (dense by_instr
+  pc->site map) / ic.rs / ic_invalidation.rs re-landed; instr.rs
+  LoadAttrCall gains its site field; decode.rs prints it; lib.rs wires
+  both modules; classes.rs regains the interp-free classifier shims
+  (descriptor_kind_pub / is_data_descriptor_scratch).
+- 3bb8343 test: ic_invalidation adapted to the current trunk (see gates).
+- lower.rs: LoadAttrCall sites allocated in BOTH emission paths (the
+  direct obj.name(args) fused call AND comprehension append/add). Note:
+  current trunk's `emit_at_line` returns () — the emitted instruction's
+  index comes from the new `cur_instr_idx()` helper (last instrs.len()-1).
+- bytecode_interp.rs: the three consult/fill arms grafted onto the
+  exception-table dispatch loop (fp-exceptions rewrote the loop's
+  prologue/unwind; the IC arms are additive per-opcode bodies):
 
 | site | entry stamps | warm hit cost |
 |---|---|---|
 | LoadGlobal | globals dict epoch + builtins dict epoch + both dict identities, resolved Value | 2 epoch loads + 2 ptr compares + Value clone |
 | LoadAttr | class payload ptr + type_version + chain_surgery_version + names-dict epoch, plan + payload | 4 stamp compares + plan answer |
-| LoadAttrCall | (receiver tag, name, argc) -> dispatcher decision | 1 magic+argc check (tag re-derived from the live receiver) |
+| LoadAttrCall | (receiver tag, name, argc) -> dispatcher decision | 1 argc check (tag re-derived from the live receiver) |
 
-New/changed files:
-- `crates/ap-bytecode/src/caches.rs` (new): plan constants (AttrPlan:
-  Slow/ClassValue/InstDict/BindFunc; CallPlan: Slow/PrimValues/CallMethod)
-  + the invalidation-audit stamp map in one place.
-- `crates/ap-bytecode/src/sites.rs`: dense `by_instr` pc->site map — the
-  O(1) site finder (a per-hit scan of the site vec would cost more than
-  the cache saves).
-- `crates/ap-bytecode/src/instr.rs` + lower.rs + decode.rs: LoadAttrCall
-  now carries a site id (its lowerer allocs a Call-kind site; the
-  comprehension append/add emits too).
-- `crates/ap-run/src/ic.rs` (new): typed entries (GlobalIc/AttrIc/CallIc)
-  + the RefCell-arrayed IcTable + the stamp collectors
-  (class_stamps = ptr + type_version + chain_surgery_version + names
-  epoch).
-- `crates/ap-run/src/bytecode_interp.rs`: consult/fill arms for the three
-  opcodes; hit/fill counters in [BC-STATS] under APX_TIER_STATS=1.
-- `crates/ap-run/src/classes.rs`: interp-free classifier shims
-  (`is_data_descriptor_scratch`, `descriptor_kind_pub`) — the fill
-  classifier must re-derive the slow path's resolution ORDER without an
-  `&Interpreter` handle. Same shape as the originals; any change there
-  must land in BOTH bodies (documented on the shims).
+  Rebase-specific adaptation: the LoadAttrCall arm's (tag, name)
+  classification now flows through the shared `tag_of()` helper (the old
+  inline match duplicated it), and the cached-plan consult replaces the
+  per-hit `builtin_value_method_exists_pub` table probe. Fused fast arms
+  (list.append/dict.get/set.add from fp-controlflow) still answer BEFORE
+  the cache — chit stays 0 on those shapes by design.
 
-## No-GIL shape (spec item 4)
+## No-GIL shape (unchanged from the prior attempt, re-verified)
 
 Per-thread tables (thread_local keyed by the code-ptr; the compiled-body
 Arc pin prevents key aliasing). Warm hits take NO lock and perform ZERO
-shared writes; worker threads never share entries. Soundness does NOT
-ride the storage: every hit revalidates its stamps against the LIVE
-02.05b counters (Relaxed loads, the entry-23 epoch contract) — a stale
-entry is a miss, and a miss runs the exact slow path. The alternative
-(sharded shared lock-free tables with CAS-stamped entries) was evaluated
-on the design level, not measured: it buys memory amortization across
-threads but adds a shared cacheline touch per warm hit and a shared
-RMW per fill; at the leaf's 4-thread probe scale the per-thread shape
-has strictly less cross-thread traffic (none). Contention profile
-documented here rather than measured twice (honest gap, below).
+shared writes. Soundness rides the stamps, not the storage: every hit
+revalidates against the LIVE 02.05b counters (Relaxed loads); a stale
+entry is a miss and a miss runs the exact slow path. Fills use
+try_borrow_mut (a nested frame of the same body mid-dispatch skips the
+fill; the site refills later). Cached Values are stored DIRECTLY (never
+as raw bits) — the tracing GC keeps their referents reachable through
+the conservative floor (the prior attempt's use-after-free lesson).
 
-Fills use try_borrow_mut — a fill can only collide when a NESTED frame
-of the same body is mid-dispatch on this thread; that fill skips (the
-site refills on a later non-nested miss).
+## Invalidation surface (02.05b bump-site map, re-audited)
 
-## The GC rule learned (would have shipped a use-after-free)
+- Globals: dict epoch bumps (PyDict::set/pop); pair identity catches
+  module swaps. Only provenance-verified answers (present in globals OR
+  builtins at fill time) record; NameError negatives stay dynamic.
+- LoadAttr: attr_set_protocol UserClass/interned arms + class-attr write
+  + delattr all bump type_version/surgery_version (audit rows 10/11/16;
+  classes.rs needed NO new bump sites). Subclass chains ride
+  chain_surgery_version (MRO max). InstDict re-probes the live attrs
+  dict per hit (value rebinds need no counter); BindFunc mints fresh per
+  hit with owner re-derived from the LIVE MRO + ptr-checked.
+- LoadAttrCall: key is a pure function of the instruction + live stack
+  receiver — no mutation surface, no stamp needed.
 
-The first implementation stored cached Values as raw bit-pairs
-(transmute_copy of the 16-byte Value). That is INVISIBLE to the tracing
-GC: bits in a heap Vec are not roots, so the collector freed a packed
-referent mid-run and the next warm hit reconstructed a dangling handle
-(seg repro: hot loop reading `c.x`, EXC_BAD_ACCESS inside
-PyDict::get). Fix + rule: cached Values are stored DIRECTLY (Arc
-handles keep referents reachable through the conservative floor), never
-as bits. This rule is now documented in ic.rs header + commit message.
+## Measurement (ic_base.py probe, best-of-5 of 3 runs, M-series host,
+## release build target-fp-ic2 @ 3bb8343)
 
-## Invalidation surface (what each stamp rules out)
-
-- Globals positives: any write into the frame's globals or the builtins
-  dict rebinds/removes the name -> dict epoch bumps (PyDict::set/pop
-  single bump site). Dict-pair identity catches module swaps.
-  The T1-d module-globals / exc-class fallback answers are NEVER
-  recorded (they read surfaces the stamps don't guard): the fill arm
-  probes `globals.contains_str(name) || builtins.contains_str(name)`
-  and records only provenance-verified answers. NameErrors stay fully
-  dynamic (negative caching rejected — see ic.rs GlobalIc doc).
-- LoadAttr: C.x = / del C.x / method overwrite -> TypeObject::
-  bump_class_versions (audit rows 10/11/16 — the 02.05b audited sites in
-  classes.rs: attr_set_protocol UserClass arm 4499, interned-Type arm
-  4523, class-attr write 4642, delattr 4846; NO missing bump site found,
-  classes.rs needed no fix). Subclass chains ride chain_surgery_version
-  (MRO max). Names-dict epoch additionally catches direct names writes
-  that change HOW a name answers. Instance reads never cache the VALUE
-  (the InstDict plan re-probes the live attrs dict per hit — an `o.x =
-  new` rebind needs no counter). BindFunc mints fresh per hit (CPython
-  identity pin) with the defining class re-derived from the LIVE MRO and
-  identity-checked against the entry's owner_ptr.
-- LoadAttrCall: the (tag, name, argc) key is a pure function of the
-  instruction + the live stack receiver (value-family tags are
-  constants) — no mutation surface, no stamp needed. The entry memoizes
-  only WHICH dispatcher answers; the dispatcher call itself is identical
-  on hit and miss. The memo only engages on shapes NOT already covered
-  by the fp-calls sibling's fused fast arms (list.append/dict.get/
-  set.add answer before the cache is consulted).
-
-## Measurement (isolation probe: tests/bench/primitive/probes/ic_base.py,
-## hp_mint.py pattern; best-of-5, 50k iters, M-series host)
-
-| row | before 02617fc | after | delta |
+| row | tier-0 (no IC) | bytecode + IC | CPython 3.14 |
 |---|---|---|---|
-| global_read (C) | 114.7ns | 59.4-61.1ns | ~1.9x |
-| attr_inst (c.x) | 335.5ns | 128-137ns | ~2.5x |
-| method_call_dict (d.get("a")) | 194.7ns | 137-141ns | ~1.4x |
-| method_bound (c.m mint) | 856ns | 841-889ns | flat (mint floor) |
-| method_call_inst (c.m()) | 1304ns | 1190-1200ns | ~1.1x |
-| mint_dict (d.get bare read) | 3694ns | 3218-3906ns | flat (mint floor) |
+| global_read (C) | 314.3ns | 56.2-58.9ns | 19.4ns |
+| attr_inst (c.x) | 571.3ns | 134.7-139.0ns | 21.4ns |
+| method_call_dict (d.get) | 3697.8ns* | 136.2-138.8ns | 30.2ns |
+| method_bound (c.m mint) | 860.9ns | 850-872ns | 44.0ns |
+| method_call_inst (c.m()) | 1457.9ns | 1217-1245ns | 32.1ns |
+| mint_dict (d.get bare) | 3319.3ns* | 3314-3848ns | 50.3ns |
 
-vs CPython 3.14 same probe: global 19.1ns, attr_inst 21.9ns,
-method_call_dict 29.3ns.
+(*tier-0 rows ride fast_bound_mint differences — mint floor dominates.)
 
-HONEST: the leaf's absolute targets (global <=30ns, attr <=60ns) are NOT
-met. The remaining cost is not the cache (the hit path is ~5 compares +
-a clone): it is the bytecode dispatch loop floor (line-table load, stack
-push, for-loop overhead ~40ns/iter in this runtime's tier-0 territory —
-the tier1 frame/dispatch work). The IC removed the RESOLUTION cost; the
-row costs are now loop-dominated. CPython parity on these rows needs the
-loop floor, out of this leaf's scope. The dict.get + attribute-loop rows
-are measurably faster (1.4x / 2.5x) — the spec's measurable-improvement
-bar is met.
+HONEST, same conclusion as the prior attempt: the leaf-spec absolute
+targets (global <=30ns, attr <=60ns) are NOT met. The hit path is ~5
+compares + a clone; the remaining cost is the tier-0 dispatch loop floor
+(line-table load + stack ops + For overhead). The IC removed the
+RESOLUTION cost (global 5.5x, attr 4.1x vs tier-0 same binary); rows are
+now loop-dominated. Prior attempt measured 60ns/132ns on its base —
+rebased numbers are equal-or-better (56-59 / 135-139); parity within
+noise. CPython parity needs the tier-1 dispatch work, out of scope.
 
-Hit-rate evidence (APX_TIER_STATS=1): ic_base.py runs report
-ghit=1399984 gfill=72 ahit=349999 afill=1 chit=0 — i.e. ~1 fill per site
-per thread then pure hits, exactly the intended shape (chit=0 because
-the probe's fused-call shapes all ride the already-fast fused arms).
+Hit-rate evidence (APX_TIER_STATS=1): ghit=1399984 gfill=72
+ahit=349999 afill=1 chit=0 — ~1 fill per site per thread then pure hits.
 
-## Gates (all re-run on the committed tree)
+## Gates (all re-run on 3bb8343, clean env, release target-fp-ic2)
 
-- fix_bytecode.py: 12/12 three-way GREEN (fix_bytecode exercises
-  tree-walk vs bytecode vs CPython).
-- fix_int / fix_json (127/0) / fix_sort (42/0) / fix_random: GREEN.
-- diff_b64: 2132/0. diff_hex: 1976 cases / 3 mismatches — the 3
-  (E.unhex.odd, F.unhex.2args, F.unhex.kw) are byte-IDENTICAL to the
-  pre-leaf trunk baseline (verified against target-pptrunk3 binary):
-  pre-existing unhexlify error-text divergences, NOT this leaf.
-- ap-conform values 50/50 + stdlib 48/48, BOTH tier 0 and tier bytecode.
-- cargo test -p ap-bytecode: 52/52. cargo test -p ap-run --release:
-  19 suites, 0 failed (including the new ic_invalidation suite).
-  (En-route: fix_pass_differential initially failed 7 tests — missing
-  debug/ap-run-eval binary under the fresh CARGO_TARGET_DIR; building
-  ap-run-eval for the new target dir fixed it, pre-existing harness
-  path assumption, not this leaf.)
-- Toggle-off: `--tier 0` runs print no IC stats lines and never enter
-  the bytecode path (unchanged behavior).
-- invalidation gates (NEW, ic_invalidation.rs — 7 tests x BOTH modes):
-  set/del/re-add instance attr after warm; set/del/re-add class attr
-  after warm; method add + overwrite after warm; base override then
-  subclass override after warm (the chain case); global rebind /
-  builtins shadow / unshadow / del after warm; fused-call shapes after
-  receiver mutation. Each asserts the EXACT post-mutation answer — a
-  missed bump shows as a stale value (fail-closed).
-- no-GIL probe: 4 threads x 200k reads on shared sites while a mutator
-  churns values + performs class surgery concurrently; stale-FREEZE
-  detection (IC answer frozen while the walk advances) — green, 3x
-  stable.
+- fix_bytecode.py: 13/13 probes three-way GREEN (tw == bc == CPython,
+  byte-identical) — the fp-exceptions count, both toggles exercised.
+- diff_b64 2132/0; diff_hex 1976/0; fix_int / fix_json 127/0 /
+  fix_sort 42/0 / fix_random: GREEN.
+- fix_sha_zlib: tw == bc byte-identical (0 diff lines); vs CPython 28
+  CORRUPT-row zlib.error message divergences — ALL the documented
+  zlib-rs message-granularity residual (fix-sha-zlib-report.md),
+  zero new.
+- ap-conform values 50/50 + stdlib 48/48, BOTH toggles (default tier-0
+  and --tier bytecode).
+- cargo test -p ap-bytecode -p ap-run --release: 21 suites, 272 passed,
+  0 failed (incl. the 7-gate ic_invalidation suite).
+- ic_invalidation.rs: 7 gates x BOTH tiers (tier-0 control + bytecode)
+  — set/del/re-add instance attr; set/del/re-add class attr (inst views
+  checked too); method add + overwrite; base-override-then-subclass
+  override (the chain case); global rebind / builtins shadow /
+  unshadow / del (NameError stays exact); fused-call receiver mutation.
+  Rebase fixes: binary path points at target-fp-ic2; the clean-stderr
+  asserts filter the [TIER-STATS]/[BC-STATS] transparency lines that
+  fp-exceptions made unconditional on the bytecode route.
+- no-GIL probe: no_gil_4thread_contention — 4 threads x shared sites
+  while a mutator churns values + class surgery concurrently, stale-
+  FREEZE detection — green 3x stable.
+- Toggle-off: --tier 0 runs never enter the bytecode path (unchanged).
 
 ## Honest gaps
 
 1. Absolute ns targets (30/60) not met — dispatch-loop floor dominates
-   the rows now (see measurement table). Filed as tier-1 dispatch work.
-2. Contention probe verifies CORRECTNESS under concurrency; the two
-   no-GIL shapes (per-thread vs sharded shared) were not both measured —
-   the per-thread shape won on design (zero shared traffic) and the
-   probe documents its profile. A shared-table measurement would need a
-   second implementation.
-3. mint_dict/method_bound rows unchanged (~3.3-3.9us mint floor): the
-   mint itself (PyObject alloc + registration) is the primitive-perf
-   campaign's known BoundMethod-mint row (~1.5us->3.9us here reflects
-   the probe's loop overhead) — pre-existing filed lever, untouched.
-4. LoadGlobal negatives (NameError paths) uncached by design; a
-   cold-tolerant negative cache would need per-answer provenance walks.
-5. GlobalLoad sites record only positive answers sourced from the
-   (globals, builtins) pair; reads whose provenance is the T1-d
-   module-globals fallback stay dynamic (soundness-first subset).
+   (loop overhead ~40ns/iter at tier 0). Filed as tier-1 dispatch work.
+2. Both no-GIL shapes were not measured against each other (per-thread
+   won on design: zero shared traffic); only correctness is probed under
+   contention, not throughput scaling.
+3. mint_dict/method_bound rows are mint-floor-bound (~850ns-3.8us);
+   the BoundMethod mint is the primitive-perf campaign's filed lever.
+4. LoadGlobal negatives (NameError paths) uncached by design.
+5. LoadAttrCall memo only engages on shapes NOT covered by fp-calls'
+   fused fast arms — those skip the cache entirely (they're already
+   faster than any cache consult); chit=0 is the intended shape.
+6. The 8-failed import_guard_differential run seen mid-leaf was THIS
+   shell's stray APX_TIER_STATS=1 env (stats line = stderr last line);
+   clean env re-run: 9/9 green on trunk too. No code change needed.
