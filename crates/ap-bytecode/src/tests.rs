@@ -471,15 +471,8 @@ fn unsupported_expr_variants_fall_back_whole_function() {
             Expr::Compare(vec![CmpOp::Lt, CmpOp::Lt], vec![lit(1), lit(2), lit(3)], 1),
         ),
         ("slice expr", Expr::Slice(None, None, None)),
-        ("set display", Expr::Set(vec![lit(1)])),
-        (
-            "dict display",
-            Expr::Dict(vec![DictItem {
-                key: lit(1),
-                value: lit(2),
-            }]),
-        ),
-        ("dict expand", Expr::DictExpand(Box::new(name("d")))),
+        // Leaf fp-calls: set/dict displays LOWER now (BuildSet/BuildDict —
+        // the comprehension accumulators need them anyway).
         (
             "lambda",
             Expr::Lambda(Box::new(LambdaSig { params: vec![] }), Box::new(lit(1))),
@@ -1502,6 +1495,7 @@ fn try_inside_loop_still_falls_back() {
     );
     assert_eq!(must_fallback(&f), "try statement");
 }
+
 
 
 

@@ -747,8 +747,28 @@ impl Lowerer {
                 self.emit_at_line(Instr::BuildTuple(count), self.cur_line);
                 Ok(())
             }
-            Expr::Set(..) => Err(Unsupported("set display")),
-            Expr::Dict(..) => Err(Unsupported("dict display")),
+            Expr::Set(items) => {
+                for it in items {
+                    self.lower_expr(it)?;
+                }
+                let count =
+                    u16::try_from(items.len()).map_err(|_| Unsupported("set display too large"))?;
+                self.emit_at_line(Instr::BuildSet(count), self.cur_line);
+                Ok(())
+            }
+            Expr::Dict(items) => {
+                // Key first, value second (insertion order == push order;
+                // BuildDict pairs chunks of 2 in push order). A ** expansion
+                // item (DictExpand) stays unsupported.
+                for i in items {
+                    self.lower_expr(&i.key)?;
+                    self.lower_expr(&i.value)?;
+                }
+                let count =
+                    u16::try_from(items.len()).map_err(|_| Unsupported("dict display too large"))?;
+                self.emit_at_line(Instr::BuildDict(count), self.cur_line);
+                Ok(())
+            }
             Expr::DictExpand(_) => Err(Unsupported("dict ** expansion")),
             Expr::Lambda(..) => Err(Unsupported("lambda")),
             Expr::ListComp(elt, clauses) => {
