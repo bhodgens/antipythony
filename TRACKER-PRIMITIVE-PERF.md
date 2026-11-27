@@ -161,3 +161,12 @@ fp-calls-and-attrs IN FLIGHT (Call/LoadAttr/Subscript opcodes +
 comprehension lowering; targets dict/str method-call loops >=2x vs
 tree-walk). Then fp-exceptions (owns the tb-line fix).
 Tree-walker default unchanged until parity proven.
+
+fp-calls MERGED (03571f4 — Call/LoadAttr/StoreAttr/Subscript opcodes +
+comprehension lowering; str method-call loops 8.93x vs tree-walk;
+fix_bytecode extended to 12 cases, green; known gaps: nested-loop
+ForNext handle-cache thrash + kwargs binder + user-instance attr walk
+all owned by 02-perf). fp-exceptions IN FLIGHT (exception-table
+lowering + execution; ALSO owns the multiline-binop tb-line gate fix
+carried from fp-controlflow — 4 mismatches to close). 01-core at 3/3
+after fp-exceptions lands.
