@@ -28,14 +28,15 @@ fn probe_path() -> std::path::PathBuf {
 }
 
 fn run_mode(tier: &str, audit: bool) -> (Vec<u8>, i32) {
-    std::env::set_var("APX_TIER", tier);
+    // Per-child env, NOT process-global set_var: parallel test threads share
+    // the parent process environment, and the diagnostic-env scrub must see
+    // a clean parent. APX_TIER/APX_IC_AUDIT are applied to this probe only.
+    let mut extra = vec![("APX_TIER", tier)];
     if audit {
-        std::env::set_var("APX_IC_AUDIT", "1");
-    } else {
-        std::env::remove_var("APX_IC_AUDIT");
+        extra.push(("APX_IC_AUDIT", "1"));
     }
     let src = std::fs::read_to_string(probe_path()).expect("risk4 probe present");
-    let (out, err, rc) = common::run_aprun_eval(&src);
+    let (out, err, rc) = common::run_aprun_eval_with_env(&src, &extra);
     assert!(
         err.is_empty(),
         "[tier {tier} audit {audit}] stderr must be clean (C-29): {}",

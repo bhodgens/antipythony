@@ -33,10 +33,11 @@
 //! budget (the probes loop 10k–50k iterations), per-run deadline fence.
 
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 include!("gate_watchdog.rs");
+#[path = "../../ap-run/tests/common/diagnostic_env.rs"]
+mod diagnostic_env;
 
 fn interpreter_gate() {
     gate_watchdog_acquire();
@@ -141,7 +142,7 @@ fn run_tier(
     preflight_or_panic();
     interpreter_gate();
     let bin = env!("CARGO_BIN_EXE_ap-run-eval");
-    let mut cmd = Command::new(bin);
+    let mut cmd = diagnostic_env::clean_command(bin);
     cmd.args(["--tier", tier]).arg(probe);
     for (k, v) in extra_env {
         cmd.env(k, v);

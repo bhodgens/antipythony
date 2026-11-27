@@ -33,6 +33,33 @@ cargo run -p xtask -- notices --check   # THIRD_PARTY_NOTICES drift gate
 Current baseline: rust 289/0, pytest 1272 passed / 0 failed (plus
 skips/xpasses tracked in `plans/antipythony/tests/TRACKING.md`).
 
+### Clean-env gate runs (APX_* diagnostic env leakage)
+
+Diagnostic env vars such as `APX_TIER` / `APX_TIER_STATS` are opt-in knobs for
+human debugging, NOT gate configuration. If one is exported in the invoking
+shell, the interpreter under a differential harness may append a stats line
+to stderr; the byte-pinned exception-tail assertion in
+`import_guard_differential.rs` then sees the stats line as stderr's last line
+and goes RED on a healthy tree. The Rust harnesses now scrub these keys from
+probe children (`crates/ap-run/tests/common/diagnostic_env.rs`), but a gate
+should still be launched from a clean env so the *test binary itself* and any
+reference process agree with CI. To run a gate with every diagnostic knob
+unset (macOS/Linux `env -u`):
+
+```
+env -u APX_TIER -u APX_TIER_STATS -u APX_TIER_DEBUG -u APX_TIER1_STATS \
+    -u APX_TIERUP_STATS -u APX_OSR_STATS -u APX_CALLDBG -u APX_CE_TRACE \
+    -u APX_GC_THRESHOLD -u APX_HASHDBG -u APX_TDEBUG -u APX_SCHED_TRACE \
+    -u APX_BP_DEBUG \
+    cargo test -p ap-run --test import_guard_differential
+```
+
+Explicit per-test opt-ins (e.g. the JIT-exercise gate's
+`APX_TIER_STATS=1`) are re-applied by the harness AFTER the scrub; the
+`env -u` above only removes *inherited shell* values. Suites that intentionally
+set a knob do so on the individual child `Command`, never via process-global
+`set_var`.
+
 ### Heavy-suite memory discipline (2026-11-05 OOM mitigation)
 
 The ap-run differential suites run each probe in a SUBPROCESS

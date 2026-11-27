@@ -42,8 +42,6 @@
 //! The "is not a package" suffix family (os.nope) is a documented
 //! native-module fidelity divergence — see the leaf PROGRESS note.
 
-use std::process::Command;
-
 mod common;
 
 fn ap_run_eval() -> String {
@@ -82,10 +80,11 @@ fn check_guard_case(tag: &str, src: &str, fixture: Option<&std::path::Path>) {
         None => return, // no reference + AP_REQUIRE_REFERENCE unset: skip
     };
     let tmp = write_case(tag, src);
-    let mut ref_cmd = Command::new(py);
+    let mut ref_cmd = common::diagnostic_env::clean_command(py);
     ref_cmd.arg("-S").arg(&tmp);
     // Interpreter side runs under the OOM fence (2026-11-06 mitigation 2).
-    let mut ap_cmd = Command::new(ap_run_eval());
+    // fenced_output already scrubs diagnostic env keys from the shell.
+    let mut ap_cmd = common::diagnostic_env::clean_command(ap_run_eval());
     ap_cmd.arg(&tmp);
     if let Some(f) = fixture {
         ref_cmd.env("PYTHONPATH", f);
@@ -339,12 +338,15 @@ fn uncaught_traceback_tail_and_exit_code() {
     };
     for src in ["__import__('')\n", "__import__('..')\n", "__import__('')\n"] {
         let tmp = write_case("unc", src);
-        let expected = Command::new(py)
+        // Both sides scrub inherited APX_* diagnostics: a leaked
+        // [TIER-STATS] line would replace the exception tail (stderr's
+        // last line) that this test byte-pins.
+        let expected = common::diagnostic_env::clean_command(py)
             .arg("-S")
             .arg(&tmp)
             .output()
             .expect("spawn ref");
-        let actual = Command::new(ap_run_eval())
+        let actual = common::diagnostic_env::clean_command(ap_run_eval())
             .arg(&tmp)
             .output()
             .expect("spawn ap");
