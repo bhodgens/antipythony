@@ -328,6 +328,11 @@ def _ap_conform_available():
 def _impl_cmd():
     if APX_IMPL:
         return shlex.split(APX_IMPL)
+    # .cargo/config.toml redirects builds to target-0304c (cargo does not
+    # export the redirect; CI ENOENT fix 2026-11-26).
+    runner = REPO_ROOT / "target-0304c" / "debug" / "antipythony"
+    if runner.is_file():
+        return [str(runner), "run"]
     runner = REPO_ROOT / "target" / "debug" / "antipythony"
     if runner.is_file():
         return [str(runner), "run"]
