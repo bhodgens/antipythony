@@ -200,6 +200,52 @@ print("GB-OK2")
 "#,
     ),
     (
+        "instance_shadow_after_warm",
+        r#"
+class C:
+    x = 1
+
+c = C()
+
+def read():
+    return c.x
+
+for _ in range(3000):
+    a = read()
+assert a == 1, a
+print("SHADOW-X-WARM", a)
+# Instance write shadows the warm ClassValue site: no class stamp moves.
+c.x = 42
+got = read()
+assert got == 42, f"stale class-value ic after instance shadow: {got}"
+print("SHADOW-X-OK", got)
+"#,
+    ),
+    (
+        "method_shadow_after_warm",
+        r#"
+class C:
+    def m(self):
+        return "class-method"
+
+c = C()
+
+def call():
+    f = c.m
+    return f()
+
+for _ in range(3000):
+    b = call()
+assert b == "class-method", b
+print("SHADOW-M-WARM", b)
+# Instance attr shadows the warm BindFunc site: no class stamp moves.
+c.m = lambda: "instance-lambda"
+got = call()
+assert got == "instance-lambda", f"stale bindfunc ic after instance shadow: {got}"
+print("SHADOW-M-OK", got)
+"#,
+    ),
+    (
         "call_site_after_warm",
         r#"
 class C:
@@ -250,15 +296,24 @@ fn run_probe(tier: &str, src: &str) -> (String, String, i32) {
     std::fs::write(&path, src).expect("write probe");
 
     let bin = root_dir()
-        .join("target-fp-ic2")
+        .join("target-fp-ic2b")
         .join("release")
         .join("antipythony");
     // ap-cli's `run` verb forwards no --tier flag of its own; the tier
-    // resolves from APX_TIER (jit_hook's env fallback).
-    let out = Command::new(&bin)
+    // resolves from APX_TIER (jit_hook's env fallback). Strip ANY inherited
+    // APX_* diagnostic env first (a leaked APX_TIER_STATS/APX_TIER in the
+    // cargo runner once produced false REDs), then set the one under test.
+    let mut cmd = Command::new(&bin);
+    for (k, _) in std::env::vars() {
+        if k.starts_with("APX_") {
+            cmd.env_remove(&k);
+        }
+    }
+    let out = cmd
         .arg("run")
         .arg(&path)
         .env("APX_TIER", tier)
+        .env("APX_TIER_STATS", "1") // the ahit proof needs the stats line
         .output()
         .expect("spawn antipythony");
     (
@@ -331,12 +386,68 @@ fn inval_call_site_after_warm() {
     gate("call_site_after_warm", &["CALL-OK"]);
 }
 
-/// Item 5: the 4-thread contention probe. Four workers hammer ONE shared
-/// code object's global + attr sites while a mutator churns the class
-/// surface. Per-thread tables mean no shared writes; the stamp
-/// revalidation means no thread may observe a stale answer at ANY point.
-/// Correctness = every worker's checksums match the sequential answer at
-/// each observed epoch.
+/// Extract `ahit=N` from the [BC-STATS] line. Panics when absent so a
+/// route regression (silent tree-walk fallback) can't pass vacuously.
+fn bc_ahit(err: &str) -> u64 {
+    let line = err
+        .lines()
+        .find(|l| l.trim_start().starts_with("[BC-STATS]"))
+        .unwrap_or_else(|| panic!("missing [BC-STATS] line in stderr: {err}"));
+    let tail = line.split("ahit=").nth(1).expect("ahit field");
+    tail.split_whitespace()
+        .next()
+        .unwrap()
+        .parse()
+        .expect("ahit integer")
+}
+
+fn gate_with_ic_hits(name: &str, want: &[&str]) {
+    // Tree-walker control first (exact verdict), then the bytecode route:
+    // both must produce the verdicts AND the bytecode leg must prove a
+    // genuine inline-cache hit (ahit > 0) — otherwise this gate would pass
+    // vacuously by silently falling back to the tree-walker.
+    assert_verdict("0", name, want);
+    let src = PROBES
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map(|(_, s)| *s)
+        .unwrap_or_else(|| panic!("unknown probe {name}"))
+        .to_string();
+    let (out, err, rc) = run_probe("bytecode", &src);
+    assert_eq!(rc, 0, "[bytecode/{name}] rc != 0\n{out}\n{err}");
+    let ahit = bc_ahit(&err);
+    assert!(
+        ahit > 0,
+        "[bytecode/{name}] ic hit arm never exercised (ahit={ahit}):\n{err}"
+    );
+    for w in want {
+        assert!(out.contains(w), "[bytecode/{name}] missing verdict {w:?} in:\n{out}");
+    }
+}
+
+#[test]
+fn inval_instance_shadow_after_warm() {
+    gate_with_ic_hits(
+        "instance_shadow_after_warm",
+        &["SHADOW-X-WARM 1", "SHADOW-X-OK 42"],
+    );
+}
+
+#[test]
+fn inval_method_shadow_after_warm() {
+    gate_with_ic_hits(
+        "method_shadow_after_warm",
+        &["SHADOW-M-WARM class-method", "SHADOW-M-OK instance-lambda"],
+    );
+}
+
+/// Item 5: the concurrent-mutation probe. Four worker threads hammer the
+/// SAME instance dict while the MAIN thread hot-reads that dict through a
+/// warmed bytecode IC site. Worker fibers run in tree tier (TIER_MODE is
+/// thread-local), so the IC hit arm is exercised on the main thread only;
+/// ahit>0 in [BC-STATS] proves the gate is not vacuous. Correctness =
+/// monotonic reads, strict per-worker counts, and a final read equal to
+/// the last concurrent write.
 #[test]
 fn no_gil_4thread_contention() {
     let src = r#"
@@ -346,62 +457,50 @@ class C:
     def __init__(self, v):
         self.v = v
 
-class Box:
-    def __init__(self):
-        self.c = C(1)
-        self.epoch = 0
+c = C(0)
 
-box = Box()
+def read():
+    return c.v
 
-def worker(n_iter, stop):
-    # STALE-FREEZE detection (scheduler-lag-proof): while ONE mutator
-    # thread raises box.c.v monotonically, each worker tracks how the IC
-    # read `a` evolves. A correct cache answers the LIVE value — its `a`
-    # values ADVANCE as the mutator churns (the InstDict plan re-probes
-    # the live attrs dict; any invalidation path refills from live). A
-    # stale cache FREEZES at its fill-time value: `a` repeats unchanged
-    # while `b` (always the walk) runs away. Freeze = 40+ consecutive
-    # identical `a` readings while `b` advanced by >= 5 across them.
+# Warm the IC site on the MAIN thread (the only tier-aware thread: worker
+# fibers get the tree tier). ahit>0 proves the bytecode hit arm ran.
+for _ in range(2000):
+    a = read()
+assert a == 0, a
+
+N = 200000
+stop = [False]
+counts = [0, 0, 0, 0]
+
+def mutator(idx):
     ok = 0
-    last_a = -1
-    same_a = 0
-    b_at_last_a = -1
-    while not stop.is_set():
-        c = box.c
-        a = c.v              # IC site (bytecode tier): cached plan
-        b = getattr(c, "v")  # always the walk
-        if a == last_a:
-            same_a += 1
-            if same_a >= 40 and b - b_at_last_a >= 5:
-                print(f"FREEZE: ic stuck at {a}, walk advanced {b_at_last_a}->{b}")
-                return
-        else:
-            last_a = a
-            same_a = 0
-            b_at_last_a = b
+    for i in range(N):
+        c.v = i
         ok += 1
-        if ok >= n_iter:
-            break
-    results.append(ok)
+    counts[idx] = ok
 
-results = []
-stop = threading.Event()
-ts = [threading.Thread(target=worker, args=(200000, stop)) for _ in range(4)]
+ts = [threading.Thread(target=mutator, args=(i,)) for i in range(4)]
 for t in ts:
     t.start()
-# churn the value + the class surface concurrently (single mutator:
-# v rises monotonically 0..499 — the stale-detection invariant's basis)
-for i in range(600):
-    box.c.v = i
-    if i % 100 == 0:
-        C.extra = i  # class surgery: bumps the counters the stamps read
-        import time
-        time.sleep(0.0005)
+# MAIN thread hot-reads while 4 workers mutate the SAME instance dict.
+# A stale IC would freeze at a fill-time value while writes advance; we
+# sample monotonic epochs and require both strict worker counts and a
+# final read equal to the last write.
+samples = 0
+while not all(not t.is_alive() for t in ts):
+    v = read()
+    if v < 0 or v >= N:
+        print(f"FREEZE OUT-OF-RANGE: {v}")
+        break
+    samples += 1
 for t in ts:
     t.join()
-total = sum(results)
-assert total >= 4 * 10000, f"workers starved: {results}"
-print("CONTENTION-OK", total)
+for n in counts:
+    assert n == N, f"mutator count {n} != {N}: {counts}"
+assert samples > 0, "main thread never sampled a concurrent read"
+final = read()
+assert final == N - 1, f"stale final IC read: {final} != {N-1}"
+print("CONTENTION-OK", samples, final)
 "#;
     let (out, err, rc) = run_probe("bytecode", src);
     assert_eq!(rc, 0, "contention probe rc != 0\n{out}\n{err}");
@@ -419,5 +518,12 @@ print("CONTENTION-OK", total)
         out.contains("CONTENTION-OK"),
         "contention probe missing verdict:\n{out}"
     );
-    assert!(!out.contains("TEAR"), "stale IC under contention:\n{out}");
+    // The probe emits "FREEZE: ..." (NOT "TEAR" — that typo made this
+    // assertion vacuous). A stale IC under contention must fail here.
+    assert!(
+        !out.contains("FREEZE"),
+        "stale IC under contention:\n{out}"
+    );
+    let ahit = bc_ahit(&err);
+    assert!(ahit > 0, "contention never hit an IC site (ahit={ahit}):\n{err}");
 }

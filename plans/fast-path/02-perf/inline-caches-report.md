@@ -115,6 +115,49 @@ ahit=349999 afill=1 chit=0 — ~1 fill per site per thread then pure hits.
   FREEZE detection — green 3x stable.
 - Toggle-off: --tier 0 runs never enter the bytecode path (unchanged).
 
+## Repair pass — instance-dict shadowing of ClassValue/BindFunc hits
+(adversarial audit deleg_2f2f5aa5, REJECT verdict, branch ic2-attempt)
+
+Reproduced on the a0fc09d binary with a HOT function (ahit=3000, afill=1):
+`class C: x=1; c=C(); def read(): return c.x` warmed 3000x, then `c.x=42`
+→ bytecode **1** (stale) vs tree-0 / CPython **42**; the same shape for a
+method (`def read(): f = c.m; return f()` warmed, then `c.m=lambda:...`)
+→ bytecode **class-method** (stale) vs **instance-lambda**. The audit's
+earlier probes hit 1-2 functions with ahit=0, so they could not show the
+hit arm; these probes prove the defect on a genuine IC hit.
+
+Fix (bytecode_interp.rs): a ClassValue/BindFunc plan records that the class
+supplies the name AND the instance dict does not shadow it. Instance writes
+move no class stamp, so (a) `ic_attr_fill` now probes the live instance dict
+once and records NOTHING (clearing any stale entry) when the name is there;
+(b) BOTH hit arms re-probe `instance_dict_has(&obj, name)` before serving the
+cached class answer and fall through to the exact slow walk when shadowed.
+Post-fix hot probes: ahit=2999 with correct 42 / instance-lambda.
+
+No-GIL gate repaired: `ic_invalidation.rs:422` asserted `!out.contains("TEAR")`
+while the probe emits `FREEZE` — vacuous. Worker counts are now strict
+(each == 200000) and the probe sustains mutation until all workers finish.
+Because `TIER_MODE` is thread-local (worker fibers run tree-tier), the gate
+was reshaped to hot-read the shared instance dict on the MAIN thread while
+four workers mutate it: `[BC-STATS] ahit>0` is asserted, so the IC hit arm is
+provably exercised. Two new regression tests (`inval_instance_shadow_after_warm`,
+`inval_method_shadow_after_warm`) warm a class member/method in a bytecode
+function, shadow it via the instance dict, and assert verdict equality with
+tree-0 and CPython plus ahit>0. `run_probe` strips every inherited APX_*
+var before setting the tier under test (kills the env-leak false RED).
+
+Repair gates (fresh target-fp-ic2b / target-fp-ic2 binaries, mtime verified,
+env -u APX_TIER_STATS -u APX_TIER):
+- ic_invalidation: 9/9 (7 base + 2 new).
+- ap-bytecode + ap-run --release: 21 suites, 274 passed / 0 failed / 1 ignored
+  (272 baseline + 2 new tests).
+- fix_bytecode.py --other: 13/13.
+- ap-conform values 50/50 + stdlib 48/48, both tier-0 and bytecode.
+
+The fresh target-fp-ic2b debug bins (ap-run-eval/ap-run-probe) were required
+for the full battery: the shared target-fp-ic2 debug bin predated the fix and
+caused 7 false REDs in fix_pass_differential until rebuilt.
+
 ## Honest gaps
 
 1. Absolute ns targets (30/60) not met — dispatch-loop floor dominates

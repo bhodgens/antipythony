@@ -191,17 +191,16 @@ fn ic_attr_fill(ic: &IcTable, site: u32, obj: &Value, name: &str, v: &Value) {
     }
     let is_inst = matches!(obj, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance);
     let is_cls = matches!(obj, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass);
+    // Instance dict probe ONCE (step 2 below + the shadow guard for the
+    // class-member plans). A ClassValue/BindFunc plan asserts the class
+    // supplies the name AND the instance dict does NOT shadow it: an
+    // instance write adds no class stamp, so without this guard a later
+    // `c.x = ..` / `c.m = ..` would hit the cached class answer (reproduced
+    // at ahit>0: warm c.x==1, write c.x=42, read still 1). When shadowed,
+    // record NOTHING and re-walk (same sound subset as the InstDict arm).
+    let in_inst = instance_dict_has(obj, name);
     if is_inst {
         // Instance receiver: step 2 — instance dict supplies it?
-        let in_inst = {
-            let Value::Obj(o) = obj else {
-                return;
-            };
-            o.attrs
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .contains_str(name)
-        };
         if in_inst && !t.is_slot(name) {
             // BUT only recordable when the class does NOT supply a member
             // of this name at all (a class member UNDER an instance-dict
@@ -235,6 +234,17 @@ fn ic_attr_fill(ic: &IcTable, site: u32, obj: &Value, name: &str, v: &Value) {
     // members record: functions (BindFunc for instances; the class
     // receiver reads the function itself — ClassValue) and non-descriptor
     // values (ClassValue).
+    if is_inst && in_inst && !t.is_slot(name) {
+        // The slow walk answered from a shadowed class member only because
+        // this site still holds an entry from BEFORE the instance write (or
+        // a __getattr__/slot race). Clear it so the site stays uncached
+        // while the instance dict shadows the name; NEVER record the stale
+        // class answer here.
+        let _ = ic.with_attrs_mut(|attrs| {
+            attrs[site as usize] = Default::default();
+        });
+        return;
+    }
     if let Some((entry, owner)) = t.lookup_with_owner(name) {
         let descr = crate::classes::descriptor_kind_pub(&entry);
         if descr.is_some() {
@@ -283,6 +293,21 @@ fn tag_of(recv: &Value) -> Option<&'static str> {
         Value::Tuple(_) => Some("pytuple"),
         Value::Float(_) => Some("pyfloat"),
         _ => None,
+    }
+}
+
+/// True when an instance receiver's live dict holds `name`. The class
+/// stamps do NOT cover instance-dict writes, so every ClassValue/BindFunc
+/// hit must re-probe this before serving the cached class answer.
+#[inline]
+fn instance_dict_has(obj: &Value, name: &str) -> bool {
+    match obj {
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => o
+            .attrs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .contains_str(name),
+        _ => false,
     }
 }
 
@@ -1375,8 +1400,12 @@ fn run_frame(
                                 // from the LIVE MRO (one scan answering
                                 // only the owner — the function itself
                                 // comes from the entry).
-                                let f = e.v.clone();
-                                if e.owner_ptr != 0 {
+                                // `c.m = lambda: ..` shadows this class
+                                // method with NO class-stamp movement:
+                                // re-probe the live instance dict before
+                                // minting a bound method from the cached fn.
+                                if !instance_dict_has(&obj, name) && e.owner_ptr != 0 {
+                                    let f = e.v.clone();
                                     let owner = t
                                         .lookup_with_owner(name)
                                         .map(|(_, o)| o)
@@ -1406,12 +1435,18 @@ fn run_frame(
                             p if p == AttrPlan::ClassValue as u8 => {
                                 // Plain class-dict member read off a CLASS
                                 // receiver (C.member): value stable under
-                                // the stamps.
-                                let v = e.v.clone();
-                                IC_ATTR_HITS.fetch_add(1, Ordering::Relaxed);
-                                stack.push(v);
-                                pc += 1;
-                                ic_answered = true;
+                                // the stamps. On an INSTANCE receiver this
+                                // plan means the instance dict did not
+                                // shadow it at fill time — `c.x = 42` moves
+                                // no class stamp, so re-probe the live dict
+                                // and fall through to the walk if shadowed.
+                                if !instance_dict_has(&obj, name) {
+                                    let v = e.v.clone();
+                                    IC_ATTR_HITS.fetch_add(1, Ordering::Relaxed);
+                                    stack.push(v);
+                                    pc += 1;
+                                    ic_answered = true;
+                                }
                             }
                             _ => {} // unknown plan byte: re-walk
                         }
