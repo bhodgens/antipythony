@@ -57,7 +57,8 @@ pub fn render_instr(code: &CodeObject, idx: usize) -> String {
         | Instr::JumpIfTrue(t)
         | Instr::JumpIfFalseOrPop(t)
         | Instr::JumpIfTrueOrPop(t)
-        | Instr::ForNext(t) => format!("{base}->{t}"),
+        | Instr::ForNext(t)
+        | Instr::CheckExcept(t) => format!("{base}->{t}"),
         Instr::BinOp(op) => format!("{base}{}", op.as_str()),
         Instr::UnaryOp(op) => format!(
             "{base}{}",

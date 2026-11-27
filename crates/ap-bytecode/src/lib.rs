@@ -28,6 +28,7 @@
 
 pub mod code;
 pub mod decode;
+pub mod exctable;
 pub mod instr;
 pub mod linetable;
 pub mod lower;

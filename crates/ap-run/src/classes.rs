@@ -3853,7 +3853,20 @@ fn instance_attr(
     }
     // T2 (contextlib _BaseExitStack.__exit__): exception-chain dunders
     // must answer on every exception-typed value, defaulting to None.
+    // fp-exceptions: a MATERIALIZED chain attr (exception_instance writes
+    // __context__/__cause__/__suppress_context__ when a chain exists)
+    // wins over the None default — instance attrs were checked in the
+    // slot_read above only for slot-backed classes; re-check here for the
+    // always-None default firing on a chained exception.
     if matches!(name, "__context__" | "__cause__" | "__suppress_context__") {
+        if let Some(v) = o
+            .attrs
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(&Value::Str(PyString::new(name)))
+        {
+            return Ok(v);
+        }
         return Ok(Value::None);
     }
     if name == "_rawentry" && ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TbDbg) {
