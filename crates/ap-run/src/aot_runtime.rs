@@ -106,6 +106,9 @@ pub fn call_body(
 ) -> Result<Value, crate::Flow> {
     let manifest = MANIFEST.get().expect("AOT dispatch before registration");
     let aot = &manifest[index];
+    // SAFETY: aot.code_ptr is a finalized native code entry registered by the AoT
+    // linker with exactly this extern "C" fn(*mut ExecCtx) -> i32 signature; the
+    // manifest is built from the same emit that produced the pointer.
     let code: extern "C" fn(*mut ExecCtx) -> i32 = unsafe { std::mem::transmute(aot.code_ptr) };
 
     // Slot bridge (jit_hook parity): params at [n_params..2*n_params) per
@@ -140,6 +143,9 @@ pub fn call_body(
 
     // 02.05g root-shim seam (identical to jit_call_body): capture this
     // host frame as the fp-chain walk start for the duration of the call.
+    // SAFETY: caller_frame_pointer() is read at the seam itself (the caller's
+    // own frame) and the frame outlives the code() call below; clear_capture_point()
+    // runs on every exit path immediately after, per rootscan's capture-point contract.
     unsafe { ap_gc::set_capture_point(ap_gc::caller_frame_pointer()) };
     let call_r = code(&mut ctx as *mut ExecCtx);
     ap_gc::clear_capture_point();

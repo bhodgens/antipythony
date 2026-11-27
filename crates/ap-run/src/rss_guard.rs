@@ -61,7 +61,11 @@ fn resolve_cap_bytes() -> Result<u64, String> {
     // 16 GB — comfortably above the legitimate debug-build scrapy-chain
     // footprint (~0.9-1.4 GB) while leaving the OS + other apps half the
     // machine.
+    // SAFETY: sysconf(3) _SC_PHYS_PAGES name query, no pointer arguments; the
+    // <=0 error return is checked in the branch below.
     let pages = unsafe { libc::sysconf(libc::_SC_PHYS_PAGES) };
+    // SAFETY: sysconf(3) _SC_PAGESIZE name query, no pointer arguments; the
+    // <=0 error return is checked in the branch below.
     let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
     if pages <= 0 || page_size <= 0 {
         // Cannot size the machine: fail CLOSED with a conservative 4 GB so a
@@ -76,6 +80,9 @@ fn resolve_cap_bytes() -> Result<u64, String> {
 /// failed; the monitor treats repeated failure as over-cap (fail closed).
 #[cfg(target_os = "macos")]
 fn current_footprint_bytes() -> Option<u64> {
+    // SAFETY: rusage_info_v0 is a plain-data struct whose all-zero bit pattern is
+    // valid; proc_pid_rusage is passed the address of that live local and its
+    // return code is checked before the field is read.
     unsafe {
         let mut info: libc::rusage_info_v0 = std::mem::zeroed();
         let rc = libc::proc_pid_rusage(

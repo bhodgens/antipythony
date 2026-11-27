@@ -262,6 +262,10 @@ pub fn call_ce_marker(full: &str, args: &[Value]) -> Option<Result<Value, Flow>>
         }
         let is_new = entry == "__new__";
         let is_init = entry == "__init__";
+        // SAFETY: f.0 is a slot pointer from the registered type-spec snapshot with the
+        // CPython slot ABI this entry name promises (tp_new/tp_init/getter/method);
+        // slf_h/args_h handles are live across the call and the return is post-processed
+        // per-entry (int rc for tp_init, handle/NULL otherwise).
         let r = unsafe { (f.0)(slf_h as PyObjPtr, args_h as PyObjPtr) };
         if is_init {
             // tp_init has CPython `int` return semantics (0 ok, -1 error,
@@ -357,6 +361,9 @@ pub fn call_ce_module_fn(module: &str, fname: &str, args: &[Value]) -> Option<Re
             .unwrap_or(Value::None);
         let self_h = from_value(&self_v);
         let args_h = args_to_handle(args);
+        // SAFETY: f is a C function pointer from a registered ap_ce module spec with the
+        // METH_FASTCALL-shaped (self, args) handle ABI; both handle args were just minted
+        // by from_value/args_to_handle and outlive the call; the NULL return is handled.
         let r = unsafe { (f)(self_h as PyObjPtr, args_h as PyObjPtr) };
         if r.is_null() {
             if let Some((class, msg)) = err_take() {
@@ -401,6 +408,9 @@ pub fn native_ce_module(
         fn apx_run_module_init(name: *const std::ffi::c_char) -> PyObjPtr;
     }
     let cname = std::ffi::CString::new(name).ok()?;
+    // SAFETY: cname is a live NUL-terminated CString at the call; apx_run_module_init
+    // is the C ABI shim fn(const char*) -> PyObjPtr registered by ap-ce, and its
+    // NULL return is handled below.
     let h = unsafe { apx_run_module_init(cname.as_ptr()) };
     if h.is_null() {
         if let Some((class, msg)) = err_take() {
@@ -498,6 +508,9 @@ pub fn flow_into_err_pub(f: &Flow) {
 // ---------------------------------------------------------------------------
 
 unsafe fn dlopen_fullname(libc_name: *const std::ffi::c_char) -> *mut std::ffi::c_void {
+    // SAFETY: caller keeps libc_name alive as a NUL-terminated CString across the
+    // dlopen(3) call; RTLD_NOW|RTLD_LOCAL impose no further preconditions and a
+    // NULL return is handled by the caller.
     unsafe { libc::dlopen(libc_name, libc::RTLD_NOW | libc::RTLD_LOCAL) }
 }
 
@@ -554,6 +567,10 @@ fn ensure_loaded(name: &str) -> bool {
     let Some(cpath) = std::ffi::CString::new(lib.to_string_lossy().as_bytes()).ok() else {
         return false;
     };
+    // SAFETY: cpath is a live NUL-terminated CString at the dlopen call; dlopen may
+    // return NULL (handled); dlerror() returns NULL or a valid C string per the C API
+    // and is read immediately; csym stays alive across dlsym; the sym->init cast
+    // assumes the PyInit_<name> C signature by extension-module convention.
     unsafe {
         let handle = dlopen_fullname(cpath.as_ptr());
         if handle.is_null() {
