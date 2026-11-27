@@ -168,5 +168,4 @@ fix_bytecode extended to 12 cases, green; known gaps: nested-loop
 ForNext handle-cache thrash + kwargs binder + user-instance attr walk
 all owned by 02-perf). fp-exceptions IN FLIGHT (exception-table
 lowering + execution; ALSO owns the multiline-binop tb-line gate fix
-carried from fp-controlflow — 4 mismatches to close). 01-core at 3/3
-after fp-exceptions lands.
+carried from fp-controlflow — 4 mismatches to close). 01-core COMPLETE (fp-exceptions MERGED c633a0b — 17 exc shapes lowered, exception-table zero-cost path, tb linenos three-way exact; honest gaps filed: SyntaxWarning emitter, __class__ on builtin-raised exc, format_exc snapshot ordering, nested finally re-inline).
