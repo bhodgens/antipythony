@@ -50,6 +50,12 @@ jobs:
     # install from source + full-graph analysis (geiger compiles/checks
     # the dependency graph). Generous: weekly job, never on the PR path.
     timeout-minutes: 90
+    env:
+      # Beats the checkout's rust-toolchain.toml (1.94.0) for EVERY step,
+      # including `cargo install` (geiger 0.14 MSRV is 1.97). The earlier
+      # per-step `rustup override set` landed too late: the install step
+      # ran under 1.94.0 and died on exit 101 (run 45954428192).
+      RUSTUP_TOOLCHAIN: stable
     steps:
       - uses: actions/checkout@v4
       - name: "Toolchain: stable (NOT the repo's 1.94.0 pin — see header; geiger 0.14 MSRV is 1.97)"
