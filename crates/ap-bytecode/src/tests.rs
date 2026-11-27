@@ -1040,7 +1040,7 @@ fn opcode_names_table_in_sync() {
         Instr::LoadAttrCall {
             idx: 0,
             argc: 1,
-            ..
+            site: 0,
         },
         Instr::StoreAttr { idx: 0 },
         Instr::CallFunctionKw {
