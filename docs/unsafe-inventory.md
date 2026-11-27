@@ -20,20 +20,20 @@ at `docs/unsafe-baseline.txt`).
 | ap-aot-crt-hybrid | 8 | 2 | 0 | 0 | 10 |
 | ap-aot-crt | 7 | 2 | 0 | 0 | 9 |
 | ap-bytecode | 0 | 0 | 0 | 0 | 0 |
-| ap-ce | 94 | 309 | 6 | 2 | 38 |
+| ap-ce | 94 | 301 | 6 | 2 | 38 |
 | ap-cli | 0 | 0 | 0 | 0 | 0 |
 | ap-codegen-native | 5 | 54 | 5 | 0 | 47 |
 | ap-codegen-wasm | 0 | 0 | 0 | 0 | 1 |
 | ap-conform | 0 | 0 | 0 | 0 | 0 |
-| ap-gc | 11 | 2 | 1 | 0 | 18 |
+| ap-gc | 10 | 2 | 0 | 0 | 18 |
 | ap-host | 0 | 0 | 0 | 0 | 0 |
 | ap-ir | 0 | 0 | 0 | 0 | 0 |
-| ap-obj | 3 | 0 | 1 | 0 | 3 |
+| ap-obj | 2 | 0 | 0 | 0 | 3 |
 | ap-pack | 0 | 0 | 0 | 0 | 0 |
 | ap-parse | 1 | 0 | 0 | 0 | 0 |
-| ap-run | 107 | 25 | 9 | 1 | 57 |
+| ap-run | 105 | 26 | 9 | 1 | 57 |
 | xtask | 0 | 0 | 0 | 0 | 0 |
-| **TOTAL** | **236** | **394** | **22** | **3** | **183** |
+| **TOTAL** | **232** | **387** | **20** | **3** | **183** |
 
 The ap-codegen-wasm raw-ptr line is a safe `std::ptr::eq` identity comparison
 in `lower.rs:1802` — no `unsafe` keyword, so `#![forbid(unsafe_code)]` holds.
@@ -96,7 +96,7 @@ Categories per issue #15 work item 1:
 | (c) transmute -> safe conversion | 4 sites (of 22 transmute mentions; remainder are comments — grep counts `transmute` word incl. doc text) |
 | (d) static mut | 2 real decls (`Py_Version` exported const, +1 comment mention in gcsupport.rs) |
 | (e) suspect/arch-unavoidable | 17 sites |
-| unclassified remainder (not sampled) | 203 blocks = 236 total − 33 sampled |
+| unclassified remainder (not sampled) | 199 blocks = 232 total − 33 sampled |
 
 (d) resolution: the third `static mut` grep hit is a comment in
 `ap-run/src/gcsupport.rs:74` describing a *migrated* counter ("was a true data
@@ -134,8 +134,10 @@ The `cargo clippy -p ap-obj -p ap-parse -p ap-gc` line-count below predates
 ~~Full warn sweep: ap-run 7, ap-ce 1 missing-`// SAFETY:` warnings on the lib
 target (most FFI bodies carry block-level SAFETY notes; test-cfg blocks aren't
 counted by the lib build).~~ The lint now lands workspace-wide as `warn` in
-root Cargo.toml [workspace.lints.clippy]; flipping to `deny` is the follow-up
-burn-down wave, not this leaf.
+root Cargo.toml [workspace.lints.clippy]; ~~flipping to `deny` is the follow-up
+burn-down wave, not this leaf.~~ FLIPPED: `deny` landed 2026-11-27 (issue #24)
+after waves #21/#22/#23 + #27 verified `cargo clippy --workspace --all-targets`
+== 0 undocumented warnings repo-wide, test targets included.
 
 ## Forbid rollout (this leaf)
 
@@ -231,12 +233,12 @@ an invented claim. Two caveats recorded for the `deny` flip:
    ("interior mutation only under the worker-serialization protocol"). That
    protocol argument is a whole-system invariant, not a per-site proof; if the
    worker-serialization story changes, these comments (not the code) rot first.
-2. `not_unsafe_ptr_arg_deref` (9 pre-existing errors, deny-by-default) still
+2. ~~`not_unsafe_ptr_arg_deref` (9 pre-existing errors, deny-by-default) still
    fires on `pub fn` sites in ap-ce state.rs/value_conv.rs/exports.rs that
-   deref raw handle params without being marked `unsafe` — out of scope here
-   (adding `unsafe` to signatures is a signature change, not a comment), and
-   it predates this wave. It blocks any future `-D warnings` clippy run on
-   ap-ce independently of undocumented_unsafe_blocks.
+   deref raw handle params without being marked `unsafe`~~ FIXED by issue #27
+   (merge of unsafe-27, 2026-11-27): private-helper delegation at all 9 sites,
+   zero signature/ABI changes; `cargo clippy -p ap-ce --all-targets` now
+   reports 0 errors (was the last blocker for a blocking clippy gate on ap-ce).
 
 ### Baseline discipline
 

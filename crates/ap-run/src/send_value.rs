@@ -32,4 +32,6 @@ unsafe impl Send for SendValue {}
 /// queue). Same move-safety argument as `SendValue`; same mutex contract.
 pub struct SendBox(pub Box<dyn std::any::Any>);
 
+// SAFETY: same move-safety argument as SendValue above; the payload is
+// touched only by the thread that dequeues it from the reclaim queue.
 unsafe impl Send for SendBox {}

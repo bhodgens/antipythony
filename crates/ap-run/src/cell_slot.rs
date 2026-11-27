@@ -24,7 +24,10 @@ impl Clone for CellSlotHandle {
     }
 }
 
+// SAFETY: the handle is an Arc over a slot whose interior mutation is
+// serialized by the owning table's lock; the pointer itself is immutable.
 unsafe impl Send for CellSlotHandle {}
+// SAFETY: same table-lock serialization as the Send marker above.
 unsafe impl Sync for CellSlotHandle {}
 
 impl CellSlotHandle {

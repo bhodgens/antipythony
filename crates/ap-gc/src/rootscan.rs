@@ -511,11 +511,11 @@ mod tests {
         let mut buf = [0usize; 4];
         let base = buf.as_mut_ptr() as usize;
         let bogus = base.wrapping_sub(0x1000); // "caller" below us
+                                               // SAFETY: `base` addresses a live local buffer owned for the
+                                               // whole walk; the written link is deliberately below the
+                                               // current fp, so the monotonic guard stops before
+                                               // dereferencing it — only this buffer is read.
         unsafe {
-            // SAFETY: `base` addresses a live local buffer owned for the
-            // whole walk; the written link is deliberately below the
-            // current fp, so the monotonic guard stops before
-            // dereferencing it — only this buffer is read.
             *(base as *mut usize) = bogus;
             *((base + 8) as *mut usize) = 0x0000_5aa4;
             let frames = fp_chain_walk(base);

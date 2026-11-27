@@ -34,9 +34,10 @@ unwrap_used = "warn"
 dbg_macro = "deny"
 todo = "warn"
 # issue #15: every remaining unsafe block must carry a SAFETY: comment.
-# warn now; flip to deny once the undocumented backlog (see
-# docs/unsafe-inventory.md) is burned down.
-undocumented_unsafe_blocks = "warn"
+# deny as of issue #24 (2026-11-27): the undocumented backlog was burned
+# down by waves #21/#22/#23 + the #27 ap-ce fixes (src + tests), verified
+# `cargo clippy --workspace --all-targets` == 0 warnings beforehand.
+undocumented_unsafe_blocks = "deny"
 
 # Doc-link policy (robustness-ci 05.03): broken intra-doc links warn in every
 # crate that opts into workspace lints. The CI gate escalates ALL rustdoc

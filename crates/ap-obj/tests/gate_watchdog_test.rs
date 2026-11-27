@@ -62,8 +62,14 @@ fn gate_free() -> bool {
         .write(true)
         .open(lock_path())
         .expect("open gate lock");
+    // SAFETY: test-only harness — libc flock/proc_bsdinfo/kill calls
+    // on fds and pid values this harness itself created or probed;
+    // no lifetime crosses the block.
     let rc = unsafe { libc::flock(file.as_fd().as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     if rc == 0 {
+        // SAFETY: test-only harness — libc flock/proc_bsdinfo/kill calls
+        // on fds and pid values this harness itself created or probed;
+        // no lifetime crosses the block.
         unsafe { libc::flock(file.as_fd().as_raw_fd(), libc::LOCK_UN) };
         true
     } else {
@@ -95,6 +101,9 @@ fn gate_child_hold_then_die() {
         .expect("child: open gate lock");
     let deadline = Instant::now() + Duration::from_secs(8);
     let acquired = loop {
+        // SAFETY: test-only harness — libc flock/proc_bsdinfo/kill calls
+        // on fds and pid values this harness itself created or probed;
+        // no lifetime crosses the block.
         if unsafe { libc::flock(file.as_fd().as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 } {
             break true;
         }
@@ -224,6 +233,9 @@ fn gate_live_holder_is_never_falsely_stale() {
         .open(lock_path())
         .expect("open gate lock");
     assert!(
+        // SAFETY: test-only harness — libc flock/proc_bsdinfo/kill calls
+        // on fds and pid values this harness itself created or probed;
+        // no lifetime crosses the block.
         unsafe { libc::flock(holder.as_fd().as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 },
         "gate was free but flock failed"
     );
@@ -245,5 +257,8 @@ fn gate_live_holder_is_never_falsely_stale() {
         "live holder must present a matching start time (no false-stale)"
     );
 
+    // SAFETY: test-only harness — libc flock/proc_bsdinfo/kill calls
+    // on fds and pid values this harness itself created or probed;
+    // no lifetime crosses the block.
     unsafe { libc::flock(holder.as_fd().as_raw_fd(), libc::LOCK_UN) };
 }

@@ -44,6 +44,9 @@ fn gate_wait_expiry_panics_with_actionable_message() {
         .write(true)
         .open(&path)
         .expect("open holder");
+    // SAFETY: test-only harness — libc flock/proc_bsdinfo/kill calls
+    // on fds and pid values this harness itself created or probed;
+    // no lifetime crosses the block.
     let acquired = unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0;
     if !acquired {
         eprintln!("SKIP: gate held by live suite");
@@ -77,5 +80,8 @@ fn gate_wait_expiry_panics_with_actionable_message() {
     );
 
     // Release our hold.
+    // SAFETY: test-only harness — libc flock/proc_bsdinfo/kill calls
+    // on fds and pid values this harness itself created or probed;
+    // no lifetime crosses the block.
     unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_UN) };
 }

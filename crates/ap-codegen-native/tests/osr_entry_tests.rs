@@ -175,6 +175,10 @@ fn osr_entry_runs_loop_to_completion_from_transfer() {
         buf.slots[idx] = v.clone();
     }
     buf.live_count = vals.len() as u32;
+    // SAFETY: entry.ptr is a live finalized OSR entry handed out by
+    // the tierup driver and buf is populated + live for the whole
+    // call — the documented precondition of call_osr_status
+    // (crates/ap-codegen-native/src/tierup.rs # Safety section).
     let status = unsafe { ap_codegen_native::tierup::call_osr_status(entry.ptr, &mut ctx, &buf) };
     if status != 0 {
         eprintln!(

@@ -11,13 +11,18 @@
 # actually needs it.
 #
 # Issue #15 unsafe policy (docs/unsafe-inventory.md):
-#   - undocumented_unsafe_blocks is set to "warn" in root Cargo.toml
-#     [workspace.lints.clippy]. Every unsafe block in a non-forbidden crate
-#     needs a `// SAFETY: ...` comment directly above it; the lint checks for
-#     that. Burn-down goal: flip warn -> deny once the existing backlog
-#     (measured per-crate in docs/unsafe-inventory.md) is documented.
+#   - undocumented_unsafe_blocks is set to "deny" in root Cargo.toml
+#     [workspace.lints.clippy] (flip landed with issue #24, 2026-11-27,
+#     after waves #21/#22/#23 + #27 burned the backlog to 0, verified
+#     workspace-wide including test targets). Every unsafe block and
+#     unsafe impl in every linted crate needs a `// SAFETY: ...` comment
+#     directly above it; the lint makes an undocumented block a hard
+#     build error.
 #   - Zero-unsafe crates are pinned with #![forbid(unsafe_code)] at the lib.rs
-#     first line: ap-pack, ap-host, ap-conform, ap-codegen-wasm (plus
-#     ap-cli/xtask deferred - sibling-owned). scripts/unsafe_report.sh is the
+#     first line: ap-pack, ap-host, ap-conform, ap-codegen-wasm, ap-cli,
+#     xtask, ap-ir (seven; pins landed with #15/#18 waves). Note: the
+#     attribute scopes to its crate target only — tests/ files are
+#     separate crate roots and rely on the deny'd lint instead.
+#     scripts/unsafe_report.sh is the
 #     ratchet: baseline in docs/unsafe-baseline.txt, --diff mode blocks new
 #     unsafe occurrences in changed files.

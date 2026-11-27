@@ -47,10 +47,12 @@ pub struct AotFnEntry {
     pub ic_len: u32,
 }
 
-// SAFETY (shared with jit_hook's pointer discipline): the manifest lives
+// SAFETY: shared with jit_hook's pointer discipline — the manifest lives
 // in the binary's __DATA segment for the process lifetime; entries are
 // registered once before any module code runs and read-only afterwards.
 unsafe impl Send for AotFnEntry {}
+// SAFETY: same read-only-after-registration invariant as the Send marker
+// above; concurrent readers never mutate an AotFnEntry.
 unsafe impl Sync for AotFnEntry {}
 
 static MANIFEST: OnceLock<Vec<AotFnEntry>> = OnceLock::new();

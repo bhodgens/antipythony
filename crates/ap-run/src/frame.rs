@@ -683,7 +683,13 @@ pub struct Interpreter {
 // (Decision 1). The remaining Cell fields (depth/recursion_limit/exit_code
 // were converted too) — no Cell remains on a cross-thread path. Any new
 // RefCell/Cell added to this struct breaks the marker's soundness proof.
+// SAFETY: 02.09b worker-only-serialization discipline — fields are Arc
+// handles (refcount traffic atomic, Decision 1); the FnRegistry is an
+// RwLock (F1); no RefCell/Cell remains on a cross-thread path. Any new
+// interior-mutability field added here breaks this marker's soundness.
 unsafe impl Send for Interpreter {}
+// SAFETY: same Arc/RwLock interior as the Send marker above; every
+// mutation path holds the registry or worker lock first.
 unsafe impl Sync for Interpreter {}
 
 impl Interpreter {

@@ -132,7 +132,10 @@ pub struct ThreadEntry {
 // process-global THREADS table; every borrow is table-lock + GIL
 // serialized (E-safety: the done flag is a shared AtomicBool precisely so
 // completion marking never borrows). Refcount traffic is Arc.
+// SAFETY: ThreadEntry fields are atomics/Arc handles; the raw tid is a
+// plain integer. All interior state moves through those atomic fields.
 unsafe impl Send for ThreadEntry {}
+// SAFETY: same atomics-only interior as the Send marker above.
 unsafe impl Sync for ThreadEntry {}
 
 // ---------------------------------------------------------------------------
@@ -180,7 +183,10 @@ impl Clone for EntryArc {
     }
 }
 
+// SAFETY: EntryArc is an Arc handle over mutex-protected reclaim state;
+// refcount traffic is atomic, so a move between threads is sound.
 unsafe impl Send for EntryArc {}
+// SAFETY: same Arc/mutex interior as the Send marker above.
 unsafe impl Sync for EntryArc {}
 
 pub struct ThreadSlot {
