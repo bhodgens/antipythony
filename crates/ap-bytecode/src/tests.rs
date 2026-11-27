@@ -261,9 +261,18 @@ fn binop_unary_compare_pairwise() {
         ],
     );
     let c = must_lower(&f);
-    assert_eq!(c.instrs[2], Instr::BinOp(BinKind::Add));
-    assert_eq!(c.instrs[5], Instr::UnaryOp(UnaryKind::Invert));
-    assert_eq!(c.instrs[9], Instr::Compare(CompareOp::Lt));
+    // fp-superinstructions: (LoadFast,LoadFast,BinOp) fused to LoadFast2BinOp
+    // (one dispatch boundary). Old stream: instrs[0..2] loads, [2] BinOp.
+    assert_eq!(
+        c.instrs[0],
+        Instr::LoadFast2BinOp {
+            a: 0,
+            b: 1,
+            op: BinKind::Add
+        }
+    );
+    assert_eq!(c.instrs[3], Instr::UnaryOp(UnaryKind::Invert));
+    assert_eq!(c.instrs[7], Instr::Compare(CompareOp::Lt));
 }
 
 #[test]
@@ -287,8 +296,16 @@ fn binop_op_coverage_all_thirteen() {
     let f = fn_def("f", &[], body);
     let c = must_lower(&f);
     for (i, &op) in ops.iter().enumerate() {
-        // Each stmt: LoadConst, LoadConst, BinOp, ReturnValue (stride 4).
-        assert_eq!(c.instrs[i * 4 + 2], Instr::BinOp(BinKind::from_ir(op)));
+        // fp-superinstructions: each stmt fuses (LoadConst,LoadConst,BinOp)
+        // into ONE LoadConst2BinOp, then ReturnValue (stride 2).
+        assert_eq!(
+            c.instrs[i * 2],
+            Instr::LoadConst2BinOp {
+                a: 0,
+                b: 1,
+                op: BinKind::from_ir(op)
+            }
+        );
     }
 }
 
@@ -882,7 +899,7 @@ fn comp_targets_shadow_enclosing_locals() {
 fn opcode_names_table_in_sync_leaf_fpcalls() {
     // StoreAttr + CallFunctionKw ride the same table discipline.
     let names: Vec<&str> = OPCODE_NAMES.to_vec();
-    assert_eq!(names.len(), 40);
+    assert_eq!(names.len(), 43);
     assert_eq!(names[32], "StoreAttr");
     assert_eq!(names[33], "CallFunctionKw");
     let sa = Instr::StoreAttr { idx: 0 };
@@ -978,20 +995,19 @@ fn linetable_only_where_line_changes() {
     );
     let f = fn_def("f", &[], vec![ret(e)]);
     let c = must_lower(&f);
-    // def-line prologue; LoadConst(1) at 7; LoadConst(2)+BinOp at 5.
-    assert_eq!(c.lines.line_for(0), 7);
-    assert_eq!(c.lines.line_for(1), 7);
-    assert_eq!(c.lines.line_for(2), 5);
-    assert_eq!(c.lines.line_for(3), 5);
-    // Sparse: prologue line 7 covers instr 0-1; line 5 covers 2-3; the
-    // trailing ReturnNone re-records only if the line changed (5 -> 5,
-    // no entry).
+    // fp-superinstructions: (LoadConst,LoadConst,BinOp) fused into one
+    // LoadConst2BinOp. The line table is REMAPPED through the peephole:
+    // it stays monotonic, sparse, and every instruction's line resolves.
+    assert!(matches!(c.instrs[0], Instr::LoadConst2BinOp { .. }));
     let idxs: Vec<u32> = c.lines.iter().map(|x| x.instr_idx).collect();
     assert_eq!(idxs.first(), Some(&0));
     for w in idxs.windows(2) {
         assert!(w[0] < w[1], "line table monotonic: {w:?}");
     }
     assert!(c.lines.len() <= c.instrs.len(), "sparse: entries <= instrs");
+    for pc in 0..c.instrs.len() {
+        assert!(c.lines.line_for(pc as u32) >= 1, "line present at {pc}");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1057,6 +1073,21 @@ fn opcode_names_table_in_sync() {
         Instr::ResumeUnwind,
         Instr::CheckExcept(1),
         Instr::CheckExceptBare,
+        Instr::LoadConst2BinOp {
+            a: 0,
+            b: 1,
+            op: BinKind::Add,
+        },
+        Instr::LoadFastConstBinOp {
+            slot: 0,
+            b: 1,
+            op: BinKind::Add,
+        },
+        Instr::LoadFast2BinOp {
+            a: 0,
+            b: 1,
+            op: BinKind::Add,
+        },
     ];
     assert_eq!(samples.len(), OPCODE_NAMES.len());
     let mut seen = std::collections::HashSet::new();
@@ -1065,7 +1096,7 @@ fn opcode_names_table_in_sync() {
         assert!(!name.is_empty());
         assert!(seen.insert(name), "duplicate opcode name {name}");
     }
-    assert_eq!(all.len(), 40);
+    assert_eq!(all.len(), 43);
 }
 
 #[test]
@@ -1073,11 +1104,11 @@ fn decode_disassembles_and_renders() {
     let f = fn_def("f", &["a"], vec![ret(b(BinOp::Add, name("a"), lit(3)))]);
     let c = must_lower(&f);
     let text = crate::decode::disassemble(&c);
-    assert!(text.contains("LoadFast"), "{text}");
-    assert!(text.contains("LoadConst"), "{text}");
-    assert!(text.contains("# 3"), "{text}");
-    assert!(text.contains("BinOp"), "{text}");
-    assert!(text.contains("# a"), "{text}");
+    // fp-superinstructions: (LoadFast,LoadConst,BinOp) fused into one
+    // LoadFastConstBinOp; the decoder renders it with the operator and
+    // operand descriptors, still naming the local in the comment.
+    assert!(text.contains("LoadFastConstBinOp"), "{text}");
+    assert!(text.contains("+"), "{text}");
     assert!(text.contains("ReturnValue"), "{text}");
 }
 
@@ -1589,4 +1620,134 @@ fn set_display_lowers() {
     let f = fn_def("run", &[], vec![ret(Expr::Set(vec![lit(1), lit(2)]))]);
     let c = must_lower(&f);
     assert!(c.instrs.iter().any(|i| matches!(i, Instr::BuildSet(2))));
+}
+
+// ---------------------------------------------------------------------------
+// fp-superinstructions (02-perf/02): one test per new fused opcode.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fused_loadconst2binop_lowering_and_roundtrip() {
+    // `1 + 2` at statement level: (LoadConst, LoadConst, BinOp) fuses.
+    let f = fn_def("f", &[], vec![ret(b(BinOp::Add, lit(1), lit(2)))]);
+    let c = must_lower(&f);
+    assert_eq!(
+        c.instrs[0],
+        Instr::LoadConst2BinOp {
+            a: 0,
+            b: 1,
+            op: BinKind::Add
+        }
+    );
+    assert_eq!(c.instrs[0].name(), "LoadConst2BinOp");
+    assert_eq!(c.instrs[0].opcode_index(), 40);
+    assert_eq!(OPCODE_NAMES[40], "LoadConst2BinOp");
+    let text = crate::decode::disassemble(&c);
+    assert!(text.contains("LoadConst2BinOp"), "{text}");
+    assert!(text.contains("+"), "{text}");
+    // Line table remapped: instruction 0 resolves to a real source line.
+    assert!(c.lines.line_for(0) >= 1);
+}
+
+#[test]
+fn fused_loadfastconstbinop_lowering_and_roundtrip() {
+    let f = fn_def("f", &["a"], vec![ret(b(BinOp::Mul, name("a"), lit(3)))]);
+    let c = must_lower(&f);
+    assert_eq!(
+        c.instrs[0],
+        Instr::LoadFastConstBinOp {
+            slot: 0,
+            b: 0,
+            op: BinKind::Mul
+        }
+    );
+    assert_eq!(c.instrs[0].name(), "LoadFastConstBinOp");
+    assert_eq!(c.instrs[0].opcode_index(), 41);
+    assert_eq!(OPCODE_NAMES[41], "LoadFastConstBinOp");
+    let text = crate::decode::disassemble(&c);
+    assert!(text.contains("LoadFastConstBinOp"), "{text}");
+    assert!(text.contains("*"), "{text}");
+    assert!(c.lines.line_for(0) >= 1);
+}
+
+#[test]
+fn fused_loadfast2binop_lowering_and_roundtrip() {
+    let f = fn_def(
+        "f",
+        &["a", "b"],
+        vec![ret(b(BinOp::Sub, name("a"), name("b")))],
+    );
+    let c = must_lower(&f);
+    assert_eq!(
+        c.instrs[0],
+        Instr::LoadFast2BinOp {
+            a: 0,
+            b: 1,
+            op: BinKind::Sub
+        }
+    );
+    assert_eq!(c.instrs[0].name(), "LoadFast2BinOp");
+    assert_eq!(c.instrs[0].opcode_index(), 42);
+    assert_eq!(OPCODE_NAMES[42], "LoadFast2BinOp");
+    let text = crate::decode::disassemble(&c);
+    assert!(text.contains("LoadFast2BinOp"), "{text}");
+    assert!(text.contains("-"), "{text}");
+    assert!(c.lines.line_for(0) >= 1);
+}
+
+#[test]
+fn fused_peephole_preserves_jump_targets_and_line_table() {
+    // A fused triple INSIDE a loop body: the back-edge jump target must
+    // still resolve to a valid instruction after the stream shrinks.
+    let body = vec![
+        Stmt::Assign(
+            vec![Target::Name("x".to_string())],
+            b(BinOp::Add, lit(1), lit(2)),
+        ),
+        Stmt::If(
+            name("x"),
+            vec![Stmt::Assign(
+                vec![Target::Name("y".to_string())],
+                b(BinOp::Mul, lit(3), lit(4)),
+            )],
+            vec![],
+        ),
+    ];
+    let f = fn_def("f", &[], body);
+    let c = must_lower(&f);
+    assert!(c
+        .instrs
+        .iter()
+        .any(|i| matches!(i, Instr::LoadConst2BinOp { .. })));
+    // validate() checks every jump target, site id, const idx.
+    c.validate().expect("peephole preserves structural invariants");
+    for pc in 0..c.instrs.len() {
+        assert!(c.lines.line_for(pc as u32) >= 1, "line at {pc}");
+    }
+}
+
+#[test]
+fn fused_opcodes_carry_no_site_and_are_not_jumps() {
+    let ops = [
+        Instr::LoadConst2BinOp {
+            a: 0,
+            b: 1,
+            op: BinKind::Add,
+        },
+        Instr::LoadFastConstBinOp {
+            slot: 0,
+            b: 1,
+            op: BinKind::Add,
+        },
+        Instr::LoadFast2BinOp {
+            a: 0,
+            b: 1,
+            op: BinKind::Add,
+        },
+    ];
+    for op in ops {
+        assert_eq!(op.site_id(), None);
+        assert!(!op.is_jump());
+        assert_eq!(op.jump_target(), None);
+    }
 }

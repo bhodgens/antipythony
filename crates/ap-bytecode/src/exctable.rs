@@ -65,6 +65,13 @@ impl ExcTable {
         &self.entries
     }
 
+    /// fp-superinstructions: mutable entry access for the peephole's
+    /// instruction-index remap (the table stays sorted; indices change,
+    /// order does not).
+    pub fn entries_mut(&mut self) -> &mut [ExcEntry] {
+        &mut self.entries
+    }
+
     /// Sort by (start ASC, depth DESC) — find_handler's scan order.
     pub fn sort(&mut self) {
         self.entries.sort_by(|a, b| {

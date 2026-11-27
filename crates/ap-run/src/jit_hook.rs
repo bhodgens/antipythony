@@ -516,6 +516,12 @@ fn tier_stats() -> bool {
 /// Emit the one-line exercise report when APX_TIER_STATS=1. Called from
 /// run_module's exit seam so the counts cover the whole module run.
 pub fn report_line() {
+    // fp-superinstructions: opt-in top-20 pair/triple histogram (stderr).
+    // Reads APX_BP_STATS itself — independent of the APX_TIER_STATS knob
+    // below (which must NOT gate the histogram).
+    if let Some(line) = crate::bytecode_interp::bp_hist_line() {
+        eprintln!("{line}");
+    }
     if !tier_stats() {
         return;
     }

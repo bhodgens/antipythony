@@ -85,6 +85,16 @@ impl CodeObject {
                     return Err(format!("const idx {idx} out of bounds"));
                 }
             }
+            if let Instr::LoadConst2BinOp { a, b, .. } = ins {
+                if (*a as usize) >= self.consts.len() || (*b as usize) >= self.consts.len() {
+                    return Err(format!("fused const idx {a}/{b} out of bounds"));
+                }
+            }
+            if let Instr::LoadFastConstBinOp { b, .. } = ins {
+                if (*b as usize) >= self.consts.len() {
+                    return Err(format!("fused const idx {b} out of bounds"));
+                }
+            }
             if let Instr::LoadAttr { idx, .. } = ins {
                 if (*idx as usize) >= self.names.len() {
                     return Err(format!("attr name idx {idx} out of bounds"));
