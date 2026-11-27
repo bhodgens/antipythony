@@ -237,3 +237,33 @@ Disk at 14:01: 51 GB free / 927 GB (95%). One heavy cargo lane only.
 - 03-rollout/02-bench-parity: closing 64-row bench + report + chart.
 - Disk 34 GB free / 927 GB (97%) at 15:00 — one target dir per leaf, no
   new heavy builds without checking df.
+
+---
+
+## ADDENDUM 2026-11-27 16:05 MST (02-perf complete)
+
+### Merged
+- 404dc98 — merge fp-superinstructions (ea23b54 profile infra +
+  7391908 fusions). Main also contains sibling merge 3141515 (wasm
+  zero-arg super(), 25 files, NO overlap with the superinst leaf).
+- 3 histogram-backed fusions: LoadConst2BinOp (9.24M triple, 1.12x),
+  LoadFastConstBinOp (2.35M, 1.15x), LoadFast2BinOp (0.42M, 1.14-1.16x).
+  Guarded Smi fast path; generic eval_binop fallback. 5 new ap-bytecode
+  unit tests. Raw histogram + report committed. Dropped 4 candidates with
+  no measured win; primitive-bench rows honestly labeled NOISE
+  (module-level loops never dispatch bytecode).
+
+### First-hand trunk verification (fresh target-pp-fastpath)
+- cargo build --release -p ap-cli -p ap-conform: OK (2m55s), binary
+  mtime 15:54. fix_bytecode 13/13. ap-conform 50/50 + 48/48 in BOTH
+  tiers.
+- Full ap-bytecode+ap-run --release suite INTERRUPTED at ~7 min by the
+  420s terminal cap under load 31-53 (sibling session runs
+  `cargo test --workspace` in verify-merge-super at HEAD 404dc98).
+  Leaf measured 21 suites / 279 passed / 0 failed / 1 ignored; sibling
+  workspace run had 0 failures through 13 suites at last check.
+  Re-run the scoped suite in a quiet window before the rollout gate.
+
+### Next
+- 02-perf COMPLETE. 03-rollout is USER GATED (default flip). Prerequisite:
+  per-function tier dispatch seam (bb2731e design doc). Disk 34 GB free.
