@@ -194,3 +194,46 @@ fresh CARGO_TARGET_DIR per leaf (stale-binary gotcha, see above).
    tier1-fp-superinst-prep, created at 2c2648b) only after the merge.
 
 Disk at 14:01: 51 GB free / 927 GB (95%). One heavy cargo lane only.
+
+---
+
+## ADDENDUM 2026-11-27 15:05 MST (repairs merged, trunk verified)
+
+### Merges on main (current HEAD fe7cc86)
+1. 2d5ad8f — merge fp-gate-env (a9f58c6): shared APX_* diagnostic env
+   sanitizer in ap-run/ap-cli differential harnesses + clean-env docs.
+   Verified by leaf: import_guard 9/9 under INJECTED env leak and clean,
+   tier_mode 3/3, risk4 3/3, import_differential 6/6, osr_gate 2/2.
+2. 606926b — merge fp-inlinecache2 (2f28b4a). Both adversarial BLOCKERs
+   REPRODUCED on genuine IC hits (ahit=3000, afill=1): warm c.x==1 then
+   c.x=42 returned stale 1; warm c.m() then c.m=lambda returned stale
+   method. Fix re-probes the live instance dict on ClassValue/BindFunc
+   hits and clears the entry when shadowed. Two regression tests added;
+   no-GIL gate now asserts FREEZE (was TEAR), strict per-worker counts,
+   sustained concurrent mutation. ic_invalidation 9/9.
+3. fe7cc86 — ic_invalidation.rs hardcoded target-fp-ic2b; changed to
+   resolve the binary through CARGO_TARGET_DIR (fallback target-0304c).
+   Found by first-hand trunk verification, not by the leaf.
+
+### First-hand trunk verification (fresh target-pp-fastpath, clean env)
+- cargo build --release -p ap-cli -p ap-conform: OK (3m24s); binary mtime
+  14:50, fresh. Debug ap-run-eval also built (fix_pass gate resolves
+  CARGO_TARGET_DIR/debug/ap-run-eval).
+- 21 suites / 274 passed / 0 failed / 1 ignored (ap-bytecode + ap-run
+  --release). Logs: ~/.git/worktrees/fastpath-cargo-suites3.log.
+- ic_invalidation 9/9. fix_bytecode.py --other target-pp-fastpath/release/
+  antipythony: 13/13, 0 mismatches. ap-conform values 50/50, stdlib 48/48
+  in BOTH tree0 and bytecode modes.
+
+### Dispatched
+- deleg_6a71243e — fp-superinstructions (tier1-fp-superinst @ fe7cc86,
+  worktree leaf-fp-superinst). PROFILE FIRST with APX_BP_STATS=1 histogram;
+  data-driven fusions only; report committed. 02-perf closes with this leaf.
+
+### Next after superinst lands
+- 03-rollout/01-adaptive-toggle: USER GATE for default flip. Prerequisite
+  found by bb2731e: the per-function tier dispatch seam does not exist
+  (one thread-local mode; bytecode arm precedes JIT); implement it first.
+- 03-rollout/02-bench-parity: closing 64-row bench + report + chart.
+- Disk 34 GB free / 927 GB (97%) at 15:00 — one target dir per leaf, no
+  new heavy builds without checking df.
