@@ -31,4 +31,4 @@ battery in both toggle states.
 |---|---|
 | 01-control-flow.md | DONE on branch tier1-fp-controlflow (session record NEXT-FP-CONTROLFLOW.md; gates green both toggles; merge pending orchestrator review) |
 | 02-calls-and-attrs.md | PENDING (partially pre-empted: LoadAttrCall fused opcode + AugOp landed with 01) |
-| 03-exceptions.md | PENDING (Try-in-loop still falls back wholesale per 01's contract) |
+| 03-exceptions.md | DONE on branch tier1-fp-exceptions (session record NEXT-FP-EXCEPTIONS.md; fix_bytecode 13/13 three-way green incl. the new PROBE_EXCEPTIONS; conform 50/50+48/48 both toggles; walker return-in-finally bug fixed as a carry-out; merge pending orchestrator review) |
