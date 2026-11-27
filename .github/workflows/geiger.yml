@@ -1,0 +1,101 @@
+name: geiger-weekly
+# GitHub issue #25 (part of #18 item 3, from closed #15 work item 2):
+# transitive-unsafe visibility via cargo-geiger. The in-tree ratchet
+# (scripts/unsafe_report.sh + docs/unsafe-baseline.txt, enforced in
+# ci.yml fast-lints) greps src/ ONLY — it is blind to unsafe arriving
+# through vendored/dependency crates. cargo-geiger counts unsafe blocks
+# across the full dependency graph, closing that blind spot.
+#
+# INFORMATIONAL ONLY per the #15 design: continue-on-error on the geiger
+# step; a red run here means "look at the report", never "block the merge".
+# No gate value in PR CI (see below), so this is a SEPARATE scheduled
+# workflow rather than a ci.yml job — the issue explicitly asks to keep
+# PR CI fast.
+#
+# Why weekly instead of on-push: cargo-geiger ships NO prebuilt release
+# binaries (verified 2026-11-26 via
+# https://api.github.com/repos/geiger-rs/cargo-geiger/releases/latest —
+# v0.14.0 assets list is empty) and is not in taiki-e/install-action's
+# managed TOOLS.md (its cargo-binstall fallback needs release assets), so
+# the only install path is `cargo install` from source — 10+ min. On a
+# weekly-only runner that cost is irrelevant; on every PR it would not be.
+# rust-cache keeps the registry/git index warm; the tool itself rebuilds
+# (cargo-cache build-cache scope includes installs, so repeat weeks are
+# usually warm too).
+#
+# Toolchain note: cargo-geiger 0.14 MSRV is 1.97 (crates.io metadata),
+# ABOVE the repo's pinned 1.94.0 (rust-toolchain.toml:6, ci.yml pin).
+# So this job installs on `stable` AND sets a rustup override — otherwise
+# rustup re-resolves the checkout to 1.94.0 and `cargo geiger` dies on
+# an incompatible internal Cargo version (0.14 tracks Cargo 0.96). This
+# is an analysis-only job: nothing here produces artifacts or gates the
+# repo's 1.94.0 contract; ci.yml remains the toolchain authority.
+#
+# Step shapes mirror ci.yml / nightly-fuzz.yml: dtolnay/rust-toolchain,
+# Swatinem/rust-cache@v2, tee to $RUNNER_TEMP, artifact upload with
+# retention-days: 30, job-summary writer that can never fail the job.
+
+on:
+  schedule:
+    - cron: '0 4 * * 1'  # Mondays 04:00 UTC — 1h after nightly-fuzz's 03:00 lane, weekly per #25
+  workflow_dispatch: {}   # manual trigger so the workflow can be proven without waiting
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  geiger:
+    name: cargo-geiger transitive unsafe report (informational)
+    runs-on: ubuntu-latest
+    # install from source + full-graph analysis (geiger compiles/checks
+    # the dependency graph). Generous: weekly job, never on the PR path.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: "Toolchain: stable (NOT the repo's 1.94.0 pin — see header; geiger 0.14 MSRV is 1.97)"
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-geiger from source (no prebuilt release assets exist — see header)
+        # --locked per the upstream README; vendored-openssl avoids
+        # openssl-sys variant drift on the runner image (also per README).
+        run: cargo install --locked cargo-geiger --features vendored-openssl
+      - name: cargo geiger (INFORMATIONAL — continue-on-error per #15/#25)
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          # Override lives per-directory in rustup state; without it the
+          # checkout's rust-toolchain.toml would drop us back to 1.94.0.
+          rustup override set stable
+          cargo geiger --output-format markdown \
+            | tee "$RUNNER_TEMP/geiger_report.md"
+      - name: Upload geiger report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: geiger-report-${{ github.run_number }}
+          path: ${{ runner.temp }}/geiger_report.md
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Dependency-unsafe tally (job summary)
+        if: always()
+        # Report-only summary; greps exit non-zero on no-match, hence
+        # `|| true` everywhere — this step never fails the job.
+        run: |
+          {
+            echo "## cargo-geiger transitive unsafe report (issue #25, informational)"
+            echo ""
+            if [ -s "$RUNNER_TEMP/geiger_report.md" ]; then
+              echo "Full per-crate table in the \`geiger-report-${{ github.run_number }}\` artifact."
+              echo ""
+              echo '```'
+              head -60 "$RUNNER_TEMP/geiger_report.md"
+              echo '```'
+            else
+              echo "no report produced (install or analysis step failed — see step log; non-blocking by design)"
+            fi
+            echo ""
+            echo "Reminder: this count includes DEPENDENCY unsafe — not comparable to docs/unsafe-baseline.txt (src/ only, ci.yml ratchet)."
+            exit 0
+          } >> "$GITHUB_STEP_SUMMARY"
