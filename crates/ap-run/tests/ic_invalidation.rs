@@ -295,10 +295,15 @@ fn run_probe(tier: &str, src: &str) -> (String, String, i32) {
     let path = dir.join("probe.py");
     std::fs::write(&path, src).expect("write probe");
 
-    let bin = root_dir()
-        .join("target-fp-ic2b")
-        .join("release")
-        .join("antipythony");
+    // Resolve the binary through CARGO_TARGET_DIR like the other gate
+    // suites: a hardcoded leaf target dir fails on trunk (and after a
+    // merge into any checkout using a different target dir).
+    let bin = match std::env::var("CARGO_TARGET_DIR") {
+        Ok(d) => std::path::PathBuf::from(d),
+        Err(_) => root_dir().join("target-0304c"), // .cargo/config.toml redirect
+    }
+    .join("release")
+    .join("antipythony");
     // ap-cli's `run` verb forwards no --tier flag of its own; the tier
     // resolves from APX_TIER (jit_hook's env fallback). Strip ANY inherited
     // APX_* diagnostic env first (a leaked APX_TIER_STATS/APX_TIER in the
