@@ -1,0 +1,202 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1020" height="1272" viewBox="0 0 1020 1272" font-family="Helvetica,Arial,sans-serif">
+<style>.l{font-size:11px}.v{font-size:11px;fill:#333}.b{font-size:12px}</style>
+<rect width="100%" height="100%" fill="white"/>
+<text x="12" y="26" font-size="16" font-weight="bold">antipythony vs CPython 3.14.7 - speedup by primitive (log scale)</text>
+<text x="12" y="44" font-size="11" fill="#555">Source: tests/bench/primitive/bench_report.json (generated 2026-11-26T17:59:13+00:00, Mac M2 Ultra). Bars: x times faster than CPython; right of 1.0x is faster.</text>
+<line x1="636.6" y1="70" x2="636.6" y2="1228" stroke="#888888" stroke-dasharray="4,4"/>
+<text x="639.6" y="68" font-size="10" fill="#555">1.0x CPython</text>
+<text x="10" y="85" class="l">base64.b64encode  1MiB</text>
+<rect x="330" y="76" width="493.6" height="11" fill="#2e8b57"/>
+<text x="828.6" y="85" class="v">25.34x (FAIL)</text>
+<text x="10" y="103" class="l">base64.b64decode  1MiB</text>
+<rect x="330" y="94" width="492.5" height="11" fill="#2e8b57"/>
+<text x="827.5" y="103" class="v">24.85x (FAIL)</text>
+<text x="10" y="121" class="l">binascii.a2b_base64  1MiB</text>
+<rect x="330" y="112" width="481.6" height="11" fill="#2e8b57"/>
+<text x="816.6" y="121" class="v">20.58x (PASS)</text>
+<text x="10" y="139" class="l">base64.b64decode  48KiB</text>
+<rect x="330" y="130" width="470.9" height="11" fill="#2e8b57"/>
+<text x="805.9" y="139" class="v">17.13x (FAIL)</text>
+<text x="10" y="157" class="l">binascii.a2b_base64  48KiB</text>
+<rect x="330" y="148" width="458.5" height="11" fill="#2e8b57"/>
+<text x="793.5" y="157" class="v">13.82x (PASS)</text>
+<text x="10" y="175" class="l">binascii.b2a_base64  1MiB</text>
+<rect x="330" y="166" width="455.1" height="11" fill="#2e8b57"/>
+<text x="790.1" y="175" class="v">13.04x (PASS)</text>
+<text x="10" y="193" class="l">base64.b64encode  48KiB</text>
+<rect x="330" y="184" width="447.3" height="11" fill="#2e8b57"/>
+<text x="782.3" y="193" class="v">11.39x (FAIL)</text>
+<text x="10" y="211" class="l">binascii.b2a_base64  48KiB</text>
+<rect x="330" y="202" width="442.6" height="11" fill="#2e8b57"/>
+<text x="777.6" y="211" class="v">10.50x (PASS)</text>
+<text x="10" y="229" class="l">zlib.compress(level=6)  1MiB</text>
+<rect x="330" y="220" width="421.1" height="11" fill="#2e8b57"/>
+<text x="756.1" y="229" class="v">7.23x (PASS)</text>
+<text x="10" y="247" class="l">zlib.compress(level=1)  1MiB</text>
+<rect x="330" y="238" width="395.0" height="11" fill="#2e8b57"/>
+<text x="730.0" y="247" class="v">4.61x (PASS)</text>
+<text x="10" y="265" class="l">str.find  1MiB</text>
+<rect x="330" y="256" width="392.7" height="11" fill="#2e8b57"/>
+<text x="727.7" y="265" class="v">4.43x (PASS)</text>
+<text x="10" y="283" class="l">int(decimal_str)  1MiB</text>
+<rect x="330" y="274" width="391.1" height="11" fill="#2e8b57"/>
+<text x="726.1" y="283" class="v">4.31x (PASS)</text>
+<text x="10" y="301" class="l">str.upper  1MiB</text>
+<rect x="330" y="292" width="390.0" height="11" fill="#2e8b57"/>
+<text x="725.0" y="301" class="v">4.23x (PASS)</text>
+<text x="10" y="319" class="l">int.to_bytes  1MiB</text>
+<rect x="330" y="310" width="383.6" height="11" fill="#2e8b57"/>
+<text x="718.6" y="319" class="v">3.79x (PASS)</text>
+<text x="10" y="337" class="l">binascii.unhexlify  1MiB</text>
+<rect x="330" y="328" width="376.6" height="11" fill="#2e8b57"/>
+<text x="711.6" y="337" class="v">3.36x (PASS)</text>
+<text x="10" y="355" class="l">str.find  48KiB</text>
+<rect x="330" y="346" width="372.4" height="11" fill="#2e8b57"/>
+<text x="707.4" y="355" class="v">3.12x (PASS)</text>
+<text x="10" y="373" class="l">int.to_bytes  48KiB</text>
+<rect x="330" y="364" width="369.6" height="11" fill="#2e8b57"/>
+<text x="704.6" y="373" class="v">2.97x (PASS)</text>
+<text x="10" y="391" class="l">str.upper  48KiB</text>
+<rect x="330" y="382" width="365.1" height="11" fill="#2e8b57"/>
+<text x="700.1" y="391" class="v">2.75x (PASS)</text>
+<text x="10" y="409" class="l">zlib.compress(level=6)  48KiB</text>
+<rect x="330" y="400" width="364.1" height="11" fill="#2e8b57"/>
+<text x="699.1" y="409" class="v">2.70x (PASS)</text>
+<text x="10" y="427" class="l">int(decimal_str)  48KiB</text>
+<rect x="330" y="418" width="360.5" height="11" fill="#2e8b57"/>
+<text x="695.5" y="427" class="v">2.54x (PASS)</text>
+<text x="10" y="445" class="l">binascii.unhexlify  48KiB</text>
+<rect x="330" y="436" width="359.7" height="11" fill="#2e8b57"/>
+<text x="694.7" y="445" class="v">2.51x (PASS)</text>
+<text x="10" y="463" class="l">int.from_bytes  1MiB</text>
+<rect x="330" y="454" width="357.6" height="11" fill="#2e8b57"/>
+<text x="692.6" y="463" class="v">2.42x (PASS)</text>
+<text x="10" y="481" class="l">zlib.compress(level=1)  48KiB</text>
+<rect x="330" y="472" width="357.6" height="11" fill="#2e8b57"/>
+<text x="692.6" y="481" class="v">2.42x (PASS)</text>
+<text x="10" y="499" class="l">str.replace  1MiB</text>
+<rect x="330" y="490" width="341.9" height="11" fill="#2e8b57"/>
+<text x="676.9" y="499" class="v">1.84x (PASS)</text>
+<text x="10" y="517" class="l">int.from_bytes  48KiB</text>
+<rect x="330" y="508" width="336.4" height="11" fill="#2e8b57"/>
+<text x="671.4" y="517" class="v">1.68x (PASS)</text>
+<text x="10" y="535" class="l">zlib.decompress(level=6)  1MiB</text>
+<rect x="330" y="526" width="324.1" height="11" fill="#2e8b57"/>
+<text x="659.1" y="535" class="v">1.35x (PASS)</text>
+<text x="10" y="553" class="l">zlib.decompress(level=1)  48KiB</text>
+<rect x="330" y="544" width="323.4" height="11" fill="#2e8b57"/>
+<text x="658.4" y="553" class="v">1.34x (PASS)</text>
+<text x="10" y="571" class="l">zlib.decompress(level=1)  1MiB</text>
+<rect x="330" y="562" width="322.0" height="11" fill="#2e8b57"/>
+<text x="657.0" y="571" class="v">1.31x (PASS)</text>
+<text x="10" y="589" class="l">binascii.hexlify  1MiB</text>
+<rect x="330" y="580" width="312.2" height="11" fill="#2e8b57"/>
+<text x="647.2" y="589" class="v">1.10x (PASS)</text>
+<text x="10" y="607" class="l">json.dumps  1MiB</text>
+<rect x="330" y="598" width="310.5" height="11" fill="#2e8b57"/>
+<text x="645.5" y="607" class="v">1.07x (PASS)</text>
+<text x="10" y="625" class="l">json.dumps  48KiB</text>
+<rect x="330" y="616" width="307.7" height="11" fill="#2e8b57"/>
+<text x="642.7" y="625" class="v">1.02x (PASS)</text>
+<text x="10" y="643" class="l">binascii.hexlify  48KiB</text>
+<rect x="330" y="634" width="306.7" height="11" fill="#2e8b57"/>
+<text x="641.7" y="643" class="v">1.00x (PASS)</text>
+<text x="10" y="661" class="l">str.replace  48KiB</text>
+<rect x="330" y="652" width="305.2" height="11" fill="#c0392b"/>
+<text x="640.2" y="661" class="v">0.98x (FAIL)</text>
+<text x="10" y="679" class="l">sorted(list[int])_1M  1MiB</text>
+<rect x="330" y="670" width="303.3" height="11" fill="#c0392b"/>
+<text x="638.3" y="679" class="v">0.94x (FAIL)</text>
+<text x="10" y="697" class="l">zlib.decompress(level=6)  48KiB</text>
+<rect x="330" y="688" width="301.4" height="11" fill="#c0392b"/>
+<text x="636.4" y="697" class="v">0.92x (FAIL)</text>
+<text x="10" y="715" class="l">hashlib.md5  1MiB</text>
+<rect x="330" y="706" width="301.4" height="11" fill="#c0392b"/>
+<text x="636.4" y="715" class="v">0.91x (FAIL)</text>
+<text x="10" y="733" class="l">sorted(list[int])  1MiB</text>
+<rect x="330" y="724" width="299.9" height="11" fill="#c0392b"/>
+<text x="634.9" y="733" class="v">0.89x (FAIL)</text>
+<text x="10" y="751" class="l">hashlib.sha256  1MiB</text>
+<rect x="330" y="742" width="297.2" height="11" fill="#c0392b"/>
+<text x="632.2" y="751" class="v">0.85x (FAIL)</text>
+<text x="10" y="769" class="l">hashlib.md5  48KiB</text>
+<rect x="330" y="760" width="296.4" height="11" fill="#c0392b"/>
+<text x="631.4" y="769" class="v">0.84x (FAIL)</text>
+<text x="10" y="787" class="l">sorted(list[int])  48KiB</text>
+<rect x="330" y="778" width="296.2" height="11" fill="#c0392b"/>
+<text x="631.2" y="787" class="v">0.84x (FAIL)</text>
+<text x="10" y="805" class="l">hex(big_int)  1MiB</text>
+<rect x="330" y="796" width="293.1" height="11" fill="#c0392b"/>
+<text x="628.1" y="805" class="v">0.79x (FAIL)</text>
+<text x="10" y="823" class="l">hex(big_int)  48KiB</text>
+<rect x="330" y="814" width="292.6" height="11" fill="#c0392b"/>
+<text x="627.6" y="823" class="v">0.79x (FAIL)</text>
+<text x="10" y="841" class="l">hashlib.sha256  48KiB</text>
+<rect x="330" y="832" width="279.2" height="11" fill="#c0392b"/>
+<text x="614.2" y="841" class="v">0.62x (FAIL)</text>
+<text x="10" y="859" class="l">json.loads  48KiB</text>
+<rect x="330" y="850" width="271.5" height="11" fill="#c0392b"/>
+<text x="606.5" y="859" class="v">0.55x (FAIL)</text>
+<text x="10" y="877" class="l">str.split  1MiB</text>
+<rect x="330" y="868" width="267.0" height="11" fill="#c0392b"/>
+<text x="602.0" y="877" class="v">0.51x (FAIL)</text>
+<text x="10" y="895" class="l">str.split  48KiB</text>
+<rect x="330" y="886" width="260.4" height="11" fill="#c0392b"/>
+<text x="595.4" y="895" class="v">0.45x (FAIL)</text>
+<text x="10" y="913" class="l">json.loads  1MiB</text>
+<rect x="330" y="904" width="236.5" height="11" fill="#c0392b"/>
+<text x="571.5" y="913" class="v">0.30x (FAIL)</text>
+<text x="10" y="931" class="l">str.join  1MiB</text>
+<rect x="330" y="922" width="219.0" height="11" fill="#c0392b"/>
+<text x="554.0" y="931" class="v">0.22x (FAIL)</text>
+<text x="10" y="949" class="l">str.join  48KiB</text>
+<rect x="330" y="940" width="211.1" height="11" fill="#c0392b"/>
+<text x="546.1" y="949" class="v">0.19x (FAIL)</text>
+<text x="10" y="967" class="l">list.sort  48KiB</text>
+<rect x="330" y="958" width="200.5" height="11" fill="#c0392b"/>
+<text x="535.5" y="967" class="v">0.16x (FAIL)</text>
+<text x="10" y="985" class="l">list.sort_1M  1MiB</text>
+<rect x="330" y="976" width="194.8" height="11" fill="#c0392b"/>
+<text x="529.8" y="985" class="v">0.14x (FAIL)</text>
+<text x="10" y="1003" class="l">dict.build  48KiB</text>
+<rect x="330" y="994" width="192.8" height="11" fill="#c0392b"/>
+<text x="527.8" y="1003" class="v">0.14x (FAIL)</text>
+<text x="10" y="1021" class="l">dict.build  48KiB</text>
+<rect x="330" y="1012" width="191.1" height="11" fill="#c0392b"/>
+<text x="526.1" y="1021" class="v">0.14x (FAIL)</text>
+<text x="10" y="1039" class="l">dict.build_32k  48KiB</text>
+<rect x="330" y="1030" width="189.4" height="11" fill="#c0392b"/>
+<text x="524.4" y="1039" class="v">0.13x (FAIL)</text>
+<text x="10" y="1057" class="l">list.sort  1MiB</text>
+<rect x="330" y="1048" width="184.4" height="11" fill="#c0392b"/>
+<text x="519.4" y="1057" class="v">0.12x (FAIL)</text>
+<text x="10" y="1075" class="l">dict.getitem_32k  48KiB</text>
+<rect x="330" y="1066" width="162.6" height="11" fill="#c0392b"/>
+<text x="497.6" y="1075" class="v">0.08x (FAIL)</text>
+<text x="10" y="1093" class="l">dict.getitem  48KiB</text>
+<rect x="330" y="1084" width="159.7" height="11" fill="#c0392b"/>
+<text x="494.7" y="1093" class="v">0.08x (FAIL)</text>
+<text x="10" y="1111" class="l">dict.iter  48KiB</text>
+<rect x="330" y="1102" width="156.7" height="11" fill="#c0392b"/>
+<text x="491.7" y="1111" class="v">0.07x (FAIL)</text>
+<text x="10" y="1129" class="l">dict.iter  48KiB</text>
+<rect x="330" y="1120" width="155.9" height="11" fill="#c0392b"/>
+<text x="490.9" y="1129" class="v">0.07x (FAIL)</text>
+<text x="10" y="1147" class="l">dict.iter_32k  48KiB</text>
+<rect x="330" y="1138" width="153.5" height="11" fill="#c0392b"/>
+<text x="488.5" y="1147" class="v">0.07x (FAIL)</text>
+<text x="10" y="1165" class="l">dict.getitem  48KiB</text>
+<rect x="330" y="1156" width="141.8" height="11" fill="#c0392b"/>
+<text x="476.8" y="1165" class="v">0.06x (FAIL)</text>
+<text x="10" y="1183" class="l">dict.get  48KiB</text>
+<rect x="330" y="1174" width="45.6" height="11" fill="#c0392b"/>
+<text x="380.6" y="1183" class="v">0.01x (FAIL)</text>
+<text x="10" y="1201" class="l">dict.get_32k  48KiB</text>
+<rect x="330" y="1192" width="34.0" height="11" fill="#c0392b"/>
+<text x="369.0" y="1201" class="v">0.01x (FAIL)</text>
+<text x="10" y="1219" class="l">dict.get  48KiB</text>
+<rect x="330" y="1210" width="27.2" height="11" fill="#c0392b"/>
+<text x="362.2" y="1219" class="v">0.01x (FAIL)</text>
+<text x="10" y="1252" font-size="11" fill="#333">Green = faster than CPython. Red = slower. PASS/FAIL is the benchmark target gate, not the CPython ratio.</text>
+</svg>
