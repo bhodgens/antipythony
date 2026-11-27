@@ -5839,3 +5839,87 @@ pub fn class_of_value_here(v: &Value) -> Option<Arc<TypeRef>> {
 pub fn exception_payload(interp: &Interpreter, name: &str) -> std::sync::Arc<TypeRef> {
     exc_class(interp, name).expect("builtin exception class")
 }
+
+// ===========================================================================
+// Interp-free classifier shims for the bytecode IC's fill classifier (leaf
+// fp-inlinecache). Same shape as descriptor_kind / is_data_descriptor above;
+// any change there must land in BOTH bodies.
+// ===========================================================================
+
+/// Interp-free descriptor-kind read (the Descriptor arm doesn't consult an
+/// interpreter; the UserInstance arm reads the class payload directly).
+pub fn descriptor_kind_pub(v: &Value) -> Option<DescrKind> {
+    match v {
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Descriptor => {
+            match o
+                .descr_kind
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_deref()
+            {
+                Some("property") => Some(DescrKind::Property),
+                Some("classmethod") => Some(DescrKind::ClassMethod),
+                Some("staticmethod") => Some(DescrKind::StaticMethod),
+                Some("member") => Some(DescrKind::Property),
+                _ => None,
+            }
+        }
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
+            let t = o
+                .type_ref
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .and_then(|w| w.upgrade());
+            t.and_then(|t| {
+                if t.lookup("__get__").is_some() {
+                    Some(DescrKind::UserDescr)
+                } else {
+                    None
+                }
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Interp-free data-descriptor check. Same Descriptor/member + cached_property
+/// arms as is_data_descriptor; the UserInstance __set__/__delete__ arm
+/// consults the class payload directly (identity path).
+pub fn is_data_descriptor_scratch(v: &Value) -> bool {
+    match v {
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::Descriptor => matches!(
+            o.descr_kind
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_deref(),
+            Some("property") | Some("member")
+        ),
+        Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance => {
+            let t = o
+                .type_ref
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .as_ref()
+                .and_then(|w| w.upgrade());
+            let Some(t) = t else {
+                return false;
+            };
+            t.lookup("__set__").is_some()
+                || t.lookup("__delete__").is_some()
+        }
+        // T1-d fix (attr/_make.py cached_property slots path): a FUNCTION
+        // marked as cached_property is a data descriptor.
+        Value::Obj(o)
+            if o.kind == ap_obj::ObjKind::Function
+                && o.attrs
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .get(&Value::Str(PyString::new("__ap_cached_property__")))
+                    .is_some_and(|x| x.is_truthy()) =>
+        {
+            true
+        }
+        _ => false,
+    }
+}

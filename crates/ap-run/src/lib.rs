@@ -57,6 +57,11 @@ pub mod threading_call;
 // fast-path leaf 00-infra/02: the flat-bytecode dispatch loop (toggle
 // --tier bytecode / APX_TIER=bytecode; default OFF = never entered).
 pub mod bytecode_interp;
+// fast-path leaf 02-perf/01: inline caches (LoadGlobal/LoadAttr/LoadAttrCall)
+// consulted by bytecode_interp; per-(thread, CodeObject) tables keyed on the
+// 02.05b type_version counters. Cached Values are stored DIRECTLY (never as
+// raw bits) so the tracing GC keeps their referents reachable.
+pub mod ic;
 
 pub use aot_runtime::AotFnEntry;
 use ap_obj::exc::PyException;
