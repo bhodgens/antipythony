@@ -1804,7 +1804,9 @@ fn instance_new(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encod
 // ($instance|$excinst) attrs dict first, then the class mro dicts; non-
 // instances read their own $type dict (class attribute read / module
 // namespace on $pyobj? v1: classes + instances only).
-// Locals: 3=obj 4=name 5=d 6=hit 7=t
+// leaf wasm-super: a `super` object (an $instance whose class is named
+// "super") routes to FN_SUPER_MRO_GET — the MRO-after-start-class walk.
+// Locals: 3=obj 4=name 5=d 6=hit 7=t (8 = class-name scratch, super test)
 // ---------------------------------------------------------------------------
 fn attr_get(
     funcs: &mut wasm_encoder::FunctionSection,
@@ -1813,11 +1815,12 @@ fn attr_get(
 ) {
     let (nm_off, nm_len) = strings.push("__name__");
     let (sv_off, sv_len) = strings.push("value");
+    let (sup_off, sup_len) = strings.push("super");
     add(
         funcs,
         code,
         FT_ATTR_GET,
-        &[(2, oref()), (1, str_ref()), (1, oref())],
+        &[(2, oref()), (1, str_ref()), (2, oref())],
         |f| {
             f.instruction(&Instruction::LocalGet(0));
             f.instruction(&Instruction::LocalSet(3));
@@ -1831,6 +1834,29 @@ fn attr_get(
             f.instruction(&Instruction::If(BlockType::Empty));
             f.instruction(&Instruction::RefNull(hc(T_PYOBJ)));
             f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // leaf wasm-super: a `super` object routes to the MRO-after-S walk.
+            // Marker test = the class NAME (the marker is a plain $instance of a
+            // fresh $type named "super"; same test shape as isinst's).
+            // A $type receiver is EXCLUDED here: its own type field is null by
+            // construction (cls_new: pyobj.type(null)) and the $type branch
+            // below owns class-attribute reads — test the shape, never read the
+            // type field of a $type.
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefTestNullable(hc(T_TYPE)));
+            f.instruction(&Instruction::I32Eqz);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(3));
+            sget(f, T_PYOBJ, F_TYPE);
+            sget(f, T_TYPE, F_TYPE_NAME);
+            lit_str(f, sup_off, sup_len);
+            f.instruction(&Instruction::Call(fx::FN_STR_EQ));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::Call(fx::FN_SUPER_MRO_GET));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
             f.instruction(&Instruction::End);
             // 03.03d: $type object reads (type(x).__name__, class-attr lookups):
             // __name__ answers the name field; everything else walks the class's
@@ -2774,6 +2800,244 @@ pub fn emit_super(
 ) {
     super_new(funcs, code, g, strings);
     type_of(funcs, code);
+}
+
+/// leaf wasm-super: register the `super` object's attribute walk
+/// (FN_SUPER_MRO_GET = 74). Called by lower.rs AFTER emit_gen_drains — emit
+/// order IS the index assignment.
+pub fn emit_super_mro(
+    funcs: &mut wasm_encoder::FunctionSection,
+    code: &mut wasm_encoder::CodeSection,
+    strings: &mut StrTab,
+) {
+    super_mro_get(funcs, code, strings);
+    bound_obj(funcs, code, strings);
+}
+
+// ---------------------------------------------------------------------------
+// super_mro_get (FN_SUPER_MRO_GET, leaf wasm-super): (o super-obj, str) -> o.
+// CPython's super-attribute rule: `super(S, obj).name` searches the MRO of
+// type(obj) STARTING AT THE CLASS AFTER S (when S is in that MRO; from the
+// start otherwise) and answers the first class-dict hit. Miss = null.
+//
+// The super object is the $instance that FN_SUPER_NEW builds: its class is a
+// fresh $type named "super" and its attrs dict holds "__ap_s__" = S and
+// "__ap_obj__" = obj.
+//
+// Locals: 3=super-obj  4=key(str)  5=S(ty)  6=obj  7=mro($type_arr)  8=i(i32)
+//         9=start(i32)  10=hit(oref)  11=cur(ty)  12=dict  13=n(i32)
+// ---------------------------------------------------------------------------
+fn super_mro_get(
+    funcs: &mut wasm_encoder::FunctionSection,
+    code: &mut wasm_encoder::CodeSection,
+    strings: &mut StrTab,
+) {
+    let (ks_off, ks_len) = strings.push("__ap_s__");
+    let (ko_off, ko_len) = strings.push("__ap_obj__");
+    add(
+        funcs,
+        code,
+        FT_ATTR_GET,
+        &[
+            // ONE pad local: this function has TWO params (0, 1), so one pad
+            // puts the first real local at index 3 — the 03.03 local grid.
+            // (attr_get-style functions use a (2, ..) pad because they have a
+            // single param; copying that here shifted every index by one.)
+            (1, oref()),
+            (1, oref()),    // 3 = the super object
+            (1, str_ref()), // 4 = attribute name
+            (1, ty_ref()),  // 5 = S (the start class)
+            (1, oref()),    // 6 = obj
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_TYPE_ARR),
+                }),
+            ), // 7 = mro of type(obj)
+            (2, ValType::I32), // 8 = i, 9 = start
+            (1, oref()),    // 10 = hit
+            (1, ty_ref()),  // 11 = current class
+            (1, dict_ref()), // 12 = its dict
+        ],
+        |f| {
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::LocalSet(3));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::LocalSet(4));
+            // null super-object guard (the call sites pass a real marker; a
+            // null must answer null, never trap).
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::RefNull(hc(T_PYOBJ)));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // attrs = super-obj.attrs (lazy dict; the builder always sets it)
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_INSTANCE)));
+            sget(f, T_INSTANCE, F_INSTANCE_ATTRS);
+            f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
+            f.instruction(&Instruction::LocalSet(12));
+            // S = attrs["__ap_s__"], obj = attrs["__ap_obj__"]
+            f.instruction(&Instruction::LocalGet(12));
+            lit_str(f, ks_off, ks_len);
+            f.instruction(&Instruction::Call(fx::FN_DGET));
+            f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
+            f.instruction(&Instruction::LocalSet(5));
+            f.instruction(&Instruction::LocalGet(12));
+            lit_str(f, ko_off, ko_len);
+            f.instruction(&Instruction::Call(fx::FN_DGET));
+            f.instruction(&Instruction::LocalSet(6));
+            // mro = type(obj).mro
+            f.instruction(&Instruction::LocalGet(6));
+            sget(f, T_PYOBJ, F_TYPE);
+            f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
+            sget(f, T_TYPE, F_TYPE_MRO);
+            f.instruction(&Instruction::LocalSet(7));
+            // start = (index of S in mro) + 1, or 0 when S is not in the mro
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalSet(9));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalSet(8));
+            f.instruction(&Instruction::Block(BlockType::Empty));
+            f.instruction(&Instruction::Loop(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::LocalGet(7));
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::I32GeU);
+            f.instruction(&Instruction::BrIf(1));
+            f.instruction(&Instruction::LocalGet(7));
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::ArrayGet(T_TYPE_ARR));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::RefEq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Add);
+            f.instruction(&Instruction::LocalSet(9));
+            // Leave the SEARCH (the enclosing block): from inside this `if`
+            // the labels are 0 = if, 1 = loop, 2 = block. A depth of 1 would
+            // jump to the loop head and spin forever on the same class.
+            f.instruction(&Instruction::Br(2));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Add);
+            f.instruction(&Instruction::LocalSet(8));
+            f.instruction(&Instruction::Br(0));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::End);
+            // walk from start: first class whose dict holds key
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::LocalSet(8));
+            f.instruction(&Instruction::Block(BlockType::Empty));
+            f.instruction(&Instruction::Loop(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::LocalGet(7));
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::I32GeU);
+            f.instruction(&Instruction::BrIf(1));
+            f.instruction(&Instruction::LocalGet(7));
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::ArrayGet(T_TYPE_ARR));
+            f.instruction(&Instruction::LocalSet(11));
+            f.instruction(&Instruction::LocalGet(11));
+            sget(f, T_TYPE, F_TYPE_DICT);
+            f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::Call(fx::FN_DGET));
+            f.instruction(&Instruction::LocalSet(10));
+            f.instruction(&Instruction::LocalGet(10));
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::I32Eqz);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(10));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Add);
+            f.instruction(&Instruction::LocalSet(8));
+            f.instruction(&Instruction::Br(0));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::RefNull(hc(T_PYOBJ)));
+        },
+    );
+}
+
+// ---------------------------------------------------------------------------
+// bound_obj (FN_BOUND_OBJ, leaf wasm-super): (o receiver) -> o — the object
+// that an attribute call `recv.m(*args)` binds as the FIRST argument:
+//
+//   * a `super` object (an $instance whose class is named "super") binds the
+//     instance it stands for: CPython calls `type(obj).__mro__[i+1].m(obj)`,
+//     never `.m(super_proxy)`. Answers attrs["__ap_obj__"].
+//   * a $type (a class object: `A.m(b)`) binds NOTHING: the call arguments
+//     already carry the instance. Answers null, which the call site reads as
+//     "do not add a first argument".
+//   * any other receiver binds itself. Answers the receiver.
+//
+// Locals (one param at index 0; the pad puts the grid at 3):
+//   1, 2 = pad, 3 = receiver, 4 = the super object's attrs dict
+// ---------------------------------------------------------------------------
+fn bound_obj(
+    funcs: &mut wasm_encoder::FunctionSection,
+    code: &mut wasm_encoder::CodeSection,
+    strings: &mut StrTab,
+) {
+    let (ko_off, ko_len) = strings.push("__ap_obj__");
+    let (sup_off, sup_len) = strings.push("super");
+    add(
+        funcs,
+        code,
+        FT_O_O,
+        // THREE pad locals: one param (0) + three pads puts the first real
+        // local at index 3 (the 03.03 local grid). With one pad the grid
+        // starts at 2 — type_of's shape; this function follows attr_get's.
+        &[(1, oref()), (1, oref()), (1, oref()), (1, dict_ref())],
+        |f| {
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::LocalSet(3));
+            // null receiver: answer null (the caller then uses its args as-is)
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::RefNull(hc(T_PYOBJ)));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // $type receiver: bind nothing (null)
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefTestNullable(hc(T_TYPE)));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::RefNull(hc(T_PYOBJ)));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // `super` object? (class NAME test — the marker is a plain
+            // $instance of a fresh $type named "super")
+            f.instruction(&Instruction::LocalGet(3));
+            sget(f, T_PYOBJ, F_TYPE);
+            sget(f, T_TYPE, F_TYPE_NAME);
+            lit_str(f, sup_off, sup_len);
+            f.instruction(&Instruction::Call(fx::FN_STR_EQ));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            // attrs = receiver.attrs (the super builder always sets it)
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_INSTANCE)));
+            sget(f, T_INSTANCE, F_INSTANCE_ATTRS);
+            f.instruction(&Instruction::RefCastNullable(hc(T_DICT)));
+            f.instruction(&Instruction::LocalSet(4));
+            f.instruction(&Instruction::LocalGet(4));
+            lit_str(f, ko_off, ko_len);
+            f.instruction(&Instruction::Call(fx::FN_DGET));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // any other receiver binds itself
+            f.instruction(&Instruction::LocalGet(3));
+        },
+    );
 }
 
 // ---------------------------------------------------------------------------
