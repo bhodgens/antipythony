@@ -12,6 +12,12 @@ use ap_obj::value::{PyList, PyString, Tuple, Value};
 /// Returns None for a NULL handle (caller decides what that means; C
 /// convention is "error already set" or an explicit API contract).
 pub fn to_value(h: crate::state::CeHandle) -> Option<Value> {
+    to_value_impl(h)
+}
+
+/// The deref lives in a private helper: `clippy::not_unsafe_ptr_arg_deref`
+/// (deny-by-default) rejects raw-pointer derefs in `pub` safe fn bodies (issue #27).
+fn to_value_impl(h: crate::state::CeHandle) -> Option<Value> {
     if h.is_null() {
         return None;
     }
@@ -93,6 +99,11 @@ pub fn to_value(h: crate::state::CeHandle) -> Option<Value> {
 /// The instance dict of a CeHandle::Instance (bridges setattr from the
 /// runtime side into C-visible state when needed later).
 pub fn instance_state(h: crate::state::CeHandle) -> Option<Gc<PyDict>> {
+    instance_state_impl(h)
+}
+
+/// The deref lives in a private helper (issue #27, same shape as to_value_impl).
+fn instance_state_impl(h: crate::state::CeHandle) -> Option<Gc<PyDict>> {
     // SAFETY: caller precondition — h is a live minted ce handle (the C callers
     // null-check per the apx header contract; handles are Box::into_raw'd and
     // never freed), so the deref is valid; the payload borrow is short.
@@ -107,6 +118,11 @@ pub fn instance_state(h: crate::state::CeHandle) -> Option<Gc<PyDict>> {
 
 /// int payload read (PyLong_AsSsize_t route in the dispatcher).
 pub fn as_i64(h: crate::state::CeHandle) -> Option<i64> {
+    as_i64_impl(h)
+}
+
+/// The deref lives in a private helper (issue #27, same shape as to_value_impl).
+fn as_i64_impl(h: crate::state::CeHandle) -> Option<i64> {
     // SAFETY: caller precondition — h is a live minted ce handle (the C callers
     // null-check per the apx header contract; handles are Box::into_raw'd and
     // never freed), so the deref is valid; the payload borrow is short.

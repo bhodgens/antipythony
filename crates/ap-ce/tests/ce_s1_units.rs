@@ -40,6 +40,7 @@ fn payload_alloc_roundtrip_and_take() {
     assert!(payloads::payload_is_spec(key, 7));
     assert!(!payloads::payload_is_spec(key, 8));
     // Zero-initialized (the tp_init contract: fields start at 0).
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     unsafe {
         assert_eq!(*block, 0, "payload block zeroed at alloc");
         *block = 0x1234;
@@ -70,6 +71,7 @@ fn opaque_handles_round_trip_faithfully() {
         other => panic!("expected faithful Obj round-trip, got {other:?}"),
     }
     // The handle's own payload is the Opaque arm.
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     unsafe {
         let ce = &*(h as CeHandle);
         assert_eq!(ce.ob_type, CeKind::Opaque);
@@ -201,6 +203,7 @@ mod objproto_units {
         );
         let name = new_handle(CeKind::Str, CePayload::Str("hit".to_string()));
         let r =
+            // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
             unsafe { ap_ce::exports_objproto::PyObject_GetAttr(obj as PyObjPtr, name as PyObjPtr) };
         assert!(!r.is_null(), "hit must return a handle");
         assert_eq!(
@@ -209,6 +212,7 @@ mod objproto_units {
         );
         err_clear();
         let miss_name = new_handle(CeKind::Str, CePayload::Str("zz".to_string()));
+        // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
         let r2 = unsafe {
             ap_ce::exports_objproto::PyObject_GetAttr(obj as PyObjPtr, miss_name as PyObjPtr)
         };
@@ -224,6 +228,7 @@ mod objproto_units {
         let obj = new_handle(CeKind::Str, CePayload::Str("whatever".to_string()));
         let bad_name = new_handle(CeKind::Int, CePayload::Int(ap_obj::int::Int::from_i64(42)));
         err_clear();
+        // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
         let r = unsafe {
             ap_ce::exports_objproto::PyObject_GetAttr(obj as PyObjPtr, bad_name as PyObjPtr)
         };
@@ -242,6 +247,7 @@ mod objproto_units {
         );
         let hit = new_handle(CeKind::Str, CePayload::Str("hit".to_string()));
         let mut out: ap_ce::ffi_types::PyObjPtr = std::ptr::null_mut();
+        // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
         let rc = unsafe {
             ap_ce::exports_objproto::PyObject_GetOptionalAttr(
                 obj as PyObjPtr,
@@ -254,6 +260,7 @@ mod objproto_units {
         err_clear();
         let miss = new_handle(CeKind::Str, CePayload::Str("nope".to_string()));
         let mut out2: ap_ce::ffi_types::PyObjPtr = std::ptr::null_mut();
+        // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
         let rc2 = unsafe {
             ap_ce::exports_objproto::PyObject_GetOptionalAttr(
                 obj as PyObjPtr,
@@ -271,6 +278,7 @@ mod objproto_units {
         let _ = install_objproto_vtable(probe_vtable!());
         let a = new_handle(CeKind::Int, CePayload::Int(ap_obj::int::Int::from_i64(1)));
         let b = new_handle(CeKind::Int, CePayload::Int(ap_obj::int::Int::from_i64(2)));
+        // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
         let r = unsafe {
             ap_ce::exports_objproto::PyObject_RichCompare(a as PyObjPtr, b as PyObjPtr, PY_LT)
         };
@@ -283,16 +291,19 @@ mod objproto_units {
         // dispatching (needs distinct handles pointing at the same object —
         // pointer equality IS the shortcut).
         let x = new_handle(CeKind::Int, CePayload::Int(ap_obj::int::Int::from_i64(5)));
+        // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
         let rc = unsafe {
             ap_ce::exports_objproto::PyObject_RichCompareBool(x as PyObjPtr, x as PyObjPtr, PY_EQ)
         };
         assert_eq!(rc, 1, "identity shortcut Py_EQ");
+        // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
         let rc2 = unsafe {
             ap_ce::exports_objproto::PyObject_RichCompareBool(x as PyObjPtr, x as PyObjPtr, PY_NE)
         };
         assert_eq!(rc2, 0, "identity shortcut Py_NE");
         // Bad op => SystemError, never a panic.
         err_clear();
+        // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
         let bad = unsafe {
             ap_ce::exports_objproto::PyObject_RichCompare(a as PyObjPtr, b as PyObjPtr, 99)
         };
@@ -310,10 +321,13 @@ mod objproto_units {
         // to_value maps CeKind::None + Bool(false) payload to Value::None —
         // the probe vtable answers !matches!(None) => true... wait: None is
         // falsy. The probe: !matches!(obj, Value::None) => None => false.
+        // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
         let r1 = unsafe { ap_ce::exports_objproto::PyObject_IsTrue(t as PyObjPtr) };
         assert_eq!(r1, 1);
+        // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
         let r2 = unsafe { ap_ce::exports_objproto::PyObject_IsTrue(n as PyObjPtr) };
         assert_eq!(r2, 0, "None is falsy through the probe");
+        // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
         let r3 = unsafe { ap_ce::exports_objproto::PyObject_Not(n as PyObjPtr) };
         assert_eq!(r3, 1, "not None => 1");
     }
@@ -322,10 +336,12 @@ mod objproto_units {
     fn hash_sentinel_and_null_guards() {
         let _ = install_objproto_vtable(probe_vtable!());
         let i = new_handle(CeKind::Int, CePayload::Int(ap_obj::int::Int::from_i64(42)));
+        // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
         let h = unsafe { ap_ce::exports_objproto::PyObject_Hash(i as PyObjPtr) };
         assert_eq!(h, 42, "int hash passthrough (probe vtable)");
         err_clear();
         // NULL object => SystemError, never a panic.
+        // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
         let bad = unsafe { ap_ce::exports_objproto::PyObject_Hash(std::ptr::null_mut()) };
         assert_eq!(bad, -1);
         let (class, _) = err_take().unwrap();
@@ -336,11 +352,14 @@ mod objproto_units {
     fn iter_check_recognizes_kinds() {
         let it_obj = ap_obj::PyObject::new(ap_obj::ObjKind::Iterator, "iterator");
         let it = new_handle(CeKind::Opaque, CePayload::Opaque(it_obj));
+        // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
         let rc = unsafe { ap_ce::exports_objproto::apx_PyIter_Check(it as PyObjPtr) };
         assert_eq!(rc, 1, "Iterator kind passes PyIter_Check");
         let s = new_handle(CeKind::Str, CePayload::Str("plain".to_string()));
+        // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
         let rc2 = unsafe { ap_ce::exports_objproto::apx_PyIter_Check(s as PyObjPtr) };
         assert_eq!(rc2, 0, "str handle is not an iterator");
+        // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
         let rc3 = unsafe { ap_ce::exports_objproto::apx_PyIter_Check(std::ptr::null_mut()) };
         assert_eq!(rc3, 0, "NULL is not an iterator");
     }

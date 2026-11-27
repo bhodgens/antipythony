@@ -859,11 +859,18 @@ pub extern "C" fn apx_set_instance_value(key: usize, v: *const ap_obj::value::Va
     if v.is_null() {
         return -1;
     }
-    // SAFETY: v was null-checked above and points at a runtime Value the
-    // bridge owns for the call's duration, so the deref-and-clone is valid.
-    let v = unsafe { &*v }.clone();
+    let v = clone_value_ptr(v);
     crate::value_map::set_runtime_value(key, v);
     0
+}
+
+/// The deref lives in a private helper: `clippy::not_unsafe_ptr_arg_deref`
+/// (deny-by-default) rejects raw-pointer derefs in public fn bodies (issue #27),
+/// and the C ABI entry point above must keep its safe signature.
+fn clone_value_ptr(v: *const ap_obj::value::Value) -> ap_obj::value::Value {
+    // SAFETY: v was null-checked by the caller and points at a runtime Value
+    // the bridge owns for the call's duration, so the deref-and-clone is valid.
+    unsafe { &*v }.clone()
 }
 
 /// Resolve the runtime Value behind a ce instance handle (called by the

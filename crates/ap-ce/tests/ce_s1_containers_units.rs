@@ -70,6 +70,7 @@ fn getitem_ref_tri_state() {
     let kz = str_handle("zz");
     let mut out: ap_ce::ffi_types::PyObjPtr = std::ptr::null_mut();
 
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let rc_present = unsafe {
         ap_ce::exports_containers::PyDict_GetItemRef(
             d as ap_ce::ffi_types::PyObjPtr,
@@ -85,6 +86,7 @@ fn getitem_ref_tri_state() {
         .unwrap_or_default();
     assert_eq!(v_repr, "1");
 
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let rc_missing = unsafe {
         ap_ce::exports_containers::PyDict_GetItemRef(
             d as ap_ce::ffi_types::PyObjPtr,
@@ -98,6 +100,7 @@ fn getitem_ref_tri_state() {
 
     // Unhashable key -> -1 + the measured dict-key TypeError.
     let list = new_handle(CeKind::List, CePayload::List(vec![long_handle(1)]));
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let rc_unhash = unsafe {
         ap_ce::exports_containers::PyDict_GetItemRef(
             d as ap_ce::ffi_types::PyObjPtr,
@@ -126,6 +129,7 @@ fn pop_contract() {
     let kz = str_handle("zz");
     let mut out: ap_ce::ffi_types::PyObjPtr = std::ptr::null_mut();
 
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let rc1 = unsafe {
         ap_ce::exports_containers::PyDict_Pop(
             d as ap_ce::ffi_types::PyObjPtr,
@@ -136,10 +140,12 @@ fn pop_contract() {
     assert_eq!(rc1, 1);
     assert!(!out.is_null());
     assert_eq!(
+        // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
         unsafe { ap_ce::exports_containers::PyDict_Size(d as ap_ce::ffi_types::PyObjPtr) },
         1
     );
 
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let rc0 = unsafe {
         ap_ce::exports_containers::PyDict_Pop(
             d as ap_ce::ffi_types::PyObjPtr,
@@ -152,6 +158,7 @@ fn pop_contract() {
     assert!(!err_is_set());
 
     let list = new_handle(CeKind::List, CePayload::List(vec![]));
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let rcneg = unsafe {
         ap_ce::exports_containers::PyDict_Pop(
             d as ap_ce::ffi_types::PyObjPtr,
@@ -173,6 +180,7 @@ fn delitem_missing_keyerror_repr() {
     err_clear();
     let d = dict_ab();
     let kz = str_handle("zz");
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let rc = unsafe {
         ap_ce::exports_containers::PyDict_DelItem(
             d as ap_ce::ffi_types::PyObjPtr,
@@ -194,6 +202,7 @@ fn wrong_receiver_dialect() {
     err_clear();
     let i5 = long_handle(5);
 
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let n = unsafe { ap_ce::exports_containers::PyDict_Size(i5 as ap_ce::ffi_types::PyObjPtr) };
     assert_eq!(n, -1);
     let (class, msg) = last_err().unwrap();
@@ -204,6 +213,7 @@ fn wrong_receiver_dialect() {
     );
 
     err_clear();
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let n = unsafe { ap_ce::exports_containers::PyList_Size(i5 as ap_ce::ffi_types::PyObjPtr) };
     assert_eq!(n, -1);
     let (class, msg) = last_err().unwrap();
@@ -214,6 +224,7 @@ fn wrong_receiver_dialect() {
     );
 
     err_clear();
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let keys = unsafe { ap_ce::exports_containers::PyDict_Keys(i5 as ap_ce::ffi_types::PyObjPtr) };
     assert!(keys.is_null());
     let (_, msg) = last_err().unwrap();
@@ -223,6 +234,7 @@ fn wrong_receiver_dialect() {
     );
 
     err_clear();
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let r = unsafe { ap_ce::exports_containers::PyList_AsTuple(i5 as ap_ce::ffi_types::PyObjPtr) };
     assert!(r.is_null());
     let (_, msg) = last_err().unwrap();
@@ -241,6 +253,7 @@ fn merge_nondict_attribute_error() {
     err_clear();
     let d = dict_ab();
     let l = new_handle(CeKind::List, CePayload::List(vec![long_handle(1)]));
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let rc = unsafe {
         ap_ce::exports_containers::PyDict_Merge(
             d as ap_ce::ffi_types::PyObjPtr,
@@ -269,6 +282,7 @@ fn merge_seq2_arity_texts() {
             CePayload::Tuple(vec![str_handle("a"), long_handle(1), long_handle(2)]),
         )]),
     );
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let rc = unsafe {
         ap_ce::exports_containers::PyDict_MergeFromSeq2(
             d as ap_ce::ffi_types::PyObjPtr,
@@ -287,6 +301,7 @@ fn merge_seq2_arity_texts() {
     err_clear();
     let d2 = new_handle(CeKind::Dict, CePayload::Dict(ap_obj::dict::PyDict::new()));
     let int5 = long_handle(5);
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let rc = unsafe {
         ap_ce::exports_containers::PyDict_MergeFromSeq2(
             d2 as ap_ce::ffi_types::PyObjPtr,
@@ -304,6 +319,7 @@ fn merge_seq2_arity_texts() {
     err_clear();
     let d3 = new_handle(CeKind::Dict, CePayload::Dict(ap_obj::dict::PyDict::new()));
     let inner_int = new_handle(CeKind::List, CePayload::List(vec![long_handle(42)]));
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let rc = unsafe {
         ap_ce::exports_containers::PyDict_MergeFromSeq2(
             d3 as ap_ce::ffi_types::PyObjPtr,
@@ -320,6 +336,7 @@ fn merge_seq2_arity_texts() {
     err_clear();
     let d4 = new_handle(CeKind::Dict, CePayload::Dict(ap_obj::dict::PyDict::new()));
     let str_item = new_handle(CeKind::List, CePayload::List(vec![str_handle("ab")]));
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let rc = unsafe {
         ap_ce::exports_containers::PyDict_MergeFromSeq2(
             d4 as ap_ce::ffi_types::PyObjPtr,
@@ -347,6 +364,7 @@ fn list_index_contracts() {
     );
     let hp = l as ap_ce::ffi_types::PyObjPtr;
 
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let v = unsafe { ap_ce::exports_containers::PyList_GetItem(hp, 0) };
     assert!(!v.is_null());
     let got = ap_ce::value_conv::to_value(v as ap_ce::state::CeHandle);
@@ -356,6 +374,7 @@ fn list_index_contracts() {
     assert_eq!(got_repr, "3");
 
     err_clear();
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let v = unsafe { ap_ce::exports_containers::PyList_GetItem(hp, -1) };
     assert!(v.is_null(), "negative index must NOT wrap on the C API");
     let (class, msg) = last_err().unwrap();
@@ -363,12 +382,14 @@ fn list_index_contracts() {
     assert_eq!(msg, "list index out of range");
 
     err_clear();
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let v = unsafe { ap_ce::exports_containers::PyList_GetItem(hp, 5) };
     assert!(v.is_null());
     let (_, msg) = last_err().unwrap();
     assert_eq!(msg, "list index out of range");
 
     err_clear();
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let v = unsafe { ap_ce::exports_containers::PyList_GetItemRef(hp, -1) };
     assert!(v.is_null());
     let (class, _) = last_err().unwrap();
@@ -394,6 +415,7 @@ fn list_setslice_shapes() {
         CeKind::List,
         CePayload::List(vec![long_handle(9), long_handle(8)]),
     );
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let rc = unsafe {
         ap_ce::exports_containers::PyList_SetSlice(
             l as ap_ce::ffi_types::PyObjPtr,
@@ -408,6 +430,7 @@ fn list_setslice_shapes() {
     assert_eq!(repr, "[0, 9, 8, 3]");
 
     // SetSlice(0,1,NULL) deletes -> [9,8,3]
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let rc = unsafe {
         ap_ce::exports_containers::PyList_SetSlice(
             l as ap_ce::ffi_types::PyObjPtr,
@@ -421,6 +444,7 @@ fn list_setslice_shapes() {
     assert_eq!(ap_obj::ops::repr(&vals).unwrap(), "[9, 8, 3]");
 
     // SetSlice(1,0,[9,8]) inserts -> [9,9,8,8,3]
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let rc = unsafe {
         ap_ce::exports_containers::PyList_SetSlice(
             l as ap_ce::ffi_types::PyObjPtr,
@@ -443,6 +467,7 @@ fn list_insert_clamp_shape() {
     err_clear();
     let l = new_handle(CeKind::List, CePayload::List(vec![]));
     let hp = l as ap_ce::ffi_types::PyObjPtr;
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     unsafe {
         ap_ce::exports_containers::PyList_Insert(
             hp,
@@ -486,10 +511,15 @@ fn tuple_getslice_clamps() {
         CePayload::Tuple(vec![long_handle(1), long_handle(2), str_handle("x")]),
     );
     let hp = t as ap_ce::ffi_types::PyObjPtr;
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let s1 = unsafe { ap_ce::exports_containers::PyTuple_GetSlice(hp, 1, 3) };
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let s2 = unsafe { ap_ce::exports_containers::PyTuple_GetSlice(hp, -100, 100) };
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let s3 = unsafe { ap_ce::exports_containers::PyTuple_GetSlice(hp, 2, 1) };
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let s4 = unsafe { ap_ce::exports_containers::PyTuple_GetSlice(hp, -2, 2) };
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let s5 = unsafe { ap_ce::exports_containers::PyTuple_GetSlice(hp, 1, -100) };
     let rep = |h: ap_ce::ffi_types::PyObjPtr| {
         let v = ap_ce::value_conv::to_value(h as ap_ce::state::CeHandle).unwrap();
@@ -514,6 +544,7 @@ fn list_sort_mixed_text() {
         CeKind::List,
         CePayload::List(vec![long_handle(1), str_handle("a")]),
     );
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let rc = unsafe { ap_ce::exports_containers::PyList_Sort(l as ap_ce::ffi_types::PyObjPtr) };
     assert_eq!(rc, -1);
     let (class, msg) = last_err().unwrap();
@@ -537,11 +568,13 @@ fn tuple_pack_array_form() {
         a as ap_ce::ffi_types::PyObjPtr,
         b as ap_ce::ffi_types::PyObjPtr,
     ];
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let t = unsafe { ap_ce::exports_containers::apx_PyTuple_Pack(2, args.as_ptr()) };
     let v = ap_ce::value_conv::to_value(t as ap_ce::state::CeHandle).unwrap();
     assert_eq!(ap_obj::ops::repr(&v).unwrap(), "(1, 'x')");
 
     err_clear();
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let t = unsafe { ap_ce::exports_containers::apx_PyTuple_Pack(-1, std::ptr::null()) };
     assert!(t.is_null());
     let (class, msg) = last_err().unwrap();
@@ -562,6 +595,7 @@ fn getitem_masks_errors() {
     let d = dict_ab();
     let hp = d as ap_ce::ffi_types::PyObjPtr;
 
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let missing = unsafe {
         ap_ce::exports_containers::PyDict_GetItem(
             hp,
@@ -573,6 +607,7 @@ fn getitem_masks_errors() {
 
     let list = new_handle(CeKind::List, CePayload::List(vec![long_handle(1)]));
     err_clear();
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let unhash = unsafe {
         ap_ce::exports_containers::PyDict_GetItem(hp, list as ap_ce::ffi_types::PyObjPtr)
     };

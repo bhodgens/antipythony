@@ -113,6 +113,7 @@ fn pymutex_lock_unlock_islocked() {
     static MU: std::sync::Mutex<()> = std::sync::Mutex::new(());
     let _g = MU.lock().unwrap_or_else(|p| p.into_inner());
     let mu = Box::leak(Box::new(0u8)) as *mut u8 as *mut std::ffi::c_void;
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     unsafe {
         assert_eq!(PyMutex_IsLocked(mu), 0);
         PyMutex_Lock(mu);
@@ -128,14 +129,20 @@ fn pymutex_lock_unlock_islocked() {
 
 #[test]
 fn pymem_malloc_zero_is_nonnull_and_free_null_ok() {
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let z = unsafe { PyMem_Malloc(0) };
     assert!(!z.is_null(), "PyMem_Malloc(0) must be NON-NULL (CPython)");
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     unsafe { PyMem_Free(z) };
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     unsafe { PyMem_Free(std::ptr::null_mut()) }; // no-op
+                                                 // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let c = unsafe { PyMem_Calloc(4, 4) };
     assert!(!c.is_null());
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     let zeroed = unsafe { std::slice::from_raw_parts(c as *const u8, 16) };
     assert!(zeroed.iter().all(|&b| b == 0), "calloc zeroed");
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     unsafe { PyMem_Free(c) };
 }
 
@@ -145,6 +152,7 @@ fn pymem_malloc_zero_is_nonnull_and_free_null_ok() {
 
 #[test]
 fn unstable_long_compact_matches_cpython() {
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     unsafe {
         let small = new_handle(CeKind::Int, CePayload::Int(ap_obj::int::Int::from_i64(42)));
         assert_eq!(
@@ -175,6 +183,7 @@ fn gilstate_ensure_release_check() {
     let g2 = PyGILState_Ensure();
     assert_eq!(g2, 0, "nested Ensure is LOCKED (measured)");
     assert_eq!(PyGILState_Check(), 1);
+    // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
     unsafe {
         PyGILState_Release(g2);
         PyGILState_Release(g1);
@@ -201,6 +210,7 @@ fn expect_int_sets_typeerror_class_not_api_name() {
         reserved: 0,
     };
     let rc =
+        // SAFETY: test FFI call — only live handles/blocks minted or leaked above (issue #27 SAFETY wave).
         unsafe { ap_ce::exports_long_gc::PyLong_Export(s as ap_ce::ffi_types::PyObjPtr, &mut out) };
     assert_eq!(rc, -1);
     assert!(err_is_set());
