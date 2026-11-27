@@ -317,15 +317,13 @@ fn call_with_kw_star_args_falls_back() {
     // Leaf fp-calls: Kw lowers (CallFunctionKw); Star/KwStar call-site
     // unpack stays a fallback.
     {
-        let call = Expr::Call(
-            Box::new(name("f")),
-            vec![Arg::Kw("x".into(), lit(1))],
-            1,
-        );
+        let call = Expr::Call(Box::new(name("f")), vec![Arg::Kw("x".into(), lit(1))], 1);
         let f = fn_def("f", &[], vec![ret(call)]);
         let code = must_lower(&f);
         assert!(
-            code.instrs.iter().any(|i| matches!(i, Instr::CallFunctionKw { .. })),
+            code.instrs
+                .iter()
+                .any(|i| matches!(i, Instr::CallFunctionKw { .. })),
             "kw call lowers to CallFunctionKw"
         );
     }
@@ -694,7 +692,10 @@ fn comprehension_lowering_list_shape() {
     let has = |p: &dyn Fn(&Instr) -> bool| c.instrs.iter().any(p);
     assert!(has(&|i| matches!(i, Instr::GetIter)), "GetIter emitted");
     assert!(has(&|i| matches!(i, Instr::ForNext(_))), "ForNext emitted");
-    assert!(has(&|i| matches!(i, Instr::BuildList(0))), "fresh accumulator");
+    assert!(
+        has(&|i| matches!(i, Instr::BuildList(0))),
+        "fresh accumulator"
+    );
     assert!(
         has(&|i| matches!(
             i,
@@ -788,7 +789,9 @@ fn attribute_store_lowers_storeattr() {
     let f = fn_def("f", &["s"], vec![stmt, Stmt::Return(None)]);
     let c = must_lower(&f);
     assert!(
-        c.instrs.iter().any(|i| matches!(i, Instr::StoreAttr { .. })),
+        c.instrs
+            .iter()
+            .any(|i| matches!(i, Instr::StoreAttr { .. })),
         "attr store lowers to StoreAttr"
     );
     // Aug target reads too: s.x += 1
@@ -799,7 +802,10 @@ fn attribute_store_lowers_storeattr() {
     );
     let f2 = fn_def("f", &["s"], vec![aug, Stmt::Return(None)]);
     let c2 = must_lower(&f2);
-    assert!(c2.instrs.iter().any(|i| matches!(i, Instr::LoadAttr { .. })));
+    assert!(c2
+        .instrs
+        .iter()
+        .any(|i| matches!(i, Instr::LoadAttr { .. })));
 }
 
 #[test]
@@ -1496,10 +1502,6 @@ fn try_inside_loop_still_falls_back() {
     assert_eq!(must_fallback(&f), "try statement");
 }
 
-
-
-
-
 #[test]
 fn empty_dict_display_lowers() {
     // d = {} — zero-item dict display (BuildDict(0)); previously a
@@ -1538,19 +1540,14 @@ fn kw_slice_contiguous_when_name_pre_interned() {
     let f = fn_def(
         "run",
         &["o", "a"],
-        vec![
-            Stmt::ExprStmt(attr_read),
-            ret(call),
-        ],
+        vec![Stmt::ExprStmt(attr_read), ret(call)],
     );
     let c = must_lower(&f);
     let kws: Vec<(u32, u16)> = c
         .instrs
         .iter()
         .filter_map(|i| match i {
-            Instr::CallFunctionKw {
-                kw_first, n_kw, ..
-            } => Some((*kw_first, *n_kw)),
+            Instr::CallFunctionKw { kw_first, n_kw, .. } => Some((*kw_first, *n_kw)),
             _ => None,
         })
         .collect();
@@ -1564,11 +1561,7 @@ fn kw_slice_contiguous_when_name_pre_interned() {
 
 #[test]
 fn set_display_lowers() {
-    let f = fn_def(
-        "run",
-        &[],
-        vec![ret(Expr::Set(vec![lit(1), lit(2)]))],
-    );
+    let f = fn_def("run", &[], vec![ret(Expr::Set(vec![lit(1), lit(2)]))]);
     let c = must_lower(&f);
     assert!(c.instrs.iter().any(|i| matches!(i, Instr::BuildSet(2))));
 }

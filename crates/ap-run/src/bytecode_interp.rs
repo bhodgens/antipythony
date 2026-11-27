@@ -849,11 +849,7 @@ fn run_frame(
                 let args = stack.split_off(stack.len() - argc);
                 let callee = pop!();
                 let v = hop!(crate::interp::call_value_frame_pub(
-                    interp,
-                    frame,
-                    &callee,
-                    &args,
-                    &kwargs
+                    interp, frame, &callee, &args, &kwargs
                 ));
                 stack.push(v);
                 pc += 1;

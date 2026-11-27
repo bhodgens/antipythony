@@ -764,8 +764,8 @@ impl Lowerer {
                     self.lower_expr(&i.key)?;
                     self.lower_expr(&i.value)?;
                 }
-                let count =
-                    u16::try_from(items.len()).map_err(|_| Unsupported("dict display too large"))?;
+                let count = u16::try_from(items.len())
+                    .map_err(|_| Unsupported("dict display too large"))?;
                 self.emit_at_line(Instr::BuildDict(count), self.cur_line);
                 Ok(())
             }
