@@ -1499,3 +1499,76 @@ fn try_inside_loop_still_falls_back() {
 
 
 
+
+#[test]
+fn empty_dict_display_lowers() {
+    // d = {} — zero-item dict display (BuildDict(0)); previously a
+    // function-level fallback that silently tree-walked dict-loop bodies.
+    let f = fn_def(
+        "run",
+        &[],
+        vec![
+            Stmt::Assign(vec![Target::Name("d".into())], Expr::Dict(vec![])),
+            ret(Expr::Call(
+                Box::new(name("len")),
+                vec![Arg::Pos(name("d"))],
+                2,
+            )),
+        ],
+    );
+    let c = must_lower(&f);
+    assert!(c.instrs.iter().any(|i| matches!(i, Instr::BuildDict(0))));
+}
+
+#[test]
+fn kw_slice_contiguous_when_name_pre_interned() {
+    // The kw NAME already interned (attr read above the call) must not
+    // desync the CallFunctionKw slice — names reserve a fresh contiguous
+    // run; values pair with names[kw_first..] in push order.
+    let attr_read = Expr::Attribute(Box::new(name("o")), "x".into(), 2);
+    let call = Expr::Call(
+        Box::new(name("f")),
+        vec![
+            Arg::Pos(name("a")),
+            Arg::Kw("x".into(), lit(1)),
+            Arg::Kw("y".into(), lit(2)),
+        ],
+        3,
+    );
+    let f = fn_def(
+        "run",
+        &["o", "a"],
+        vec![
+            Stmt::ExprStmt(attr_read),
+            ret(call),
+        ],
+    );
+    let c = must_lower(&f);
+    let kws: Vec<(u32, u16)> = c
+        .instrs
+        .iter()
+        .filter_map(|i| match i {
+            Instr::CallFunctionKw {
+                kw_first, n_kw, ..
+            } => Some((*kw_first, *n_kw)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(kws.len(), 1);
+    let (kw_first, n_kw) = kws[0];
+    assert_eq!(n_kw, 2);
+    // Contiguous + in kw order.
+    assert_eq!(&c.names[kw_first as usize], "x");
+    assert_eq!(&c.names[kw_first as usize + 1], "y");
+}
+
+#[test]
+fn set_display_lowers() {
+    let f = fn_def(
+        "run",
+        &[],
+        vec![ret(Expr::Set(vec![lit(1), lit(2)]))],
+    );
+    let c = must_lower(&f);
+    assert!(c.instrs.iter().any(|i| matches!(i, Instr::BuildSet(2))));
+}
