@@ -101,6 +101,13 @@ struct UserFn {
     /// The emit pass routes these to FT_GEN_STEP step-fns; call sites build
     /// a parked $generator instead of dispatching.
     is_generator: bool,
+    /// 1-based source line of the `def` keyword (0 for lambdas and hidden
+    /// comprehension functions). Together with `name` this IDENTIFIES a def:
+    /// two methods with the same name in different class bodies stand on
+    /// different lines (leaf wasm-super — the name alone matched the last
+    /// def of that name in the module, which bound a subclass method into
+    /// the base class).
+    def_line: usize,
 }
 
 /// Scan state: fail-closed scope check, function registration, string
@@ -171,6 +178,7 @@ fn scan_module(module: &IrModule, scan: &mut Scan) -> Result<(), CodegenError> {
                     &fd.body.blocks,
                     usize::MAX,
                     fd.is_generator,
+                    fd.def_line,
                     scan,
                 )?;
             }
@@ -215,6 +223,7 @@ fn scan_fn_common(
     body: &[Stmt],
     parent: usize,
     is_generator: bool,
+    def_line: usize,
     scan: &mut Scan,
 ) -> Result<(), CodegenError> {
     for p in params {
@@ -243,6 +252,7 @@ fn scan_fn_common(
         own_cells: Vec::new(),
         free_cells: Vec::new(),
         is_generator,
+        def_line,
     });
     // scan the body with this fn as the nesting parent
     let mut refs: Vec<String> = Vec::new();
@@ -554,6 +564,7 @@ fn collect_stmt(
                 &fd.body.blocks,
                 parent,
                 fd.is_generator,
+                fd.def_line,
                 scan,
             );
             gen_loop_bump(scan, saved_depth as isize);
@@ -1040,7 +1051,7 @@ fn collect_expr(
                 ));
             }
             let parent = scan.parent_stack.last().copied().unwrap_or(usize::MAX);
-            scan_fn_common("<lambda>", &sig.params, &body_stmts, parent, false, scan)
+            scan_fn_common("<lambda>", &sig.params, &body_stmts, parent, false, 0, scan)
         }
         // leaf 03.04c: comprehension scopes. The clause-0 iterable evaluates
         // in the ENCLOSING scope (S-02-5) — collect its reads HERE; the
@@ -1163,7 +1174,7 @@ fn collect_comp_clauses(
         let _ = &clause.iter;
     }
     let parent = scan.parent_stack.last().copied().unwrap_or(usize::MAX);
-    scan_fn_common("<listcomp>", &[], &body, parent, true, scan)
+    scan_fn_common("<listcomp>", &[], &body, parent, true, 0, scan)
 }
 
 /// comprehension clause target: Name or 1-level Tuple of Names (the corpus
@@ -1521,6 +1532,10 @@ pub fn lower_module_ex(
     // AFTER emit_super so the 69/70 constants stay true (emit order IS
     // the index assignment).
     crate::prelude_gen::emit_gen_drains(&mut funcs, &mut code);
+    // leaf wasm-super: super-object attribute walk (FN_SUPER_MRO_GET = 74) and
+    // the attribute-call bound-object rule (FN_BOUND_OBJ = 75) — dense append
+    // after the drains; FN_FIRST_USER moved 74 -> 76.
+    crate::prelude_classes::emit_super_mro(&mut funcs, &mut code, &mut tab);
 
     // ---- 03.03b: the top-level EH wrap is ON BY DEFAULT. The parked
     // "operators remaining / values remaining on stack" rejection was NOT a
@@ -4518,6 +4533,8 @@ fn gen_emit_generator_new(
     f.instruction(&Instruction::RefNull(hc(T_DICT)));
     f.instruction(&Instruction::RefNull(hc(T_CELL_ARR)));
     f.instruction(&Instruction::RefNull(hc(T_DICT)));
+    // owner: a generator function is never a method binding on this slice.
+    f.instruction(&Instruction::RefNull(hc(T_TYPE)));
     f.instruction(&Instruction::StructNew(T_FUNCTION));
     // $generator struct: [type(under fn), fn, state=0, locals(objarr), null,
     // null] — type was pushed before the $function build.
@@ -4951,6 +4968,7 @@ fn emit_generator_call(f: &mut Function, slot: usize, args: &[Arg], ctx: &mut Em
     f.instruction(&Instruction::RefNull(hc(T_DICT))); // kwdefaults
     f.instruction(&Instruction::RefNull(hc(T_CELL_ARR))); // cells
     f.instruction(&Instruction::RefNull(hc(T_DICT))); // globals
+    f.instruction(&Instruction::RefNull(hc(T_TYPE))); // owner (not a method here)
     f.instruction(&Instruction::StructNew(T_FUNCTION));
     f.instruction(&Instruction::LocalSet(TEMP_LOCAL_FN)); // stash the fn ($function-typed local)
                                                           // 3. $generator struct: [null-type, fn, state=0, locals, null, null]
@@ -5028,6 +5046,21 @@ fn emit_function_object(f: &mut Function, slot: usize, ctx: &mut EmitCtx) {
     f.instruction(&Instruction::RefNull(wasm_encoder::HeapType::Concrete(
         T_DICT,
     ))); // globals stub (module reads go direct)
+         // owner (S-03-17): the class whose body defines this function, or
+         // null for a plain function / a def nested inside a function. The
+         // class object sits in ctx.cls_obj for the duration of the body.
+    match ctx.cls_obj {
+        Some(cls) => {
+            // TEMP_LOCAL_A is a general object reference; the owner field is a
+            // class reference, so cast it (the class body always holds a class
+            // object there — emit_class_def stores the result of cls_new).
+            f.instruction(&Instruction::LocalGet(cls));
+            f.instruction(&Instruction::RefCastNullable(hc(T_TYPE)));
+        }
+        None => {
+            f.instruction(&Instruction::RefNull(hc(T_TYPE)));
+        }
+    }
     f.instruction(&Instruction::StructNew(T_FUNCTION));
 }
 
@@ -5384,11 +5417,23 @@ fn emit_stmt(f: &mut Function, stmt: &Stmt, ctx: &mut EmitCtx) {
             // (defaults evaluate at this execution point) and bind the name
             // in the current scope. Cells: the child's free_cells reference
             // THIS scope's cells — resolved at build time (S-02-13).
+            // The slot is found by name AND def line: the name alone is not
+            // unique (two class bodies can each define `__init__`), and the
+            // last name match bound a subclass method into the base class.
+            let want_line = fd.def_line;
             let slot = ctx
                 .scan
                 .fns
                 .iter()
-                .rposition(|uf| uf.name == fd.name.as_str())
+                .position(|uf| uf.name == fd.name.as_str() && uf.def_line == want_line)
+                .or_else(|| {
+                    // No line match (a caller that passes no line): fall back
+                    // to the last name match, the pre-leaf behavior.
+                    ctx.scan
+                        .fns
+                        .iter()
+                        .rposition(|uf| uf.name == fd.name.as_str())
+                })
                 .expect("scan registered the nested def");
             emit_function_object(f, slot, ctx);
             if let Some(cls) = ctx.cls_obj {
@@ -6443,9 +6488,13 @@ fn emit_bool_op(f: &mut Function, ops: &[Expr], is_or: bool, ctx: &mut EmitCtx) 
 /// for the dispatcher.
 fn emit_call(f: &mut Function, func: &Expr, args: &[Arg], ctx: &mut EmitCtx) {
     // 03.03d: super(S, obj) / bare super() (S-03-17 slice) — FN_SUPER_NEW.
-    // Zero-arg form passes S = null (the frame has no __class__ cell on this
-    // slice, so every bare super() raises RuntimeError at call time — the
-    // c021 observable). Only 0 or 2 positional args reach here (scan).
+    // Zero-arg form inside a method (leaf wasm-super): the start class is the
+    // running $function's owner (F_FN_OWNER, set by the class body) and the
+    // object is the first parameter. In a plain function, a nested function,
+    // a zero-parameter function, or the module frame the start class is null
+    // and FN_SUPER_NEW raises RuntimeError (the c021 observable — CPython's
+    // result for a bare super() with no enclosing method). Only 0 or 2
+    // positional args reach here (scan).
     if let Expr::Name(n) = func {
         if n.as_str() == "super" {
             let positional: Vec<&Expr> = args
@@ -6457,8 +6506,33 @@ fn emit_call(f: &mut Function, func: &Expr, args: &[Arg], ctx: &mut EmitCtx) {
                 .collect();
             match positional.len() {
                 0 => {
-                    f.instruction(&Instruction::RefNull(hc(T_PYOBJ))); // S = null
-                    f.instruction(&Instruction::RefNull(hc(T_PYOBJ))); // obj
+                    // Zero-arg super() (S-03-17): CPython fills the two
+                    // arguments from the enclosing method — the start class is
+                    // the class where the METHOD is defined and the object is
+                    // its first parameter. This frame is that method only when
+                    // (a) the running $function carries an owner class and
+                    // (b) the frame has a first parameter. Otherwise the start
+                    // class is null and FN_SUPER_NEW raises the RuntimeError
+                    // that CPython raises for a bare super() in a plain or
+                    // nested function (the c021 observable).
+                    //
+                    // Locals here follow the FT_PY_RO convention of every user
+                    // function frame: 0 = $function, 3 = first Python param.
+                    // The module frame is NOT such a frame (its local 0 is the
+                    // argc scratch), and a function with no parameter has no
+                    // local 3 (LocalGet(3) would fail validation). Both take the
+                    // null form and raise RuntimeError, as on CPython.
+                    if ctx.scope.kind == ScopeKind::Fn && ctx.scope.params >= 1 {
+                        f.instruction(&Instruction::LocalGet(0));
+                        f.instruction(&Instruction::StructGet {
+                            struct_type_index: T_FUNCTION,
+                            field_index: F_FN_OWNER,
+                        });
+                        f.instruction(&Instruction::LocalGet(3));
+                    } else {
+                        f.instruction(&Instruction::RefNull(hc(T_PYOBJ))); // S = null
+                        f.instruction(&Instruction::RefNull(hc(T_PYOBJ))); // obj
+                    }
                     f.instruction(&Instruction::RefNull(hc(T_PYOBJ))); // unused
                     f.instruction(&Instruction::Call(fx::FN_SUPER_NEW));
                 }
@@ -6534,28 +6608,73 @@ fn emit_call(f: &mut Function, func: &Expr, args: &[Arg], ctx: &mut EmitCtx) {
     // (S-03-9 binding rule) — args become [self, *args].
     if let Expr::Attribute(obj, mname, _) = func {
         emit_expr(f, obj, ctx);
-        f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A)); // self
+        f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A)); // receiver
         f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
         push_interned_str(f, mname.as_str(), ctx);
         f.instruction(&Instruction::Call(fx::FN_ATTR_GET));
         f.instruction(&Instruction::RefCastNullable(hc(T_FUNCTION)));
-        // static-arity cascade: [self, *args] via array.new_fixed
+        // The method function rides a second stash: the bound-object test
+        // below calls FN_BOUND_OBJ, which must not run under the fn operand.
+        f.instruction(&Instruction::LocalSet(TEMP_LOCAL_FN));
+        // Which object binds as the first argument (leaf wasm-super)?
+        //   instance receiver  -> the receiver itself
+        //   `super` object     -> the instance it stands for
+        //   class object       -> nothing: the args already carry the instance
+        //     (`A.m(b)` must NOT become `A.m(A, b)` — that arity overflow hit
+        //     py_call's `Unreachable` and trapped the module).
+        // The two arms build args arrays of DIFFERENT sizes, so each arm
+        // builds its own array and parks it in TEMP_LOCAL_OBJARR_RO; ONE
+        // dispatch follows. (An arm must NOT `return` here: this call is an
+        // EXPRESSION — `print(A.m(b))` — and a return ends the whole user
+        // function before the print. Engine rule: If(Empty) arms leave no
+        // values; the result rides a local via LocalSet in each arm.)
+        //
+        // The old `if n > 2 { return }` is GONE: it bailed out with two
+        // operands on the stack, so every `obj.m(a, b, c)` built a module
+        // that trapped at run time (base-code probes u1/u4: function 16).
+        // The array now rides a local, so the arity has no static limit.
         let n = args.len();
-        if n > 2 {
-            return; // handled below via call_of? fail loud:
-        }
+        let fn_local = TEMP_LOCAL_FN;
         f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
-        for (i, a) in args.iter().enumerate() {
-            let Arg::Pos(x) = a else {
-                unreachable!("scan vetted positional args")
-            };
-            emit_expr(f, x, ctx);
-            let _ = i;
+        f.instruction(&Instruction::Call(fx::FN_BOUND_OBJ));
+        f.instruction(&Instruction::LocalSet(TEMP_LOCAL_B));
+        f.instruction(&Instruction::LocalGet(TEMP_LOCAL_B));
+        f.instruction(&Instruction::RefIsNull);
+        f.instruction(&Instruction::If(BlockType::Empty));
+        {
+            // class-object receiver: args as written
+            for a in args.iter() {
+                let Arg::Pos(x) = a else {
+                    unreachable!("scan vetted positional args");
+                };
+                emit_expr(f, x, ctx);
+            }
+            f.instruction(&Instruction::ArrayNewFixed {
+                array_type_index: T_OBJ_ARR_RO,
+                array_size: n as u32,
+            });
+            f.instruction(&Instruction::LocalSet(TEMP_LOCAL_OBJARR_RO));
         }
-        f.instruction(&Instruction::ArrayNewFixed {
-            array_type_index: T_OBJ_ARR_RO,
-            array_size: (n + 1) as u32,
-        });
+        f.instruction(&Instruction::Else);
+        {
+            // bound object present: args = [bound, *args]
+            f.instruction(&Instruction::LocalGet(TEMP_LOCAL_B));
+            for a in args.iter() {
+                let Arg::Pos(x) = a else {
+                    unreachable!("scan vetted positional args");
+                };
+                emit_expr(f, x, ctx);
+            }
+            f.instruction(&Instruction::ArrayNewFixed {
+                array_type_index: T_OBJ_ARR_RO,
+                array_size: (n + 1) as u32,
+            });
+            f.instruction(&Instruction::LocalSet(TEMP_LOCAL_OBJARR_RO));
+        }
+        f.instruction(&Instruction::End);
+        // one dispatch for both arms: (fn, args, kwargs) -> result on the stack
+        f.instruction(&Instruction::LocalGet(fn_local));
+        f.instruction(&Instruction::LocalGet(TEMP_LOCAL_OBJARR_RO));
         f.instruction(&Instruction::RefNull(hc(T_DICT)));
         f.instruction(&Instruction::Call(fx::FN_DISPATCH));
         return;
@@ -6791,6 +6910,8 @@ fn emit_lambda_object(f: &mut Function, slot: usize, ctx: &mut EmitCtx) {
     f.instruction(&Instruction::RefNull(wasm_encoder::HeapType::Concrete(
         T_DICT,
     )));
+    // owner: a generator function is never a method binding on this slice.
+    f.instruction(&Instruction::RefNull(hc(T_TYPE)));
     f.instruction(&Instruction::StructNew(T_FUNCTION));
 }
 

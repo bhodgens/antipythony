@@ -210,12 +210,16 @@ pub const F_CODE_NPARAMS: u32 = 1;
 pub const F_CODE_FLAGS: u32 = 2;
 pub const F_CODE_PARAM_NAMES: u32 = 3;
 pub const F_CODE_FUNC_IDX: u32 = 4;
-// $function: type(0) code(1) defaults(2) kwdefaults(3) cells(4) globals(5)
+// $function: type(0) code(1) defaults(2) kwdefaults(3) cells(4) globals(5) owner(6)
 pub const F_FN_CODE: u32 = 1;
 pub const F_FN_DEFAULTS: u32 = 2;
 pub const F_FN_KWDEFAULTS: u32 = 3;
 pub const F_FN_CELLS: u32 = 4;
 pub const F_FN_GLOBALS: u32 = 5;
+/// Defining class of a method, null for a plain function (S-03-17: the
+/// zero-argument `super()` start class; a function nested in a method keeps
+/// null, so its bare `super()` raises RuntimeError as on CPython).
+pub const F_FN_OWNER: u32 = 6;
 // $cell: v(0)
 pub const F_CELL_V: u32 = 0;
 // $exception: type(0) args(1) tb(2) context(3) cause(4) suppress(5)
@@ -703,6 +707,7 @@ pub fn build_type_section_with_prefix(prefix: usize) -> wasm_encoder::TypeSectio
             fr(T_DICT, false),     // kwdefaults
             fr(T_CELL_ARR, false), // cells
             fr(T_DICT, false),     // globals
+            fr(T_TYPE, true),      // owner: defining class of a method, else null
         ]),
         // 25 $cell — bare struct
         bare(vec![field_pyobj_ref_mut()]),
