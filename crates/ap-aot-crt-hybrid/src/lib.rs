@@ -178,6 +178,9 @@ pub extern "C" fn main() -> i32 {
 /// Read the NUL-terminated embedded file name (the build-time invoked
 /// .py name; mirrors the CRT's script_path read).
 fn payload_name() -> String {
+    // SAFETY: ap_aot_wasm_payload_name is emitted by ap-cli's hybrid.rs as
+    // NUL-terminated bytes in the binary's read-only data (always defined by
+    // the hybrid link contract), so the scan terminates inside the image.
     unsafe {
         let start = std::ptr::addr_of!(ap_aot_wasm_payload_name) as *const u8;
         let mut end = start;
@@ -196,6 +199,10 @@ fn payload_name() -> String {
 /// The embedded module bytes (the payload length word + sentinel shape
 /// link.rs uses for ap_aot_source).
 fn payload_bytes() -> Vec<u8> {
+    // SAFETY: hybrid.rs emits exactly ap_aot_wasm_payload_len (u64, read
+    // unaligned for linker placement) contiguous bytes at
+    // ap_aot_wasm_payload — the blob + length-word link contract, read-only
+    // for the process lifetime.
     unsafe {
         let s0 = std::ptr::addr_of!(ap_aot_wasm_payload);
         let lenp = std::ptr::addr_of!(ap_aot_wasm_payload_len) as *const u64;
@@ -265,6 +272,9 @@ fn wasm_run() -> i32 {
 /// exit mapping).
 fn aot_run() -> i32 {
     let args: Vec<String> = std::env::args().collect();
+    // SAFETY: ap_aot_script_path is emitted by link.rs as NUL-terminated
+    // bytes in the binary's read-only data (link contract), so the scan
+    // terminates inside the image.
     let script_path = unsafe {
         let start = std::ptr::addr_of!(ap_aot_script_path) as *const u8;
         let mut end = start;
@@ -296,7 +306,12 @@ fn aot_run() -> i32 {
             let mut err = std::io::stderr();
             let s0 = std::ptr::addr_of!(ap_aot_source);
             let lenp = std::ptr::addr_of!(ap_aot_source_len) as *const u64;
+            // SAFETY: ap_aot_source_len is the u64 length word link.rs
+            // defines beside the source blob (read_unaligned: linker
+            // placement makes no alignment promise).
             let len = unsafe { lenp.read_unaligned() } as usize;
+            // SAFETY: link.rs emits exactly `len` contiguous source bytes at
+            // ap_aot_source (blob + length + sentinel link contract).
             let source = unsafe {
                 String::from_utf8_lossy(std::slice::from_raw_parts(s0, len)).into_owned()
             };
@@ -327,6 +342,10 @@ fn aot_run() -> i32 {
 /// stride, word offsets) is unchanged — this is a read-strategy fix,
 /// not a format change.
 fn read_u64(off: usize) -> u64 {
+    // SAFETY: off indexes u64 words inside the manifest blob (count word +
+    // count rows), which the link contract lays out in the binary image;
+    // read_unaligned is deliberate — the symbol can land non-8-aligned
+    // (hybrid dead-strip note above).
     unsafe {
         (std::ptr::addr_of!(ap_aot_manifest) as *const u64)
             .add(off)
@@ -339,6 +358,9 @@ fn register_manifest() {
     let mut entries = Vec::with_capacity(count);
     for i in 0..count {
         let w = |k: usize| read_u64(1 + i * (MANIFEST_ROW_SIZE / 8) + k);
+        // SAFETY: w(0)/w(1) are the qualname (ptr, len) words of row i
+        // inside the link.rs manifest blob; the pair names bytes of the
+        // same read-only image (null/zero rows handled inline).
         let qualname = unsafe {
             let p = w(0) as *const u8;
             let n = w(1) as usize;
@@ -348,6 +370,9 @@ fn register_manifest() {
                 String::from_utf8_lossy(std::slice::from_raw_parts(p, n)).into_owned()
             }
         };
+        // SAFETY: w(4)/w(5) name an array of n 16-byte (ptr, len) pairs
+        // inside the link.rs manifest blob, each pair's ptr living in the
+        // same read-only image (null/zero entries handled inline).
         let names: Vec<String> = unsafe {
             let p = w(4) as *const u8;
             let n = w(5) as usize;

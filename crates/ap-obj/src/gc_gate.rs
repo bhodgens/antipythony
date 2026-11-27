@@ -17,31 +17,30 @@
 //! tuples as False, which the no-tracking answer gives directly).
 
 use crate::value::Value;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
-static HOOK: AtomicUsize = AtomicUsize::new(0);
+// Issue #23 real fix (inventory category c): was AtomicUsize + usize->fn
+// reinterpretation; OnceLock stores the typed fn directly, so the call
+// path is fully safe. Publication semantics are unchanged (OnceLock is
+// atomic internally) and the hot-path load cost is the same acquire.
+// First install wins; every in-repo caller installs the same hook for a
+// process lifetime (gcsupport::install / install_hook_public both pass
+// gc_register_routed; test/bench bins install once per mode before any
+// allocation), so no overwriting behavior is lost.
+static HOOK: std::sync::OnceLock<fn(&Value)> = std::sync::OnceLock::new();
 
 /// Install the registration hook (ap-gc::gc_register, once at run entry).
 pub fn set_hook(f: fn(&Value)) {
-    let ptr = f as usize;
-    HOOK.store(ptr, Ordering::Release);
+    let _ = HOOK.set(f);
 }
 
 /// True when a collector is installed (tests can assert inertness).
 pub fn hook_installed() -> bool {
-    HOOK.load(Ordering::Acquire) != 0
+    HOOK.get().is_some()
 }
 
 /// Register a fresh allocation with the collector (no-op without a hook).
 pub fn gc_register_pub(v: &Value) {
-    let f = HOOK.load(Ordering::Acquire);
-    if f != 0 {
-        // SAFETY: `f` was stored by `set_hook` from a `fn(&Value)` coerced to
-        // usize, so transmuting it back to the identical `fn(&Value)` type is a
-        // lossless round-trip; HOOK is write-once (only set_hook stores a real
-        // fn ptr) and the Acquire load pairs with its Release store, so `f != 0`
-        // guarantees the pointer is the live hook, not a torn or reclaimed value.
-        let f: fn(&Value) = unsafe { std::mem::transmute(f) };
+    if let Some(f) = HOOK.get() {
         f(v);
     }
 }
