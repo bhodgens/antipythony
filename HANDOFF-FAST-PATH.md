@@ -120,3 +120,77 @@ State has advanced since this document was first written. Current truth:
 All work is in worktrees under /Users/caimlas/.git/worktrees/; main checkout
 has 41 sibling-modified files — never touched. One heavy cargo lane policy;
 fresh CARGO_TARGET_DIR per leaf (stale-binary gotcha, see above).
+
+---
+
+## ADDENDUM 2026-11-27 14:25 MST (verification + adversarial audit)
+
+### inlinecache2 leaf FINISHED — gates first-hand green, MERGE BLOCKED by audit
+- Delegation deleg_15d4af97 completed 14:14:57. Branch `ic2-attempt` at
+  a0fc09d (5 commits past main: 0492106 rebase, c8d4c78 compile fix,
+  3bb8343 IC test fix, 182ab52 report, a0fc09d doc-only merge of main).
+  The old branch `tier1-fp-inlinecache2` was force-moved to a0fc09d by the
+  leaf; check `git rev-parse tier1-fp-inlinecache2` before merging.
+- Its gates verified from its own log (clean env: `env -u APX_TIER_STATS
+  -u APX_TIER`): cargo ap-bytecode+ap-run --release 21 suites, 272 passed /
+  0 failed; fix_bytecode 13/13; diff_b64 2132/0; diff_hex 1976/0; diff_json
+  127/0; fix_sha_zlib tw-vs-bc 0 diff (zlib-rs 28 corrupt-row residual
+  unchanged); ap-conform values 50/50 + stdlib 48/48 in BOTH toggles.
+  IC invalidation suite 7/7 + 3x stable green.
+- FALSE RED root cause found: exported APX_TIER_STATS=1 + APX_TIER=bytecode
+  in the leaf shell leaked into children, appending [BC-STATS]/[TIER-STATS]
+  to stderr (import_guard_differential compares stderr LAST LINE). With
+  env -u both: 9/9 green. Product gating is correct; harnesses inherit env.
+
+### ADVERSARIAL AUDIT VERDICT: REJECT (deleg_2f2f5aa5 task 0, read-only)
+- BLOCKER A `crates/ap-run/src/bytecode_interp.rs:238-263,1406-1415`:
+  ic_attr_fill can record ClassValue for an instance receiver when the
+  class has member x AND the instance dict has x; the hit arm serves the
+  cached class value with no instance-dict re-probe (instance dict must
+  win). Stamps do not bump on instance-dict writes.
+- BLOCKER B `bytecode_interp.rs:1364-1405,243-245`: BindFunc hit mints a
+  stale class method after `c.m = lambda` because attr_set on a user
+  instance bumps no class stamp and the hit arm never re-probes o.attrs.
+- HIGH `crates/ap-run/tests/ic_invalidation.rs:422`: the no-GIL gate asserts
+  absence of "TEAR" but the probe emits "FREEZE" (line 376) — vacuous.
+  Worker-count floor 4*10000 of 4*200000 also too weak.
+- HIGH `ic_invalidation.rs:242-302`: stats lines filtered, never parsed; no
+  proof the tested shape routed through bytecode/IC. A fallback would pass.
+- Also: incomplete bump-point audit (classes.rs 10 direct dict.set sites),
+  duplicated descriptor/bind helpers (master.md forbids semantic
+  duplication), perf report numbers are pre-rebase and dict.get gain
+  credited to IC despite chit=0, absolute 30ns/60ns targets NOT met.
+- Orchestrator probes at the leaf binary: ic_probe_shadow.py and
+  ic_probe_shadow_fn2.py returned SHADOW-X 42 / SHADOW-M instance-lambda
+  on bytecode, tree0 and CPython 3.14 — but ahit=0, so the audit BLOCKERs
+  are NOT yet reproduced on a genuine IC hit. A repair leaf must prove
+  ahit>0 before patching.
+
+### Dispatched repair wave (deleg_8376bec8, both background)
+- Leaf A (sa-0-e787e037) worktree `leaf-fp-inlinecache`, branch ic2-attempt
+  @ a0fc09d: prove or refute the two BLOCKERs with an ahit>0 probe; if
+  reproduced, re-probe o.attrs on ClassValue/BindFunc hits; fix FREEZE
+  assertion + add two shadowing regression gates; re-run 21 suites,
+  fix_bytecode 13/13, conform 50/50 + 48/48; commit on ic2-attempt.
+- Leaf B (sa-1-10102d2a) worktree `leaf-fp-gate-env`, branch fp-gate-env off
+  main: shared APX_* diagnostic env sanitizer + strip_diagnostic_lines for
+  ap-run/ap-cli differential harnesses; verify under simulated env leak.
+
+### Other landed work
+- `fp-rollout-matrix-design` @ bb2731e (worktree leaf-fp-rollout):
+  docs/fast-path-rollout-matrix-design.md, 159 lines. Key finding: the
+  plan's "bytecode fn → tier-1 fn → bytecode fn" composition is UNREACHABLE
+  today — tier mode is one thread-local and bytecode dispatch is checked
+  before JIT; `jit` is an alias of `adaptive`. The missing per-function
+  dispatch seam is a prerequisite for rollout step 1.
+
+### Do NOT merge until
+1. Leaf A reports; BLOCKERs reproduced-and-fixed (or disproved with ahit>0
+   evidence) and its gates re-run green on its own branch.
+2. Leaf B reports; decide whether gate sanitizer merges before or after
+   ic2-attempt (both touch test harnesses — check overlap first).
+3. Re-verify first-hand on a FRESH CARGO_TARGET_DIR; then merge to main.
+4. Dispatch fp-superinstructions (worktree leaf-fp-superinst, branch
+   tier1-fp-superinst-prep, created at 2c2648b) only after the merge.
+
+Disk at 14:01: 51 GB free / 927 GB (95%). One heavy cargo lane only.
