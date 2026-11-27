@@ -490,6 +490,10 @@ mod tests {
         // must yield exactly one frame and stop.
         let mut buf = [0usize; 4];
         let base = buf.as_mut_ptr() as usize;
+        // SAFETY: `base` is a live local buffer this test owns for the whole
+        // walk; the two writes build one synthetic frame trailer inside it and
+        // the null saved-fp terminates the chain on the first frame, so the
+        // walker dereferences only this buffer.
         unsafe {
             *(base as *mut usize) = 0; // saved fp: null => terminator
             *((base + 8) as *mut usize) = 0x0000_5aa3; // return address
@@ -507,6 +511,10 @@ mod tests {
         let mut buf = [0usize; 4];
         let base = buf.as_mut_ptr() as usize;
         let bogus = base.wrapping_sub(0x1000); // "caller" below us
+                                               // SAFETY: `base` addresses a live local buffer owned for the
+                                               // whole walk; the written link is deliberately below the
+                                               // current fp, so the monotonic guard stops before
+                                               // dereferencing it — only this buffer is read.
         unsafe {
             *(base as *mut usize) = bogus;
             *((base + 8) as *mut usize) = 0x0000_5aa4;
@@ -525,6 +533,9 @@ mod tests {
         let n = 64usize;
         let mut buf = vec![0usize; n * 2];
         let base = buf.as_mut_ptr() as usize;
+        // SAFETY: every fp the chain links to (base + i*16, i < n) is inside
+        // this live n*2-usize heap buffer the test owns for the walk's
+        // duration; the terminating link is null.
         unsafe {
             for i in 0..n {
                 let fp = base + i * 16;
@@ -553,6 +564,9 @@ mod tests {
         let base = buf.as_mut_ptr() as usize;
         let ra = 0x0000_5aa6usize;
         register_safepoint(ra, vec![StackRootSlot { fp_offset: 24 }]);
+        // SAFETY: `base` addresses a live local buffer owned for the whole
+        // walk; the written trailer builds one frame with a null caller link,
+        // so only this buffer is dereferenced.
         unsafe {
             *(base as *mut usize) = 0; // null caller link
             *((base + 8) as *mut usize) = ra;
@@ -564,6 +578,9 @@ mod tests {
         // An unmapped frame is counted, not reported.
         let mut buf2 = [0usize; 4];
         let base2 = buf2.as_mut_ptr() as usize;
+        // SAFETY: same shape as the block above — a live local buffer holds
+        // one synthetic frame (null caller link), so the walk stays inside
+        // this test's memory.
         unsafe {
             *(base2 as *mut usize) = 0;
             *((base2 + 8) as *mut usize) = 0x0000_0c0f_fee0_usize & 0xffff_ffff;

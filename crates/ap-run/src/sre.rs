@@ -1737,6 +1737,9 @@ impl<'a> Matcher<'a> {
         if idx == len {
             return k(self, pos, groups);
         }
+        // SAFETY: idx < len (the idx == len arm returned above) and items points at
+        // the first element of a len-element slice of the immutable pattern AST,
+        // which is never mutated during a match, so items.add(idx) derefs a live Node.
         let item: &'a Node = unsafe { &*items.add(idx) };
         let rest = items;
         let rest_len = len;
@@ -1932,6 +1935,9 @@ impl<'a> Matcher<'a> {
 // per level. Sound: the AST is never mutated during a match.
 #[allow(dead_code)] // kept: part of an unfinished surface (robustness-ci 02.x burn-down leaf)
 fn items_rest(items: &[Node], from: usize) -> *const Node {
+    // SAFETY: from <= items.len() (slice bounds of a valid slice); the returned
+    // raw pointer keeps no provenance beyond the slice's own lifetime — callers
+    // (m_seq) only rebuild references while the AST borrow is live.
     unsafe { items.as_ptr().add(from) }
 }
 
@@ -1978,6 +1984,10 @@ impl<'a> Matcher<'a> {
             let mut groups = Groups::new(ngroups);
             let mut result_end: Option<usize> = None;
             {
+                // SAFETY: the pattern AST behind `root` is an immutable borrow that outlives
+                // the match (same never-mutated-AST invariant as m_seq), so extending the
+                // reference to 'a for the duration of self.m keeps it valid. AUDIT: verify
+                // all Matcher<'a> callers pass ASTs living at least 'a.
                 let root2: &'a Node = unsafe { std::mem::transmute(root) };
                 let r = self.m(root2, start, &mut groups, &mut |_m, e, _g| {
                     result_end = Some(e);

@@ -143,6 +143,9 @@ fn aot_run() -> i32 {
     // semantics), not the artifact path. The linker embeds the build-time
     // .py path as a NUL-terminated blob; fall back to argv[0] if absent
     // (defensive — the blob is always emitted by link.rs today).
+    // SAFETY: ap_aot_script_path is emitted by link.rs as NUL-terminated
+    // bytes in the binary's read-only data (always defined by the link
+    // contract), so the scan terminates inside the image.
     let script_path = unsafe {
         let start = std::ptr::addr_of!(ap_aot_script_path) as *const u8;
         let mut end = start;
@@ -174,7 +177,13 @@ fn aot_run() -> i32 {
             // convention).
             let s0 = std::ptr::addr_of!(ap_aot_source);
             let lenp = std::ptr::addr_of!(ap_aot_source_len) as *const u64;
+            // SAFETY: ap_aot_source_len is the u64 length word link.rs
+            // defines beside the source blob (link contract); read_unaligned
+            // because the linker may place the symbol on a non-8-aligned
+            // address.
             let len = unsafe { lenp.read_unaligned() } as usize;
+            // SAFETY: link.rs emits exactly `len` contiguous source bytes at
+            // ap_aot_source (the blob + length + sentinel link contract).
             let source = unsafe {
                 String::from_utf8_lossy(std::slice::from_raw_parts(s0, len)).into_owned()
             };
@@ -202,10 +211,19 @@ fn aot_run() -> i32 {
 fn register_manifest() {
     // Manifest symbol address (relocated by the static linker).
     let base = std::ptr::addr_of!(ap_aot_manifest) as *const u64;
+    // SAFETY: ap_aot_manifest is the u64 row count link.rs emits as the
+    // first word of the manifest blob (read_unaligned: linker placement
+    // makes no alignment promise).
     let count = unsafe { base.read_unaligned() } as usize;
+    // SAFETY: link.rs emits count 64-byte rows (MANIFEST_ROW_SIZE, pinned
+    // by the const assert below) immediately after the count word, in the
+    // binary's read-only data for the process lifetime.
     let rows = unsafe { std::slice::from_raw_parts(base.add(1) as *const ManifestRow, count) };
     let mut entries = Vec::with_capacity(count);
     for row in rows {
+        // SAFETY: qualname_ptr/len come from a row inside the link.rs
+        // manifest blob; the pair names bytes of that same read-only image
+        // (null/zero rows are handled inline).
         let qualname = unsafe {
             let p = row.qualname_ptr as *const u8;
             let n = row.qualname_len as usize;
@@ -215,6 +233,10 @@ fn register_manifest() {
                 String::from_utf8_lossy(std::slice::from_raw_parts(p, n)).into_owned()
             }
         };
+        // SAFETY: names_ptr/len come from a row inside the link.rs manifest
+        // blob and name an array of n 16-byte (ptr, len) pairs, each pair's
+        // ptr living in the same read-only image (null/zero entries handled
+        // inline).
         let names: Vec<String> = unsafe {
             let p = row.names_ptr as *const u8;
             let n = row.names_len as usize;

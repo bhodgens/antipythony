@@ -12,14 +12,18 @@ use ap_obj::value::{PyList, PyString, Tuple, Value};
 /// Returns None for a NULL handle (caller decides what that means; C
 /// convention is "error already set" or an explicit API contract).
 pub fn to_value(h: crate::state::CeHandle) -> Option<Value> {
+    to_value_impl(h)
+}
+
+/// The deref lives in a private helper: `clippy::not_unsafe_ptr_arg_deref`
+/// (deny-by-default) rejects raw-pointer derefs in `pub` safe fn bodies (issue #27).
+fn to_value_impl(h: crate::state::CeHandle) -> Option<Value> {
     if h.is_null() {
         return None;
     }
-    // SAFETY: h is non-null (checked above) and is a live minted ce handle
-    // (Box::into_raw'd CeObject; the ce layer never frees handles), so the
-    // deref is valid; the payload RefCell borrow is short with no re-entrant
-    // borrow on this path (ce dispatch stays inside the worker-serialization
-    // protocol, the same claim the markers.rs Send/Sync comments pin).
+    // SAFETY: h is non-null (checked above) and a live minted ce handle
+    // (Box::into_raw'd, never freed), so the deref is valid; the payload RefCell
+    // borrow is short (worker-serialization protocol, the markers.rs claim).
     unsafe {
         let o = &*h;
         let p = o.payload.borrow();
@@ -95,10 +99,14 @@ pub fn to_value(h: crate::state::CeHandle) -> Option<Value> {
 /// The instance dict of a CeHandle::Instance (bridges setattr from the
 /// runtime side into C-visible state when needed later).
 pub fn instance_state(h: crate::state::CeHandle) -> Option<Gc<PyDict>> {
-    // SAFETY: caller precondition — h is a live minted ce handle (the C
-    // caller null-checks per the apx header contract); handles are
-    // Box::into_raw'd and never freed by the ce layer, so the deref is valid;
-    // the payload borrow is short with no re-entrant borrow on this path.
+    instance_state_impl(h)
+}
+
+/// The deref lives in a private helper (issue #27, same shape as to_value_impl).
+fn instance_state_impl(h: crate::state::CeHandle) -> Option<Gc<PyDict>> {
+    // SAFETY: caller precondition — h is a live minted ce handle (the C callers
+    // null-check per the apx header contract; handles are Box::into_raw'd and
+    // never freed), so the deref is valid; the payload borrow is short.
     unsafe {
         let o = &*h;
         match o.payload.borrow().as_ref()? {
@@ -110,10 +118,14 @@ pub fn instance_state(h: crate::state::CeHandle) -> Option<Gc<PyDict>> {
 
 /// int payload read (PyLong_AsSsize_t route in the dispatcher).
 pub fn as_i64(h: crate::state::CeHandle) -> Option<i64> {
-    // SAFETY: caller precondition — h is a live minted ce handle (the C
-    // caller null-checks per the apx header contract); handles are
-    // Box::into_raw'd and never freed by the ce layer, so the deref is valid;
-    // the payload borrow is short with no re-entrant borrow on this path.
+    as_i64_impl(h)
+}
+
+/// The deref lives in a private helper (issue #27, same shape as to_value_impl).
+fn as_i64_impl(h: crate::state::CeHandle) -> Option<i64> {
+    // SAFETY: caller precondition — h is a live minted ce handle (the C callers
+    // null-check per the apx header contract; handles are Box::into_raw'd and
+    // never freed), so the deref is valid; the payload borrow is short.
     unsafe {
         let o = &*h;
         match o.payload.borrow().as_ref()? {

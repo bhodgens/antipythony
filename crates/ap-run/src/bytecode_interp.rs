@@ -65,7 +65,6 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use ap_bytecode::caches::{AttrPlan, CallPlan, IC_MAGIC};
 use ap_bytecode::code::CodeObject;
 use ap_bytecode::instr::{BinKind, CompareOp, Instr, UnaryKind};
 use ap_bytecode::pool::Const;
@@ -75,7 +74,6 @@ use ap_obj::value::{PyList, PyString, Tuple, Value};
 
 use crate::exc_hier::ExceptionValue;
 use crate::frame::{FnEntry, Frame, Interpreter, Loc};
-use crate::ic::IcTable;
 use crate::iter::IterState;
 use crate::Flow;
 
@@ -102,210 +100,6 @@ thread_local! {
     /// THE hot-path line cell (leaf spec: thread-local Cell<u32> written per
     /// instruction; frame atomics touched only at instrument/error points).
     static BC_LINE: Cell<u32> = const { Cell::new(0) };
-    /// Leaf fp-inlinecache: per-(thread, code-ptr) inline-cache tables (see
-    /// crate::ic header for the no-GIL shape). The compiled-body Arc pin
-    /// guarantees the code-ptr key never aliases (the registry holds the
-    /// def Arc for the process); tables die with the thread.
-    static BC_IC: RefCell<HashMap<usize, std::rc::Rc<IcTable>>> = RefCell::new(HashMap::new());
-}
-
-/// IC hit/fill counters (APX_TIER_STATS=1 -> bc_stats_line). Relaxed.
-static IC_GLOBAL_HITS: AtomicU64 = AtomicU64::new(0);
-static IC_GLOBAL_FILL: AtomicU64 = AtomicU64::new(0);
-static IC_ATTR_HITS: AtomicU64 = AtomicU64::new(0);
-static IC_ATTR_FILL: AtomicU64 = AtomicU64::new(0);
-static IC_CALL_HITS: AtomicU64 = AtomicU64::new(0);
-
-/// This thread's cache table for one compiled body (sized once from the
-/// code object's site census).
-fn ic_table_for(code: &Arc<CodeObject>) -> std::rc::Rc<IcTable> {
-    let key = Arc::as_ptr(code) as usize;
-    BC_IC.with(|c| {
-        let mut map = c.borrow_mut();
-        map.entry(key)
-            .or_insert_with(|| {
-                let n = code.sites.len();
-                std::rc::Rc::new(IcTable::sized(n))
-            })
-            .clone()
-    })
-}
-
-/// The site id an instruction at `pc` carries (None = no site on that
-/// instruction). Dense SiteTable::by_instr lookup — O(1).
-#[inline]
-fn ic_site_of(code: &CodeObject, pc: usize) -> Option<u32> {
-    code.sites.site_at(pc as u32)
-}
-
-/// The receiver's class payload for cacheable attr sites: user instances
-/// (their type payload) and user classes (themselves). Primitive receivers
-/// (dict/list/str/..) have no class counter to stamp — None (their reads
-/// ride the value-family fast arms; classes.rs's interned-Type payload
-/// syntheses answer via full walks and stay uncached).
-fn receiver_class_ref(obj: &Value) -> Option<Arc<ap_obj::classes::TypeRef>> {
-    match obj {
-        Value::Obj(o) => match o.kind {
-            ap_obj::ObjKind::UserInstance => o
-                .type_ref
-                .read()
-                .unwrap_or_else(|p| p.into_inner())
-                .as_ref()
-                .and_then(|w| w.upgrade()),
-            ap_obj::ObjKind::UserClass => o
-                .class_ref
-                .read()
-                .unwrap_or_else(|p| p.into_inner())
-                .clone(),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-/// Fill an AttrLoad site from a slow-path answer. Mirrors instance_attr /
-/// class_attr_get's resolution ORDER (classes.rs) to classify the plan;
-/// anything the classifier can't pin to a stamp-guarded surface records
-/// NOTHING (the site stays empty — every read re-walks, exact semantics).
-///
-/// Classification (must match classes.rs instance_attr order):
-/// 1. data descriptor on the class -> NOT cacheable (_descr_get dispatch).
-/// 2. instance dict hit + NOT a class member shadow -> InstDict.
-/// 3. class member: plain Function + not a slot -> BindFunc (func + owner).
-///    Plain non-function member (int/str/obj read off the class or via the
-///    class receiver) -> ClassValue. Any descriptor kind -> NOT cacheable.
-fn ic_attr_fill(ic: &IcTable, site: u32, obj: &Value, name: &str, v: &Value) {
-    // try_borrow_mut fill (None = a nested frame of this same body is
-    // mid-dispatch on this thread — skip; the site re-fills on a later
-    // non-nested miss).
-    let Some(t) = receiver_class_ref(obj) else {
-        return;
-    };
-    let stamps = crate::ic::class_stamps(&t);
-    // Descriptor check FIRST (data descriptor wins over the instance dict —
-    // instance_attr step 1): a property/descriptor answer is dynamic.
-    if let Some((entry, _)) = t.lookup_with_owner(name) {
-        if crate::classes::is_data_descriptor_scratch(&entry) {
-            return;
-        }
-    }
-    let is_inst = matches!(obj, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserInstance);
-    let is_cls = matches!(obj, Value::Obj(o) if o.kind == ap_obj::ObjKind::UserClass);
-    if is_inst {
-        // Instance receiver: step 2 — instance dict supplies it?
-        let in_inst = {
-            let Value::Obj(o) = obj else {
-                return;
-            };
-            o.attrs
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .contains_str(name)
-        };
-        if in_inst && !t.is_slot(name) {
-            // BUT only recordable when the class does NOT supply a member
-            // of this name at all (a class member UNDER an instance-dict
-            // name is shadowed today, but a later C.x = .. would need the
-            // stamps to catch it — they do: names_epoch bumps; still, the
-            // dunder/getattribute surfaces make the classification risky,
-            // so require NO class member for the record — simplest sound
-            // subset, covers the `self.x = ..; read x` loop shape).
-            if t.lookup_with_owner(name).is_none() {
-                let recorded = ic.with_attrs_mut(|attrs| {
-                    let e = &mut attrs[site as usize];
-                    e.magic = IC_MAGIC;
-                    e.plan = AttrPlan::InstDict as u8;
-                    e.type_ptr = stamps.0;
-                    e.type_version = stamps.1;
-                    e.chain_version = stamps.2;
-                    e.names_epoch = stamps.3;
-                    e.owner_ptr = 0;
-                    // InstDict: the VALUE is never cached (the hit
-                    // re-probes the live attrs dict) — leave v = None.
-                    let _ = v;
-                });
-                if recorded.is_some() {
-                    IC_ATTR_FILL.fetch_add(1, Ordering::Relaxed);
-                }
-            }
-            return;
-        }
-    }
-    // Class-member resolution (instance step 3 / class step 2). Only PLAIN
-    // members record: functions (BindFunc for instances; the class
-    // receiver reads the function itself — ClassValue) and non-descriptor
-    // values (ClassValue).
-    if let Some((entry, owner)) = t.lookup_with_owner(name) {
-        let descr = crate::classes::descriptor_kind_pub(&entry);
-        if descr.is_some() {
-            return; // dynamic surface
-        }
-        let is_plain_fn = matches!(&entry, Value::Obj(fo) if fo.kind == ap_obj::ObjKind::Function);
-        let plan = if is_inst && is_plain_fn && !t.is_slot(name) {
-            AttrPlan::BindFunc
-        } else if is_cls || is_inst {
-            // Class receiver reading its member (the value IS the answer)
-            // or an instance reading a non-function plain member.
-            AttrPlan::ClassValue
-        } else {
-            return;
-        };
-        let recorded = ic.with_attrs_mut(|attrs| {
-            let e = &mut attrs[site as usize];
-            e.magic = IC_MAGIC;
-            e.plan = plan as u8;
-            e.type_ptr = stamps.0;
-            e.type_version = stamps.1;
-            e.chain_version = stamps.2;
-            e.names_epoch = stamps.3;
-            e.owner_ptr = Arc::as_ptr(&owner) as usize as u64;
-            e.v = entry.clone();
-        });
-        if recorded.is_some() {
-            IC_ATTR_FILL.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-    // No class member, no instance-dict hit: the answer came from a
-    // dynamic surface (object virtuals, __getattr__, ...) — record nothing.
-}
-
-/// The value-family tag of a primitive receiver (the LoadAttrCall dispatch
-/// key — same mapping as the arm's inline match; a fn so the fill helper
-/// shares it).
-fn tag_of(recv: &Value) -> Option<&'static str> {
-    match recv {
-        Value::Str(_) => Some("pystr"),
-        Value::Dict(_) => Some("pydict"),
-        Value::List(_) => Some("pylist"),
-        Value::Bytes(_) => Some("pybytes"),
-        Value::Int(_) | Value::Bool(_) => Some("pyint"),
-        Value::Set(_) | Value::Frozen(_) => Some("pyset"),
-        Value::Tuple(_) => Some("pytuple"),
-        Value::Float(_) => Some("pyfloat"),
-        _ => None,
-    }
-}
-
-/// A borrowed attr-entry view for the consult arms (the fields the plan
-/// dispatch reads after the stamps validated).
-struct AttrHitView {
-    plan: u8,
-    owner_ptr: u64,
-    v: Value,
-}
-
-/// Record a fused-call dispatcher decision (leaf fp-inlinecache). Only the
-/// routing memoizes — the decision is a pure function of (tag, name, argc),
-/// all re-derived at each hit, so there is no invalidation surface.
-fn ic_call_fill(ic: &IcTable, site: u32, argc: u16, plan: CallPlan) {
-    // Same try_borrow_mut discipline as ic_attr_fill (nested fills skip).
-    let _ = ic.with_calls_mut(|calls| {
-        debug_assert!((site as usize) < calls.len(), "ic call site OOB");
-        let e = &mut calls[site as usize];
-        e.magic = IC_MAGIC;
-        e.plan = plan as u8;
-        e.argc = argc;
-    });
 }
 
 /// Exercise counters (APX_TIER_STATS=1 -> bc_stats_line). Transparency
@@ -323,17 +117,11 @@ pub fn bc_stats_line() -> Option<String> {
     let compiles = BC_COMPILES.load(Ordering::Relaxed);
     let fallbacks = BC_FALLBACKS.load(Ordering::Relaxed);
     let execs = BC_EXECS.load(Ordering::Relaxed);
-    let gh = IC_GLOBAL_HITS.load(Ordering::Relaxed);
-    let gf = IC_GLOBAL_FILL.load(Ordering::Relaxed);
-    let ah = IC_ATTR_HITS.load(Ordering::Relaxed);
-    let af = IC_ATTR_FILL.load(Ordering::Relaxed);
-    let ch = IC_CALL_HITS.load(Ordering::Relaxed);
     if compiles == 0 && fallbacks == 0 && execs == 0 {
         return None;
     }
     Some(format!(
-        "[BC-STATS] compiles={compiles} fallbacks={fallbacks} execs={execs} \
-         ic: ghit={gh} gfill={gf} ahit={ah} afill={af} chit={ch}"
+        "[BC-STATS] compiles={compiles} fallbacks={fallbacks} execs={execs}"
     ))
 }
 
@@ -440,6 +228,298 @@ fn sync_frame_line(frame: &Frame, line: u32) {
 
 fn raise_flow(class: &str, msg: impl Into<String>) -> Flow {
     Flow::Raise(ExceptionValue::msg(class, msg))
+}
+
+// ===========================================================================
+// fp-exceptions: the in-flight exception machinery (bytecode-mode mirror of
+// exec_try's handler protocol). ONE parked-exception slot per thread — the
+// CheckExcept/PopExc/Raise ops consult it; no cost on non-exception paths.
+// ===========================================================================
+
+thread_local! {
+    /// The parked exception between the unwind and the handler's
+    /// CheckExcept (None whenever no bytecode try is mid-catch). The
+    /// PRE-handler current_exception rides alongside (the handler body's
+    /// raises chain against it — exec_try's exact current_exception
+    /// save/restore protocol), plus the tb_frames snapshot base for the
+    /// handled-path truncate (exec_try's tb_snapshot discipline).
+    static BC_PARKED_EXC: RefCell<Option<(ExceptionValue, Option<ExceptionValue>, usize)>> =
+        const { RefCell::new(None) };
+}
+
+/// Park an arriving exception at the handler boundary (arc unwind).
+/// Mirrors exec_try's catch-entry tb work: the interpreter-wide tb_frames
+/// is first truncated back to THIS frame's entry base (`tb_base` —
+/// dropping the callee frame-exit pushes the raising unwind accumulated;
+/// exec_try's tb_snapshot discipline — callee frames die with the
+/// exception), then the CATCHING frame's entry is prepended (raise_line
+/// when the tb is empty — the W112 raise-line pin — else this frame's
+/// current line), deduped; the snapshot rides the park for the
+/// handled-path truncate (PopExc).
+fn exc_enter(interp: &Arc<Interpreter>, frame: &Arc<Frame>, exc: ExceptionValue, tb_base: usize) {
+    let prev = interp
+        .current_exception
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
+        .map(|a| (*a).clone());
+    // exec_try's tb_snapshot: the frame's entry base (callee pushes die).
+    {
+        let mut d = interp.tb_frames.lock().unwrap_or_else(|p| p.into_inner());
+        let at = tb_base.min(d.len());
+        let _ = d.split_off(at);
+    }
+    let tb_snapshot = tb_base;
+    BC_PARKED_EXC.with(|c| {
+        *c.borrow_mut() = Some((exc.clone(), prev, tb_snapshot));
+    });
+    *interp
+        .current_exception
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) = Some(Arc::new(exc.clone()));
+    // exec_try's catch-entry insert (W112 block): the catching frame's
+    // traceback entry, outermost-first.
+    let line = if exc.tb.is_empty() && exc.raise_line > 0 {
+        exc.raise_line.max(1)
+    } else {
+        frame.last_line.get().max(1)
+    };
+    let file = frame
+        .globals
+        .get(&Value::Str(PyString::new("__file__")))
+        .and_then(|fv| match fv {
+            Value::Str(s) => Some(s.as_str().to_string()),
+            _ => None,
+        })
+        .unwrap_or_else(|| interp.script_path.clone());
+    let already = exc
+        .tb
+        .first()
+        .is_some_and(|(q, l, f)| q == &frame.qualname && *l == line && f == &file);
+    if !already {
+        // exc is already parked/current — mutate the parked copy too.
+        let mut exc2 = exc;
+        exc2.tb
+            .insert(0, (frame.qualname.clone(), line, file.clone()));
+        interp
+            .tb_frames
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push_front((frame.qualname.clone(), line, file));
+        *interp
+            .current_exception
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(Arc::new(exc2.clone()));
+        BC_PARKED_EXC.with(|c| {
+            if let Some(slot) = &mut *c.borrow_mut() {
+                slot.0 = exc2;
+            }
+        });
+    }
+}
+
+/// CheckExcept (typed matcher): peek the parked exception, evaluate
+/// `matches` via the shared exc_matches route (the same MRO/tuple/bare
+/// semantics the walker's exec_try uses), pop the type expr, push the
+/// instance (or None filler) on match. Err(raise) = the type-expr
+/// evaluation raised (catch-time TypeError etc.).
+fn check_except(interp: &Arc<Interpreter>, ty: &Value) -> Result<Value, Flow> {
+    let parked = BC_PARKED_EXC.with(|c| c.borrow().as_ref().map(|(e, _, _)| e.clone()));
+    let Some(exc) = parked else {
+        return Err(raise_flow(
+            "SystemError",
+            "CheckExcept with no parked exception",
+        ));
+    };
+    let matches = crate::interp::exc_matches_pub(interp, ty, &exc)?;
+    if matches {
+        Ok(exception_instance_value(&exc))
+    } else {
+        Ok(Value::None) // filler: the dispatch arm discards it (no-match arc)
+    }
+}
+
+/// CheckExceptBare: always matches; pushes the instance.
+fn check_except_bare() -> Value {
+    let parked = BC_PARKED_EXC.with(|c| c.borrow().as_ref().map(|(e, _, _)| e.clone()));
+    match parked {
+        Some(exc) => exception_instance_value(&exc),
+        None => Value::None,
+    }
+}
+
+/// PopExc { unbind_slot }: pop the park (restoring the pre-try
+/// current_exception + truncating tb_frames to the snapshot — the handled
+/// path's raising frames die with the handled exception) and unbind the
+/// except-as name.
+fn pop_exc(
+    interp: &Arc<Interpreter>,
+    frame: &Frame,
+    unbind_slot: u16,
+    locals: &mut [Option<Value>],
+    code: &CodeObject,
+) {
+    let saved = BC_PARKED_EXC.with(|c| c.borrow_mut().take());
+    if let Some((_, prev, tb_snapshot)) = saved {
+        {
+            let mut d = interp.tb_frames.lock().unwrap_or_else(|p| p.into_inner());
+            let at = tb_snapshot.min(d.len());
+            let _ = d.split_off(at);
+        }
+        *interp
+            .current_exception
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = prev.map(Arc::new);
+    }
+    if unbind_slot != u16::MAX {
+        if let Some(name) = code.local_names.get(unbind_slot as usize) {
+            let _ = frame.delete_name(name);
+            if (unbind_slot as usize) < locals.len() {
+                locals[unbind_slot as usize] = None;
+            }
+        }
+    }
+}
+
+/// Raise { mode }: the tree-walker's Stmt::Raise arm semantics — bare
+/// re-raise (in-flight/current), value raise, or `raise X from Y`
+/// chaining. raise_line = the frame's synced last_line.
+fn raise_op(
+    interp: &Arc<Interpreter>,
+    frame: &Frame,
+    mode: u8,
+    exc_val: Option<Value>,
+    cause_val: Option<Value>,
+) -> Result<Flow, Flow> {
+    // Bare raise (mode 2): re-raise current/in-flight.
+    let Some(v) = exc_val else {
+        let inflight = interp
+            .current_exception
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+            .map(|a| (*a).clone());
+        let mut e = match inflight {
+            Some(prev) => prev,
+            None => {
+                return Err(raise_flow(
+                    "RuntimeError",
+                    "No active exception to re-raise",
+                ))
+            }
+        };
+        e.raise_line = frame.last_line.get();
+        return Ok(Flow::Raise(e));
+    };
+    let mut e = crate::interp::raise_from_value_pub(&v)?;
+    if mode == 1 {
+        if let Some(cv) = cause_val {
+            let cause = if matches!(cv, Value::None) {
+                None // raise X from None suppresses context (S-06-8)
+            } else {
+                Some(Box::new(crate::interp::raise_from_value_pub(&cv)?))
+            };
+            e.cause = cause;
+            // CPython pin: `from Y` does NOT clear __context__ — the
+            // implicit chain stays; __suppress_context__=True hides it
+            // from the render. from None chains too.
+            if e.context.is_none() {
+                if let Some(prev) = interp
+                    .current_exception
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone()
+                {
+                    let prev = (*prev).clone();
+                    if prev.class != "StopIteration" || !prev.args.is_empty() {
+                        e.context = Some(Box::new(prev));
+                    }
+                }
+            }
+            if let Some(Value::Obj(io)) = &e.instance {
+                let mut a = io.attrs.lock().unwrap_or_else(|p| p.into_inner());
+                if let Some(ctx) = &e.context {
+                    let _ = a.set(
+                        Value::Str(PyString::new("__context__")),
+                        crate::interp::exception_instance_pub(ctx),
+                    );
+                }
+                if let Some(cause) = &e.cause {
+                    let _ = a.set(
+                        Value::Str(PyString::new("__cause__")),
+                        crate::interp::exception_instance_pub(cause),
+                    );
+                }
+                let _ = a.set(
+                    Value::Str(PyString::new("__suppress_context__")),
+                    Value::Bool(true), // any explicit `from` suppresses
+                );
+            }
+            e.raise_line = frame.last_line.get();
+            return Ok(Flow::Raise(e));
+        }
+    }
+    // Implicit __context__ chaining AT RAISE TIME (mode 0/2) — the walker
+    // Raise arm's exact fp-exceptions block (single-sourced semantics).
+    if e.context.is_none() && e.cause.is_none() {
+        if let Some(prev) = interp
+            .current_exception
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+        {
+            let prev = (*prev).clone();
+            // Self-chain guard (re-raise must not chain itself — infinite
+            // render recursion); identical to the walker Raise arm.
+            let same_inst = e
+                .instance
+                .as_ref()
+                .zip(prev.instance.as_ref())
+                .map(|(a, b)| match (a, b) {
+                    (Value::Obj(x), Value::Obj(y)) => std::sync::Arc::ptr_eq(x, y),
+                    _ => false,
+                })
+                .unwrap_or(false);
+            let is_same = same_inst
+                || (e.instance.is_none()
+                    && prev.instance.is_none()
+                    && e.class == prev.class
+                    && e.raise_line == prev.raise_line
+                    && e.args.len() == prev.args.len());
+            if !is_same && (prev.class != "StopIteration" || !prev.args.is_empty()) {
+                e.context = Some(Box::new(prev));
+            }
+        }
+    }
+    if e.context.is_some() || e.cause.is_some() {
+        if let Some(Value::Obj(io)) = &e.instance {
+            let mut a = io.attrs.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(ctx) = &e.context {
+                let _ = a.set(
+                    Value::Str(PyString::new("__context__")),
+                    crate::interp::exception_instance_pub(ctx),
+                );
+            }
+            if let Some(cause) = &e.cause {
+                let _ = a.set(
+                    Value::Str(PyString::new("__cause__")),
+                    crate::interp::exception_instance_pub(cause),
+                );
+            }
+            let _ = a.set(
+                Value::Str(PyString::new("__suppress_context__")),
+                Value::Bool(e.cause.is_some()),
+            );
+        }
+    }
+    e.raise_line = frame.last_line.get();
+    Ok(Flow::Raise(e))
+}
+
+/// Materialize the handler-bound exception instance (exception_instance's
+/// route — the same Value the walker binds to `except E as e`).
+fn exception_instance_value(exc: &ExceptionValue) -> Value {
+    crate::interp::exception_instance_pub(exc)
 }
 
 // ===========================================================================
@@ -636,6 +716,14 @@ fn run_frame(
     let mut stack: Vec<Value> = Vec::with_capacity(8);
     let mut pc: usize = 0;
     let mut cur_line: u32 = c.dense_lines.first().copied().unwrap_or(1);
+    // fp-exceptions: the interpreter-wide tb_frames length at frame ENTRY —
+    // exc_enter truncates back to this before snapshotting (the callee
+    // frame-exit pushes of the raising unwind die with the exception).
+    let tb_base = interp
+        .tb_frames
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .len();
     // Registered even-id iterators this frame created (GetIter) — pruned at
     // frame exit (break/unwind AND exhaustion both drop their entries inside
     // pull_iter; this covers the BREAK/mid-stream exits, the G1 discipline).
@@ -644,12 +732,6 @@ fn run_frame(
     // iterator Arc, matched against the peeked stack handle by pointer
     // identity — skips the iterators-table Mutex on every loop step.
     let mut cached_it: Option<std::sync::Arc<crate::iter::PyIterator>> = None;
-    // Leaf fp-inlinecache: this thread's per-code cache table (shared Rc
-    // across frames of the same body on this thread; filled on miss). The
-    // local binding must stay MUTABLE and unique for fills — `ic` is the
-    // only Rc handle on this thread's stack during dispatch (the map holds
-    // its own clone).
-    let ic = ic_table_for(code);
 
     // Macro: propagate a helper failure as (current line, flow) so the exit
     // path can sync the frame line before the traceback is built. The macro
@@ -664,9 +746,41 @@ fn run_frame(
             ($r:expr) => {
                 match $r {
                     Ok(v) => v,
-                    Err(f) => break 'dispatch Err((cur_line, f)),
+                    Err(f) => {
+                        // fp-exceptions: a RAISE in flight routes through
+                        // this frame's exception table (zero-cost until
+                        // raised). No arc -> propagate (frame Err exit).
+                        if let Flow::Raise(ref exc) = f {
+                            if let Some(entry) = code.excs.find_handler(pc as u32) {
+                                stack.truncate(entry.stack_depth as usize);
+                                exc_enter(interp, frame, exc.clone(), tb_base);
+                                pc = entry.handler as usize;
+                                continue 'dispatch;
+                            }
+                        }
+                        break 'dispatch Err((cur_line, f));
+                    }
                 }
             };
+        }
+        // fp-exceptions: route an INLINE-CONSTRUCTED raise through the
+        // exception table (same arc lookup hop! does) — LoadAttr's
+        // AttributeError, the unbound-load NameError family, GetIter's
+        // TypeError, the fast LoadAttrCall arms all construct their errors
+        // inline and must reach the handler like helper raises do.
+        macro_rules! raise_or_propagate {
+            ($f:expr) => {{
+                let f = $f;
+                if let Flow::Raise(ref exc) = f {
+                    if let Some(entry) = code.excs.find_handler(pc as u32) {
+                        stack.truncate(entry.stack_depth as usize);
+                        exc_enter(interp, frame, exc.clone(), tb_base);
+                        pc = entry.handler as usize;
+                        continue 'dispatch;
+                    }
+                }
+                break 'dispatch Err((cur_line, f));
+            }};
         }
         macro_rules! pop {
             () => {
@@ -748,14 +862,11 @@ fn run_frame(
                             .get(s)
                             .map(|n| n.as_str())
                             .unwrap_or("<slot>");
-                        break Err((
-                            cur_line,
-                            raise_flow(
-                                "UnboundLocalError",
-                                format!(
-                                    "cannot access local variable '{name}' where it is not \
-                                     associated with a value"
-                                ),
+                        raise_or_propagate!(raise_flow(
+                            "UnboundLocalError",
+                            format!(
+                                "cannot access local variable '{name}' where it is not \
+                                 associated with a value"
                             ),
                         ));
                     }
@@ -796,71 +907,14 @@ fn run_frame(
                 // emits LoadGlobal only for names with no slot — closure
                 // reads of enclosing locals resolve through the free-cell
                 // wiring exactly as the walker does.
-                //
-                // INLINE CACHE (leaf fp-inlinecache): module/builtin reads
-                // resolve from the (globals, builtins) dict pair; the cache
-                // stamps that pair's epochs + identity, so a warm hit is
-                // two epoch loads + two ptr compares + a direct unpack.
-                // LookupName chain shapes (closure cells, class-ns frames,
-                // the T1-d module-globals/exc-class fallbacks) are NOT
-                // cacheable — they record nothing and stay fully dynamic.
                 let name = code
                     .names
                     .get(idx as usize)
                     .map(|n| n.as_str())
                     .unwrap_or("<name>");
-                if let Some(site) = ic_site_of(code, pc) {
-                    let g_epoch = frame.globals.mutation_epoch();
-                    let b_epoch = interp.builtins.mutation_epoch();
-                    let g_ptr = crate::ic::gc_ptr(&frame.globals);
-                    let b_ptr = crate::ic::gc_ptr(&interp.builtins);
-                    let hit = ic.with_globals(|g| {
-                        debug_assert!((site as usize) < g.len(), "ic global site OOB");
-                        g[site as usize].is_hit(g_epoch, b_epoch, g_ptr, b_ptr)
-                    });
-                    if let Some(v) = hit {
-                        IC_GLOBAL_HITS.fetch_add(1, Ordering::Relaxed);
-                        stack.push(v);
-                        pc += 1;
-                        continue;
-                    }
-                    match crate::interp::lookup_name_pub(interp, frame, name) {
-                        Ok(v) => {
-                            // Recordable = answered from the dict pair. The
-                            // cheap probe: the name present in globals OR
-                            // builtins right now — that's exactly where the
-                            // chain found it (locals/cells/class-ns would
-                            // have made it unbound in the FRAME map the
-                            // lowerer proves absent; module-globals/exc
-                            // fallbacks answer when BOTH dict probes miss,
-                            // so a present-check mirrors the provenance).
-                            let recordable = frame.globals.contains_str(name)
-                                || interp.builtins.contains_str(name);
-                            if recordable {
-                                let recorded = ic.with_globals_mut(|g| {
-                                    let e = &mut g[site as usize];
-                                    e.magic = IC_MAGIC;
-                                    e.kind = ap_bytecode::caches::global_kind::POSITIVE;
-                                    e.globals_epoch = g_epoch;
-                                    e.builtins_epoch = b_epoch;
-                                    e.globals_ptr = g_ptr;
-                                    e.builtins_ptr = b_ptr;
-                                    e.v = v.clone();
-                                });
-                                if recorded.is_some() {
-                                    IC_GLOBAL_FILL.fetch_add(1, Ordering::Relaxed);
-                                }
-                            }
-                            stack.push(v);
-                            pc += 1;
-                        }
-                        Err(f) => break Err((cur_line, f)),
-                    }
-                } else {
-                    let v = hop!(crate::interp::lookup_name_pub(interp, frame, name));
-                    stack.push(v);
-                    pc += 1;
-                }
+                let v = hop!(crate::interp::lookup_name_pub(interp, frame, name));
+                stack.push(v);
+                pc += 1;
             }
             Instr::StoreGlobal(idx) => {
                 // Module-namespace store. Unreachable for bytecode-routed
@@ -967,7 +1021,7 @@ fn run_frame(
             }
 
             // ---- attribute / subscript (instrument ops) --------------------
-            Instr::LoadAttr { idx, site } => {
+            Instr::LoadAttr { idx, .. } => {
                 sync_frame_line(frame, cur_line);
                 let obj = pop!();
                 let name = code
@@ -975,122 +1029,6 @@ fn run_frame(
                     .get(idx as usize)
                     .map(|n| n.as_str())
                     .unwrap_or("<attr>");
-                // INLINE CACHE (leaf fp-inlinecache): user-class receiver
-                // reads (the c.x / c.m loop shape). The entry stamps the
-                // receiver's class payload identity + type_version +
-                // chain_surgery_version + names-dict epoch; a warm hit is
-                // four stamp compares + the plan's direct answer. Primitive
-                // receivers ride fast_bound_mint below (their method tables
-                // are value-family constants — no class counter to stamp).
-                let mut ic_answered = false;
-                if let Some(t) = receiver_class_ref(&obj) {
-                    let stamps = crate::ic::class_stamps(&t);
-                    let plan_hit = ic.with_attrs(|attrs| {
-                        debug_assert!((site as usize) < attrs.len(), "ic attr site OOB");
-                        let e = &attrs[site as usize];
-                        if !e.stamps_valid(stamps.0, stamps.1, stamps.2, stamps.3) {
-                            return None;
-                        }
-                        Some((e.plan, e.owner_ptr, e.v.clone()))
-                    });
-                    if let Some((plan, owner_ptr, cached_v)) = plan_hit {
-                        let e = AttrHitView {
-                            plan,
-                            owner_ptr,
-                            v: cached_v,
-                        };
-                        match e.plan {
-                            p if p == AttrPlan::InstDict as u8 => {
-                                // Instance-dict supplies the name. The VALUE
-                                // re-probes (one lock probe, no walk): the
-                                // entry caches the class-level RESOLUTION
-                                // (name answered by the instance dict under
-                                // these class stamps), not the value — an
-                                // `o.x = new` rebind re-reads correctly even
-                                // though no class counter moved.
-                                let v = match &obj {
-                                    Value::Obj(o) => o
-                                        .attrs
-                                        .lock()
-                                        .unwrap_or_else(|p| p.into_inner())
-                                        .get(&Value::Str(PyString::new(name))),
-                                    _ => None,
-                                };
-                                if let Some(v) = v {
-                                    IC_ATTR_HITS.fetch_add(1, Ordering::Relaxed);
-                                    stack.push(v);
-                                    pc += 1;
-                                    ic_answered = true;
-                                }
-                                // None = the name vanished from the attrs
-                                // dict without a class-stamp change (a del
-                                // route that bypasses the stamps — instance
-                                // dict pops don't bump class counters). The
-                                // cached CLASS resolution is now wrong: fall
-                                // through to the slow path, which answers
-                                // AttributeError or the class member — and
-                                // the miss below REFILLS with the fresh
-                                // plan (overwriting the stale entry).
-                            }
-                            p if p == AttrPlan::BindFunc as u8 => {
-                                // The MRO supplies a plain function (the
-                                // cached answer). Mint the BoundMethod
-                                // FRESH per read (CPython identity pin:
-                                // c.m is c.m is False — never cache the
-                                // mint), with the DEFINING class as the
-                                // method owner (zero-arg super() start,
-                                // S-03-18). The entry stores the function
-                                // Value + the defining class's Arc ptr;
-                                // the stamps guarantee the class surface
-                                // is unchanged, and the owner re-derives
-                                // from the LIVE MRO (one scan answering
-                                // only the owner — the function itself
-                                // comes from the entry).
-                                let f = e.v.clone();
-                                if e.owner_ptr != 0 {
-                                    let owner = t
-                                        .lookup_with_owner(name)
-                                        .map(|(_, o)| o)
-                                        .filter(|o| Arc::as_ptr(o) as usize as u64 == e.owner_ptr);
-                                    if let Some(owner_t) = owner {
-                                        let bm = ap_obj::PyObject::with_self(
-                                            ap_obj::ObjKind::BoundMethod,
-                                            name.to_string(),
-                                            obj.clone(),
-                                        );
-                                        *bm.func.lock().unwrap_or_else(|p| p.into_inner()) =
-                                            Some(f);
-                                        *bm.method_owner
-                                            .lock()
-                                            .unwrap_or_else(|p| p.into_inner()) =
-                                            Some(std::sync::Arc::downgrade(&owner_t));
-                                        IC_ATTR_HITS.fetch_add(1, Ordering::Relaxed);
-                                        stack.push(Value::Obj(bm));
-                                        pc += 1;
-                                        ic_answered = true;
-                                    }
-                                    // Owner ptr drifted (stamps passed, so
-                                    // unexpected — belt-and-braces): fall
-                                    // through to the slow walk.
-                                }
-                            }
-                            p if p == AttrPlan::ClassValue as u8 => {
-                                // Plain class-dict member read off a CLASS
-                                // receiver (C.member): value stable under
-                                // the stamps.
-                                let v = e.v.clone();
-                                IC_ATTR_HITS.fetch_add(1, Ordering::Relaxed);
-                                stack.push(v);
-                                pc += 1;
-                                ic_answered = true;
-                            }
-                            _ => {} // unknown plan byte: re-walk
-                        }
-                    }
-                }
-                if ic_answered {
-                    continue;
-                }
                 // FAST MINT (leaf 01-core/01): the per-iteration
                 // `out.append`/`d.get` bound-method read. attr_get's deep
                 // walk costs ~1.7us per mint; this guard covers the exact
@@ -1106,41 +1044,28 @@ fn run_frame(
                     continue;
                 }
                 match crate::interp::attr_get_public(interp, &obj, name) {
-                    Ok(Some(v)) => {
-                        // FILL (miss arm): classify the answer the slow
-                        // path produced and record the plan + stamps. Only
-                        // sound-with-stamps shapes record; everything else
-                        // (descriptors, properties, __getattr__ answers,
-                        // dynamic surfaces) stays uncached — Slow = the
-                        // slot stays empty and every read re-walks.
-                        ic_attr_fill(&ic, site, &obj, name, &v);
-                        stack.push(v);
-                    }
+                    Ok(Some(v)) => stack.push(v),
                     Ok(None) => {
                         // The tree-walker's exact AttributeError shape
                         // (interp.rs Expr::Attribute arm, module suffix
-                        // included). Erroring sites record nothing — the
-                        // AttributeError stays dynamic.
+                        // included).
                         let extra = match &obj {
                             Value::Obj(mo) if mo.kind == ap_obj::ObjKind::Module => {
                                 format!(" (module '{}')", mo.name)
                             }
                             _ => String::new(),
                         };
-                        break Err((
-                            cur_line,
-                            raise_flow(
-                                "AttributeError",
-                                format!(
-                                    "'{}' object has no attribute '{}'{}",
-                                    crate::classes::display_type_name(&obj),
-                                    name,
-                                    extra
-                                ),
+                        raise_or_propagate!(raise_flow(
+                            "AttributeError",
+                            format!(
+                                "'{}' object has no attribute '{}'{}",
+                                crate::classes::display_type_name(&obj),
+                                name,
+                                extra
                             ),
                         ));
                     }
-                    Err(f) => break Err((cur_line, f)),
+                    Err(f) => raise_or_propagate!(f),
                 }
                 pc += 1;
             }
@@ -1256,7 +1181,7 @@ fn run_frame(
                 pc += 1;
             }
 
-            Instr::LoadAttrCall { idx, argc, site } => {
+            Instr::LoadAttrCall { idx, argc } => {
                 // FUSED method call (leaf 01-core/01). Stack: receiver,
                 // then args. Semantics = attr_get + call_value EXACTLY;
                 // the fast arms below are pure routing shortcuts for the
@@ -1279,34 +1204,9 @@ fn run_frame(
                     .get(idx as usize)
                     .map(|n| n.as_str())
                     .unwrap_or("<attr>");
-                // INLINE CACHE (leaf fp-inlinecache): the (receiver tag,
-                // name, argc) -> dispatcher decision memoizes here. The
-                // key re-derives from the live stack receiver each hit
-                // (value-family tags are constants — no mutation, no
-                // version stamp needed); the entry saves only the
-                // tag/classification work on the slow shapes.
-                let recv_tag: Option<&'static str> = match &recv {
-                    Value::Str(_) => Some("pystr"),
-                    Value::Dict(_) => Some("pydict"),
-                    Value::List(_) => Some("pylist"),
-                    Value::Bytes(_) => Some("pybytes"),
-                    Value::Int(_) | Value::Bool(_) => Some("pyint"),
-                    Value::Set(_) | Value::Frozen(_) => Some("pyset"),
-                    Value::Tuple(_) => Some("pytuple"),
-                    Value::Float(_) => Some("pyfloat"),
-                    _ => None,
-                };
-                let cached_plan = ic
-                    .with_calls(|calls| {
-                        debug_assert!((site as usize) < calls.len(), "ic call site OOB");
-                        calls[site as usize].is_hit(argc as u16)
-                    })
-                    .map(|p| {
-                        (
-                            p == CallPlan::PrimValues as u8,
-                            p == CallPlan::CallMethod as u8,
-                        )
-                    });
+                // FAST ARMS — the primitive-receiver method families whose
+                // dispatch is methods::call_method's own match arms (no
+                // dunder walk, no mint).
                 let fast: Option<Result<Value, Flow>> = match (&recv, name) {
                     (Value::List(l), "append") if argc == 1 => {
                         l.append(args[0].clone());
@@ -1345,93 +1245,80 @@ fn run_frame(
                 // single-sourced, only the mint intermediate is bypassed.
                 // Uncovered shapes (user receivers, dunders, module attrs)
                 // fall to the mint route below unchanged.
-                let via_call_method = matches!(
-                    name,
-                    "upper"
-                        | "lower"
-                        | "join"
-                        | "format"
-                        | "partition"
-                        | "encode"
-                        | "translate"
-                        | "__len__"
-                );
-                // The cached decision short-circuits the tag-match +
-                // table-exists probes; the dispatcher call itself is
-                // identical (the cache never answers, only routes).
-                let try_call_method = match cached_plan {
-                    Some((_, cm)) => cm,
-                    None => recv_tag.is_some() && via_call_method,
+                let tag = match &recv {
+                    Value::Str(_) => Some("pystr"),
+                    Value::Dict(_) => Some("pydict"),
+                    Value::List(_) => Some("pylist"),
+                    Value::Bytes(_) => Some("pybytes"),
+                    Value::Int(_) | Value::Bool(_) => Some("pyint"),
+                    Value::Set(_) | Value::Frozen(_) => Some("pyset"),
+                    Value::Tuple(_) => Some("pytuple"),
+                    Value::Float(_) => Some("pyfloat"),
+                    _ => None,
                 };
-                let try_values = match cached_plan {
-                    Some((pv, _)) => pv,
-                    None => match recv_tag {
-                        Some(tag) => {
-                            !via_call_method
-                                && crate::builtins_modules::builtin_value_method_exists_pub(
-                                    tag, name,
-                                )
-                        }
-                        None => false,
-                    },
-                };
-                if try_call_method {
-                    let r = match crate::builtins_modules::current_interp() {
-                        Some(i) => crate::methods::call_method(&i, &recv, name, &args),
-                        None => None,
-                    };
-                    match r {
-                        Some(Ok(v)) => {
-                            if cached_plan.is_none() {
-                                ic_call_fill(&ic, site, argc as u16, CallPlan::CallMethod);
-                            }
-                            stack.push(v);
-                            pc += 1;
-                            continue;
-                        }
-                        Some(Err(f)) => break Err((cur_line, f)),
-                        // call_method answered None = name unknown on
-                        // this receiver. NOT always an AttributeError:
-                        // e.g. dict.set_int_max_str_digits-style marker
-                        // arms return None for shape mismatches. Fall
-                        // through to the generic mint route, whose
-                        // attr_get owns the full AttributeError/None
-                        // semantics.
-                        None => {}
-                    }
-                } else if try_values {
-                    // The call_builtin_values table (pystr.startswith,
-                    // pybytes.split, pyint.bit_length, ...). Receiver
-                    // first — call_builtin_values treats args[0] as recv.
-                    let Some(i) = crate::builtins_modules::current_interp() else {
-                        break Err((
-                            cur_line,
-                            raise_flow("RuntimeError", "no interpreter on this thread"),
-                        ));
-                    };
-                    let _ = &i;
-                    let mut a2: Vec<Value> = Vec::with_capacity(argc + 1);
-                    a2.push(recv.clone());
-                    a2.extend_from_slice(&args);
-                    match crate::builtins_modules::call_builtin_values(
-                        tag_of(&recv).unwrap_or(""),
+                if let Some(tag) = tag {
+                    // str.upper/lower/join/format/partition/encode and
+                    // bytes.translate have DIRECT arms in methods::call_method
+                    // (not the call_builtin_values table) — try that FIRST
+                    // (the exact dispatcher the BoundMethod route uses).
+                    let via_call_method = matches!(
                         name,
-                        &a2,
-                        &[],
-                    ) {
-                        Some(Ok(v)) => {
-                            if cached_plan.is_none() {
-                                ic_call_fill(&ic, site, argc as u16, CallPlan::PrimValues);
+                        "upper"
+                            | "lower"
+                            | "join"
+                            | "format"
+                            | "partition"
+                            | "encode"
+                            | "translate"
+                            | "__len__"
+                    );
+                    if via_call_method {
+                        let r = match crate::builtins_modules::current_interp() {
+                            Some(i) => crate::methods::call_method(&i, &recv, name, &args),
+                            None => None,
+                        };
+                        match r {
+                            Some(Ok(v)) => {
+                                stack.push(v);
+                                pc += 1;
+                                continue;
                             }
-                            stack.push(v);
-                            pc += 1;
-                            continue;
+                            Some(Err(f)) => break Err((cur_line, f)),
+                            // call_method answered None = name unknown on
+                            // this receiver. NOT always an AttributeError:
+                            // e.g. dict.set_int_max_str_digits-style marker
+                            // arms return None for shape mismatches. Fall
+                            // through to the generic mint route, whose
+                            // attr_get owns the full AttributeError/None
+                            // semantics.
+                            None => {}
                         }
-                        Some(Err(f)) => break Err((cur_line, f)),
-                        // Table claims the name but no arm answered
-                        // (marker/subclass shapes) — fall to the generic
-                        // route, identical semantics.
-                        None => {}
+                    } else if crate::builtins_modules::builtin_value_method_exists_pub(tag, name) {
+                        // The call_builtin_values table (pystr.startswith,
+                        // pybytes.split, pyint.bit_length, ...). Receiver
+                        // first — call_builtin_values treats args[0] as recv.
+                        let Some(i) = crate::builtins_modules::current_interp() else {
+                            break Err((
+                                cur_line,
+                                raise_flow("RuntimeError", "no interpreter on this thread"),
+                            ));
+                        };
+                        let _ = &i;
+                        let mut a2: Vec<Value> = Vec::with_capacity(argc + 1);
+                        a2.push(recv.clone());
+                        a2.extend_from_slice(&args);
+                        match crate::builtins_modules::call_builtin_values(tag, name, &a2, &[]) {
+                            Some(Ok(v)) => {
+                                stack.push(v);
+                                pc += 1;
+                                continue;
+                            }
+                            Some(Err(f)) => break Err((cur_line, f)),
+                            // Table claims the name but no arm answered
+                            // (marker/subclass shapes) — fall to the generic
+                            // route, identical semantics.
+                            None => {}
+                        }
                     }
                 }
                 // FALLBACK: mint through the walk + call (two-opcode shape).
@@ -1444,20 +1331,17 @@ fn run_frame(
                             }
                             _ => String::new(),
                         };
-                        break Err((
-                            cur_line,
-                            raise_flow(
-                                "AttributeError",
-                                format!(
-                                    "'{}' object has no attribute '{}'{}",
-                                    crate::classes::display_type_name(&recv),
-                                    name,
-                                    extra
-                                ),
+                        raise_or_propagate!(raise_flow(
+                            "AttributeError",
+                            format!(
+                                "'{}' object has no attribute '{}'{}",
+                                crate::classes::display_type_name(&recv),
+                                name,
+                                extra
                             ),
                         ));
                     }
-                    Err(f) => break Err((cur_line, f)),
+                    Err(f) => raise_or_propagate!(f),
                 };
                 let v = hop!(crate::interp::call_value_frame_pub(
                     interp,
@@ -1822,6 +1706,92 @@ fn run_frame(
             }
             Instr::ReturnNone => break Ok(Value::None),
 
+            // ---- exceptions (leaf fp-exceptions) ------------------------------
+            Instr::Raise { mode } => {
+                // mode 0: raise TOS. mode 1: raise TOS0 from TOS (cause on
+                // top). mode 2: bare raise (no operands — re-raise).
+                sync_frame_line(frame, cur_line);
+                let (exc_val, cause_val) = match mode {
+                    2 => (None, None),
+                    1 => {
+                        let c = pop!();
+                        let e = pop!();
+                        (Some(e), Some(c))
+                    }
+                    _ => {
+                        let e = pop!();
+                        (Some(e), None)
+                    }
+                };
+                let f = raise_op(interp, frame, mode, exc_val, cause_val)?;
+                if let Flow::Raise(ref exc) = f {
+                    if let Some(entry) = code.excs.find_handler(pc as u32) {
+                        stack.truncate(entry.stack_depth as usize);
+                        exc_enter(interp, frame, exc.clone(), tb_base);
+                        pc = entry.handler as usize;
+                        continue 'dispatch;
+                    }
+                }
+                break Err((cur_line, f));
+            }
+            Instr::CheckExcept(target) => {
+                // TOS = the handler's type expr. Parked exc -> match ->
+                // instance push (fall through) | no match -> target arc.
+                sync_frame_line(frame, cur_line);
+                let ty = pop!();
+                let bound = hop!(check_except(interp, &ty));
+                if matches!(bound, Value::None) {
+                    pc = target as usize;
+                } else {
+                    stack.push(bound);
+                    pc += 1;
+                }
+            }
+            Instr::CheckExceptBare => {
+                stack.push(check_except_bare());
+                pc += 1;
+            }
+            Instr::PopExc { unbind_slot } => {
+                pop_exc(interp, frame, unbind_slot, &mut locals, code);
+                pc += 1;
+            }
+            Instr::ResumeUnwind => {
+                // Re-propagate the parked in-flight exception (the
+                // lowerer's finally-unwind epilogue / no-match arc ends
+                // here). Nested-catch consumed the park -> current.
+                let parked = BC_PARKED_EXC.with(|c| c.borrow().as_ref().map(|(e, _, _)| e.clone()));
+                let exc = match parked {
+                    Some(e) => e,
+                    None => {
+                        let cur = interp
+                            .current_exception
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .clone();
+                        match cur {
+                            Some(e) => (*e).clone(),
+                            None => {
+                                break Err((
+                                    cur_line,
+                                    raise_flow(
+                                        "SystemError",
+                                        "ResumeUnwind with no in-flight exception",
+                                    ),
+                                ))
+                            }
+                        }
+                    }
+                };
+                sync_frame_line(frame, cur_line);
+                if let Some(entry) = code.excs.find_handler(pc as u32) {
+                    stack.truncate(entry.stack_depth as usize);
+                    exc_enter(interp, frame, exc, tb_base);
+                    pc = entry.handler as usize;
+                    continue 'dispatch;
+                }
+                break Err((cur_line, Flow::Raise(exc)));
+            }
+
             // ---- fallback marker (entry filters it; never dispatched) ----
             Instr::FallbackToTreeWalk => {
                 break Err((
@@ -1839,6 +1809,15 @@ fn run_frame(
     // header comment — the per-instruction store was removed; observers
     // reading BC_LINE between frames see the last executed line).
     BC_LINE.with(|l| l.set(cur_line));
+    // fp-exceptions: a park left outstanding at frame exit (the exception
+    // propagated OUT of a bytecode handler chain) — the matching tb_frames
+    // entries die with it (exec_try's unwind truncation discipline).
+    let parked_at_exit = BC_PARKED_EXC.with(|c| c.borrow_mut().take());
+    if let Some((_, _, tb_snapshot)) = parked_at_exit {
+        let mut d = interp.tb_frames.lock().unwrap_or_else(|p| p.into_inner());
+        let at = tb_snapshot.min(d.len());
+        let _ = d.split_off(at);
+    }
     // Frame exit: prune every iterator this frame registered (break /
     // return / unwind paths; exhaustion already pruned inside pull_iter).
     // Mirrors the tree-walker Stmt::For exit's table removal (G1).

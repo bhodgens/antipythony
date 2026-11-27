@@ -41,14 +41,7 @@ pub struct SiteTable {
     /// Per-site inline-cache slot array — EMPTY this leaf (02-perf/01
     /// fills it; the interpreter reads slots[site] once caches exist).
     slots: Vec<CacheSlot>,
-    /// Dense instr_idx -> site-id map (leaf fp-inlinecache): one entry per
-    /// instruction, u32::MAX = no site. The dispatch loop indexes THIS to
-    /// find a site in O(1) — a per-hit scan of `sites` would cost more
-    /// than the cache saves.
-    by_instr: Vec<u32>,
 }
-
-const NO_SITE: u32 = u32::MAX;
 
 impl SiteTable {
     pub fn new() -> Self {
@@ -63,12 +56,6 @@ impl SiteTable {
             version: 0,
             payload: 0,
         });
-        // Dense map grows lazily: instr indices can arrive out of order
-        // (alloc-before-emit sites record 0 and are retargeted below).
-        if self.by_instr.len() <= instr_idx as usize {
-            self.by_instr.resize(instr_idx as usize + 1, NO_SITE);
-        }
-        self.by_instr[instr_idx as usize] = id;
         id
     }
 
@@ -77,17 +64,6 @@ impl SiteTable {
     /// index is only known after it is pushed).
     pub fn retarget(&mut self, instr_idx: u32, id: u32) {
         if let Some(info) = self.sites.get_mut(id as usize) {
-            // Move the dense-map entry (the old index, if any, clears).
-            let old = info.instr_idx;
-            if old != instr_idx {
-                if (old as usize) < self.by_instr.len() && self.by_instr[old as usize] == id {
-                    self.by_instr[old as usize] = NO_SITE;
-                }
-                if self.by_instr.len() <= instr_idx as usize {
-                    self.by_instr.resize(instr_idx as usize + 1, NO_SITE);
-                }
-                self.by_instr[instr_idx as usize] = id;
-            }
             info.instr_idx = instr_idx;
         }
     }
@@ -102,17 +78,6 @@ impl SiteTable {
 
     pub fn get(&self, id: u32) -> Option<SiteInfo> {
         self.sites.get(id as usize).copied()
-    }
-
-    /// Dense lookup: which site id sits on the instruction at `instr_idx`
-    /// (None = no site). The dispatch loop's O(1) site finder.
-    pub fn site_at(&self, instr_idx: u32) -> Option<u32> {
-        let id = *self.by_instr.get(instr_idx as usize)?;
-        if id == NO_SITE {
-            None
-        } else {
-            Some(id)
-        }
     }
 
     pub fn slot(&self, id: u32) -> Option<CacheSlot> {

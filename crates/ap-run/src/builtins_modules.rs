@@ -3587,8 +3587,10 @@ pub fn call_math(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Opti
                 }
                 Ok(f(f64::from_bits(ax.to_bits() + 1) - ax))
             }
+            // SAFETY: libc math function cbrt() with a plain f64 argument and f64 return — no pointer or lifetime preconditions.
             "cbrt" => Ok(f(unsafe { sysmath::cbrt(one_f64_arg(args, "cbrt")?) })),
             "erf" => Ok(f(erf(one_f64_arg(args, "erf")?))),
+            // SAFETY: libc math function erfc() with a plain f64 argument and f64 return — no pointer or lifetime preconditions.
             "erfc" => Ok(f(unsafe { sysmath::erfc(one_f64_arg(args, "erfc")?) })),
             "gamma" => gamma_checked(one_f64_arg(args, "gamma")?),
             "lgamma" => {
@@ -3951,6 +3953,7 @@ mod sysmath {
 }
 
 fn erf(x: f64) -> f64 {
+    // SAFETY: libc math function erf() with a plain f64 argument and f64 return — no pointer or lifetime preconditions.
     unsafe { sysmath::erf(x) }
 }
 
@@ -3970,6 +3973,7 @@ fn lgamma(x: f64) -> f64 {
 #[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu"))]
 #[inline]
 fn ln_f64(x: f64) -> f64 {
+    // SAFETY: host libm log() with a plain f64 argument and f64 return — no pointer or lifetime preconditions.
     unsafe { sysmath_ln::log(x) }
 }
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64", target_env = "gnu")))]
@@ -7685,6 +7689,7 @@ impl<'a> JsonParser<'a> {
     fn skip_ws(&mut self) {
         let bytes = self.bytes;
         let mut p = self.pos;
+        // SAFETY: p < bytes.len() is guaranteed by the short-circuit && guard preceding this read; bounds check elided deliberately for the JSON hot loop (perf choice, see issue #22).
         while p < bytes.len() && is_json_ws(unsafe { *bytes.get_unchecked(p) }) {
             p += 1;
         }
@@ -7887,6 +7892,7 @@ impl<'a> JsonParser<'a> {
         {
             let mut p = self.pos;
             while p < bytes.len() {
+                // SAFETY: p < bytes.len() is guaranteed by the enclosing while condition; bounds check elided deliberately for the JSON hot loop (perf choice, see issue #22).
                 let b = unsafe { *bytes.get_unchecked(p) };
                 if b == b'"' {
                     let text = self.doc[self.pos..p].to_string();
@@ -7907,6 +7913,7 @@ impl<'a> JsonParser<'a> {
             let mut p = self.pos;
             let mut sig = 0u8; // 0=end, 1=quote, 2=backslash, 3=control
             while p < bytes.len() {
+                // SAFETY: p < bytes.len() is guaranteed by the enclosing while condition; bounds check elided deliberately for the JSON hot loop (perf choice, see issue #22).
                 let b = unsafe { *bytes.get_unchecked(p) };
                 if b >= 0x20 {
                     if b == b'"' {
@@ -9089,6 +9096,7 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                     ws_xpixel: 0,
                     ws_ypixel: 0,
                 };
+                // SAFETY: ioctl(2) with a TIOCGWINSZ request and a &mut libc::winsize (exact C struct, zero-initialized); fd is a caller int, rc checked.
                 let rc = unsafe { libc::ioctl(fd as i32, libc::TIOCGWINSZ, &mut ws) };
                 if rc != 0 || ws.ws_col == 0 && ws.ws_row == 0 {
                     // CPython raises the raw errno error; under `antipythony run`
@@ -9113,13 +9121,16 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
             "getuid" | "geteuid" => {
                 #[cfg(target_os = "macos")]
                 {
+                    // SAFETY: getuid(2) takes no arguments and cannot fail — no pointer or memory preconditions.
                     Ok(i(unsafe { libc::getuid() as i64 }))
                 }
                 #[cfg(not(target_os = "macos"))]
                 {
+                    // SAFETY: getuid(2) takes no arguments and cannot fail — no pointer or memory preconditions.
                     Ok(i(unsafe { libc::getuid() as i64 }))
                 }
             }
+            // SAFETY: getgid(2) takes no arguments and cannot fail — no pointer or memory preconditions.
             "getgid" | "getegid" => Ok(i(unsafe { libc::getgid() as i64 })),
             // 02.08-c: os.waitpid stub (subprocess.py import surface; the v1
             // runtime never spawns children) — block forever-free, return
@@ -9150,6 +9161,7 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                     // does 0o777 - os.umask(0o022) and needs the int.
                     #[cfg(unix)]
                     {
+                        // SAFETY: umask(2) takes a plain mode_t value and cannot fail — no pointer or memory preconditions.
                         let old = unsafe { libc::umask(mask as libc::mode_t) };
                         Ok(i(old as i64))
                     }
@@ -9161,7 +9173,9 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                 } else {
                     #[cfg(unix)]
                     {
+                        // SAFETY: umask(2) probe (sets 0o022 to read the current mask); value-only call, cannot fail.
                         let cur = unsafe { libc::umask(0o022) };
+                        // SAFETY: umask(2) restores the mask captured on the previous line; value-only call, cannot fail.
                         unsafe {
                             libc::umask(cur);
                         }
@@ -9246,6 +9260,7 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                 let readable = mode.contains('r');
                 let mut data: Vec<u8> = vec![];
                 if readable {
+                    // SAFETY: lseek(2)/read(2) on a caller-supplied int fd; buf is a live 4096-byte local and reads are bounded by its size; n <= 0 ends the loop before any slice use.
                     unsafe {
                         let saved = libc::lseek(fd, 0, libc::SEEK_CUR);
                         let mut buf = [0u8; 4096];
@@ -9314,12 +9329,14 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                 };
                 let c_path = std::ffi::CString::new(p.as_str())
                     .map_err(|_| raise("ValueError", "embedded null byte"))?;
+                // SAFETY: std::mem::zeroed() on the plain-old-data libc::stat struct — an all-zero bit pattern is valid per the C API.
                 let mut st: libc::stat = unsafe { std::mem::zeroed() };
                 let flags = if name == "lstat" || !follow {
                     libc::AT_SYMLINK_NOFOLLOW
                 } else {
                     0
                 };
+                // SAFETY: fstatat(2) with a NUL-terminated CString alive at the call, &mut stat into the zeroed struct above, and dfd/flags from validated ints; rc checked.
                 let rc = unsafe { libc::fstatat(dfd, c_path.as_ptr(), &mut st, flags) };
                 if rc != 0 {
                     return Err(io_flow(std::io::Error::last_os_error()));
@@ -9330,7 +9347,9 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
             // same stat_result shape as the path forms.
             "fstat" => {
                 let fd = as_int_i64(required(args, "fstat")?)? as i32;
+                // SAFETY: std::mem::zeroed() on the plain-old-data libc::stat struct — an all-zero bit pattern is valid per the C API.
                 let mut st: libc::stat = unsafe { std::mem::zeroed() };
+                // SAFETY: fstat(2) with a caller int fd and &mut stat into the zeroed struct above; rc checked (EBADF surfaces as OSError).
                 let rc = unsafe { libc::fstat(fd, &mut st) };
                 if rc != 0 {
                     return Err(io_flow(std::io::Error::last_os_error()));
@@ -9341,11 +9360,13 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
             // dup/dup2 + host_env dup_noninheritable, MIT).
             "dup" => {
                 let fd = as_int_i64(required(args, "dup")?)? as i32;
+                // SAFETY: dup(2) with a caller-supplied int fd; no pointers, return checked for EBADF.
                 let nfd = unsafe { libc::dup(fd) };
                 if nfd < 0 {
                     return Err(io_flow(std::io::Error::last_os_error()));
                 }
                 // dup_noninheritable: the new fd is CLOEXEC.
+                // SAFETY: fcntl(2) F_SETFD/FD_CLOEXEC on the dup-verified fd; return ignored — best-effort CLOEXEC per the donor semantics.
                 unsafe { libc::fcntl(nfd, libc::F_SETFD, libc::FD_CLOEXEC) };
                 Ok(i(nfd as i64))
             }
@@ -9355,6 +9376,7 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                     args.get(1)
                         .ok_or_else(|| raise("TypeError", "dup2() missing required argument"))?,
                 )? as i32;
+                // SAFETY: dup2(2) with two caller-supplied int fds; no pointers, return checked.
                 let nfd = unsafe { libc::dup2(fd, fd2) };
                 if nfd < 0 {
                     return Err(io_flow(std::io::Error::last_os_error()));
@@ -9362,6 +9384,7 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                 // CPython dup2(fd, fd2, inheritable=False) sets CLOEXEC on
                 // the target; inheritable=True (default) leaves it clear.
                 if !kw(_kwargs, "inheritable").map(truthy).unwrap_or(true) {
+                    // SAFETY: fcntl(2) F_SETFD/FD_CLOEXEC on the dup2-verified fd; return ignored — best-effort CLOEXEC.
                     unsafe { libc::fcntl(nfd, libc::F_SETFD, libc::FD_CLOEXEC) };
                 }
                 Ok(i(nfd as i64))
@@ -9377,6 +9400,7 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                     .unwrap_or(4096)
                     .max(0) as usize;
                 let mut buf = vec![0u8; n];
+                // SAFETY: read(2) into a live Vec buffer of exactly n bytes via as_mut_ptr; n is clamped to >= 0 and the return is checked before truncating.
                 let got = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, n) };
                 if got < 0 {
                     return Err(io_flow(std::io::Error::last_os_error()));
@@ -9391,6 +9415,7 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                         .ok_or_else(|| raise("TypeError", "write() missing required argument"))?,
                 )?;
                 let n =
+                    // SAFETY: write(2) on a caller int fd with a valid (ptr, len) into the live bytes buffer from bytes_arg; return checked.
                     unsafe { libc::write(fd, data.as_ptr() as *const libc::c_void, data.len()) };
                 if n < 0 {
                     return Err(io_flow(std::io::Error::last_os_error()));
@@ -9399,6 +9424,7 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
             }
             "close" => {
                 let fd = as_int_i64(required(args, "close")?)? as i32;
+                // SAFETY: close(2) with a caller-supplied int fd; no memory preconditions, rc checked.
                 let rc = unsafe { libc::close(fd) };
                 if rc != 0 {
                     return Err(io_flow(std::io::Error::last_os_error()));
@@ -9416,6 +9442,7 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                     .and_then(|v| v.as_int())
                     .and_then(|x| x.to_i64())
                     .unwrap_or(0) as i32;
+                // SAFETY: lseek(2) with integer fd/off/whence only; no pointers, return checked.
                 let pos = unsafe { libc::lseek(fd, off, whence) };
                 if pos < 0 {
                     return Err(io_flow(std::io::Error::last_os_error()));
@@ -9426,6 +9453,7 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
             // RustPython host_env/posix.rs pipe + vm/stdlib/posix.rs arm).
             "pipe" => {
                 let mut fds = [0i32; 2];
+                // SAFETY: pipe(2) writes exactly two ints through as_mut_ptr of a live [i32; 2] array; rc checked before the fds are used.
                 let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
                 if rc != 0 {
                     return Err(io_flow(std::io::Error::last_os_error()));
@@ -9436,6 +9464,7 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
             "pipe2" => {
                 let flags = as_int_i64(required(args, "pipe2")?)? as i32;
                 let mut fds = [0i32; 2];
+                // SAFETY: pipe(2) writes exactly two ints through as_mut_ptr of a live [i32; 2] array; rc checked before emulation continues.
                 let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
                 if rc != 0 {
                     return Err(io_flow(std::io::Error::last_os_error()));
@@ -9444,11 +9473,15 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                 #[cfg(target_os = "macos")]
                 {
                     if flags & libc::O_CLOEXEC != 0 {
+                        // SAFETY: fcntl(2) F_SETFD on a pipe fd created just above; return ignored — best-effort pipe2 emulation.
                         unsafe { libc::fcntl(rfd, libc::F_SETFD, libc::FD_CLOEXEC) };
+                        // SAFETY: fcntl(2) F_SETFD on a pipe fd created just above; return ignored — best-effort pipe2 emulation.
                         unsafe { libc::fcntl(wfd, libc::F_SETFD, libc::FD_CLOEXEC) };
                     }
                     if flags & libc::O_NONBLOCK != 0 {
+                        // SAFETY: fcntl(2) F_SETFL on a pipe fd created just above; return ignored — best-effort pipe2 emulation.
                         unsafe { libc::fcntl(rfd, libc::F_SETFL, libc::O_NONBLOCK) };
+                        // SAFETY: fcntl(2) F_SETFL on a pipe fd created just above; return ignored — best-effort pipe2 emulation.
                         unsafe { libc::fcntl(wfd, libc::F_SETFL, libc::O_NONBLOCK) };
                     }
                 }
@@ -9462,6 +9495,7 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                     args.get(1)
                         .ok_or_else(|| raise("TypeError", "kill() missing required argument"))?,
                 )? as i32;
+                // SAFETY: kill(2) with integer pid/sig only; no memory preconditions, rc checked.
                 let rc = unsafe { libc::kill(pid, sig) };
                 if rc != 0 {
                     return Err(io_flow(std::io::Error::last_os_error()));
@@ -9474,6 +9508,7 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                     args.get(1)
                         .ok_or_else(|| raise("TypeError", "killpg() missing required argument"))?,
                 )? as i32;
+                // SAFETY: killpg(2) with integer pgid/sig only; no memory preconditions, rc checked.
                 let rc = unsafe { libc::killpg(pgid, sig) };
                 if rc != 0 {
                     return Err(io_flow(std::io::Error::last_os_error()));
@@ -9485,7 +9520,9 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
             // uname + host_env uname_info, MIT). Repr/type shape matches
             // posix.uname_result: 5 fields, n_fields=5, str() == repr().
             "uname" => {
+                // SAFETY: std::mem::zeroed() on the plain-old-data libc::utsname struct (fixed byte arrays) — all-zero is valid per the C API.
                 let mut uts: libc::utsname = unsafe { std::mem::zeroed() };
+                // SAFETY: uname(2) with &mut utsname into the zeroed struct above; the kernel writes only within the struct, rc checked.
                 let rc = unsafe { libc::uname(&mut uts) };
                 if rc != 0 {
                     return Err(io_flow(std::io::Error::last_os_error()));
@@ -9550,6 +9587,7 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                     .map_err(|_| raise("ValueError", "embedded null byte"))?;
                 let c_link = std::ffi::CString::new(linkpath.as_str())
                     .map_err(|_| raise("ValueError", "embedded null byte"))?;
+                // SAFETY: symlink(2) with two NUL-terminated CStrings alive at the call; rc checked.
                 let rc = unsafe { libc::symlink(c_target.as_ptr(), c_link.as_ptr()) };
                 if rc != 0 {
                     return Err(io_flow(std::io::Error::last_os_error()));
@@ -9561,6 +9599,7 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                 let c_path = std::ffi::CString::new(p.as_str())
                     .map_err(|_| raise("ValueError", "embedded null byte"))?;
                 let mut buf = vec![0u8; 1024];
+                // SAFETY: readlink(2) with a live NUL-terminated CString and a writable buffer addressed by its own len(); n checked and used to truncate before reading back.
                 let n = unsafe {
                     libc::readlink(
                         c_path.as_ptr(),
@@ -9598,6 +9637,7 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                 } else {
                     0
                 };
+                // SAFETY: openat(2) with a NUL-terminated CString alive at the call, dfd/flags/mode from validated ints; fd checked (negative -> OSError).
                 let fd = unsafe { libc::openat(dfd, c_path.as_ptr(), flags, mode) };
                 if fd < 0 {
                     return Err(io_flow_path(std::io::Error::last_os_error(), &fd_path));
@@ -9714,6 +9754,7 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                     Some(v) if !matches!(v, Value::None) => as_int_i64(v)? as i32,
                     _ => libc::AT_FDCWD,
                 };
+                // SAFETY: utimensat(2) with a live NUL-terminated CString and a pointer into a live 2-element timespec array declared above; rc checked.
                 let rc = unsafe { libc::utimensat(dfd, c_path.as_ptr(), times_v.as_ptr(), flags) };
                 if rc != 0 {
                     return Err(io_flow(std::io::Error::last_os_error()));
@@ -9729,6 +9770,7 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                 };
                 let c_path = std::ffi::CString::new(p.as_str())
                     .map_err(|_| raise("ValueError", "embedded null byte"))?;
+                // SAFETY: chmod(2) with a NUL-terminated CString alive at the call and an integer mode; rc checked.
                 let rc = unsafe { libc::chmod(c_path.as_ptr(), mode as libc::mode_t) };
                 if rc != 0 {
                     return Err(io_flow(std::io::Error::last_os_error()));
@@ -9748,6 +9790,7 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                 let c_path = std::ffi::CString::new(p.as_str())
                     .map_err(|_| raise("ValueError", "embedded null byte"))?;
                 let rc =
+                    // SAFETY: chown(2) with a NUL-terminated CString alive at the call and integer uid/gid; rc checked.
                     unsafe { libc::chown(c_path.as_ptr(), uid as libc::uid_t, gid as libc::gid_t) };
                 if rc != 0 {
                     return Err(io_flow(std::io::Error::last_os_error()));
@@ -9758,6 +9801,7 @@ pub fn call_os(name: &str, args: &[Value], _kwargs: &[(String, Value)]) -> Optio
                 let p = str_arg(required(args, name)?, name)?;
                 let c_path = std::ffi::CString::new(p.as_str())
                     .map_err(|_| raise("ValueError", "embedded null byte"))?;
+                // SAFETY: chroot(2) with a NUL-terminated CString alive at the call; rc checked (the call writes no memory through the pointer).
                 let rc = unsafe { libc::chroot(c_path.as_ptr()) };
                 if rc != 0 {
                     return Err(io_flow(std::io::Error::last_os_error()));
@@ -10196,7 +10240,9 @@ pub fn call_posixpath(
                 let p = str_arg(required(args, "islink")?, "islink")?;
                 let c_path = std::ffi::CString::new(p.as_str())
                     .map_err(|_| raise("ValueError", "embedded null byte"))?;
+                // SAFETY: std::mem::zeroed() on the plain-old-data libc::stat struct — an all-zero bit pattern is valid per the C API.
                 let mut st: libc::stat = unsafe { std::mem::zeroed() };
+                // SAFETY: fstatat(2) with AT_FDCWD, a live NUL-terminated CString, and &mut stat into the zeroed struct above; rc checked.
                 let rc = unsafe {
                     libc::fstatat(
                         libc::AT_FDCWD,
@@ -10575,7 +10621,9 @@ fn realpath_walk(filename: &str, strict: bool) -> BResult {
         // lstat the candidate.
         let st_mode = (|| -> Option<i64> {
             let c = std::ffi::CString::new(newpath.as_str()).ok()?;
+            // SAFETY: std::mem::zeroed() on the plain-old-data libc::stat struct — an all-zero bit pattern is valid per the C API.
             let mut st: libc::stat = unsafe { std::mem::zeroed() };
+            // SAFETY: lstat(2) with a live NUL-terminated CString and &mut stat into the zeroed struct above; rc checked (failure maps to None).
             let rc = unsafe { libc::lstat(c.as_ptr(), &mut st) };
             if rc != 0 {
                 None
@@ -10638,6 +10686,7 @@ fn realpath_walk(filename: &str, strict: bool) -> BResult {
         let target = (|| -> Option<String> {
             let c = std::ffi::CString::new(newpath.as_str()).ok()?;
             let mut buf = vec![0u8; 1024];
+            // SAFETY: readlink(2) with a live NUL-terminated CString and a writable 1024-byte Vec addressed by its own len(); n checked and used to truncate before use.
             let n = unsafe {
                 libc::readlink(c.as_ptr(), buf.as_mut_ptr() as *mut libc::c_char, buf.len())
             };
@@ -11186,7 +11235,9 @@ fn uname_tuple() -> Vec<String> {
     // platform.uname forwards sysname..machine from os.uname verbatim. The
     // old std::env::consts path reported "macos"/"aarch64" where CPython
     // reports "Darwin"/"arm64".
+    // SAFETY: std::mem::zeroed() on the plain-old-data libc::utsname struct (fixed byte arrays) — all-zero is valid per the C API.
     let mut uts: libc::utsname = unsafe { std::mem::zeroed() };
+    // SAFETY: uname(2) with &mut utsname into the zeroed struct above; the kernel writes only within the struct, fields read only when rc == 0.
     if unsafe { libc::uname(&mut uts) } == 0 {
         // Untyped byte slice: linux utsname fields are [i8; 65] with c_char
         // = i8, macOS [c_char; 256] — a fixed-size closure type broke the
@@ -13697,8 +13748,11 @@ pub fn call_select(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Op
                 };
                 let mut rfds = to_fdlist(&rd)?;
                 let mut wfds = to_fdlist(&wr)?;
+                // SAFETY: std::mem::zeroed() on libc::fd_set (opaque int-array/bitfield layout) — all-zero is the valid empty-set pattern per the C API.
                 let mut read_set: libc::fd_set = unsafe { std::mem::zeroed() };
+                // SAFETY: std::mem::zeroed() on libc::fd_set (opaque int-array/bitfield layout) — all-zero is the valid empty-set pattern per the C API.
                 let mut write_set: libc::fd_set = unsafe { std::mem::zeroed() };
+                // SAFETY: FD_ZERO/FD_SET macros on the zeroed fd_sets above with i32 fds from to_fdlist (validated ints, checked < 1024 before this point).
                 unsafe {
                     libc::FD_ZERO(&mut read_set);
                     libc::FD_ZERO(&mut write_set);
@@ -13714,6 +13768,7 @@ pub fn call_select(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Op
                     tv_usec: ((t - t.floor()) * 1e6).round() as libc::suseconds_t,
                 });
                 let mut tv = tv;
+                // SAFETY: select(2) with &mut to the initialized fd_sets, a legal NULL exceptset, and either a live timeval or NULL timeout; rc checked.
                 let rc = unsafe {
                     match tv.as_mut() {
                         Some(t) => libc::select(
@@ -13737,6 +13792,7 @@ pub fn call_select(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Op
                 }
                 let keep = |fds: &mut Vec<i32>, set: *const libc::fd_set| -> Vec<Value> {
                     let mut out = Vec::new();
+                    // SAFETY: FD_ISSET macro reads only within the fd_set populated by the select() above; fds were FD_SET into it in the matching range.
                     fds.retain(|fd| unsafe { libc::FD_ISSET(*fd, set) });
                     for fd in fds.iter() {
                         out.push(i(*fd as i64));
@@ -13899,6 +13955,7 @@ fn select_poll_method(m: &str, args: &[Value]) -> Option<BResult> {
                 })
                 .collect();
             let rc =
+                // SAFETY: poll(2) with pfds.as_mut_ptr() and nfds == pfds.len() — pointer and count describe the same live Vec; rc checked.
                 unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, timeout_ms) };
             if rc < 0 {
                 let e = std::io::Error::last_os_error();
@@ -14050,6 +14107,7 @@ fn epoll_ctor(args: &[Value], kwargs: &[(String, Value)]) -> BResult {
     if flags != 0 && flags != 524288 {
         return Err(raise("OSError", "invalid flags"));
     }
+    // SAFETY: epoll_create1(2) with only the EPOLL_CLOEXEC flag constant; no pointers, return checked.
     let epfd = unsafe { libc::epoll_create1(libc::EPOLL_CLOEXEC) };
     if epfd < 0 {
         return Err(io_flow(std::io::Error::last_os_error()));
@@ -14156,6 +14214,7 @@ fn select_epoll_method(m: &str, args: &[Value], kwargs: &[(String, Value)]) -> O
                 events,
                 u64: (fd as u32) as u64,
             };
+            // SAFETY: epoll_ctl(2) with epfd/fd validated above and &mut to a fully-initialized stack epoll_event; rc checked.
             let rc = unsafe { libc::epoll_ctl(epfd, op, fd, &mut ev) };
             if rc < 0 {
                 return Some(Err(io_flow(std::io::Error::last_os_error())));
@@ -14185,6 +14244,7 @@ fn select_epoll_method(m: &str, args: &[Value], kwargs: &[(String, Value)]) -> O
                 events: 0u32,
                 u64: 0u64,
             };
+            // SAFETY: epoll_ctl(2) EPOLL_CTL_DEL with epfd/fd validated above and &mut to an explicitly zero-initialized epoll_event (pre-2.6.9 non-NULL quirk); rc checked.
             let rc = unsafe { libc::epoll_ctl(epfd, libc::EPOLL_CTL_DEL, fd, &mut ev) };
             if rc < 0 {
                 return Some(Err(io_flow(std::io::Error::last_os_error())));
@@ -14254,8 +14314,10 @@ fn select_epoll_method(m: &str, args: &[Value], kwargs: &[(String, Value)]) -> O
                 None => 1023,
             };
             let mut evs: Vec<libc::epoll_event> =
+                // SAFETY: std::mem::zeroed() on plain-old-data libc::epoll_event (u32 + u64) — all-zero is valid; entries are overwritten by the kernel.
                 vec![unsafe { std::mem::zeroed() }; maxevents as usize];
             let nfds = loop {
+                // SAFETY: epoll_wait(2) with evs.as_mut_ptr() and maxevents bounded by the Vec length allocated just above; the kernel writes at most maxevents entries; rc checked.
                 let rc = unsafe { libc::epoll_wait(epfd, evs.as_mut_ptr(), maxevents, ms) };
                 if rc >= 0 {
                     break rc;
@@ -14290,6 +14352,7 @@ fn select_epoll_method(m: &str, args: &[Value], kwargs: &[(String, Value)]) -> O
                 }
             });
             if let Some(fd) = fd {
+                // SAFETY: close(2) on the control fd atomically taken (slot set to -1) above — single-owner close; return ignored per CPython.
                 unsafe { libc::close(fd) };
                 let o = match args.first() {
                     Some(Value::Obj(o)) => o.clone(),
@@ -15767,6 +15830,7 @@ pub fn call_io(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
                         let _ = attrs.set(s("<append>"), Value::Bool(true));
                         let _ = attrs.set(s("<not-readable>"), Value::Bool(true));
                         if let Ok(cp) = std::ffi::CString::new(path.clone()) {
+                            // SAFETY: open(2) with a live NUL-terminated CString, O_WRONLY|O_CREAT|O_APPEND and a mode constant; the fd is stored unchecked (negative fd tolerated here).
                             let fd = unsafe {
                                 libc::open(
                                     cp.as_ptr(),
@@ -15798,6 +15862,7 @@ pub fn call_io(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
                         } else {
                             libc::O_RDONLY
                         };
+                        // SAFETY: open(2) with a live NUL-terminated CString, validated flag bits and a mode constant; the fd is stored unchecked (negative fd tolerated here).
                         let fd = unsafe { libc::open(cp.as_ptr(), flags, 0o600) };
                         let _ = o
                             .attrs
@@ -15953,6 +16018,7 @@ pub fn call_io(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> Option
                     drop(attrs);
                     if let Some(fdv) = fdv {
                         let fd = as_int_i64(&fdv)? as i32;
+                        // SAFETY: write(2) loop over the live payload buffer: buf.add(off) stays within ptr..ptr+len while off < len, and off advances by the checked return count.
                         unsafe {
                             let mut off = 0usize;
                             let buf = payload.as_ptr();
@@ -16556,6 +16622,7 @@ pub fn call_tempfile(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> 
                 // fdopen() consumer.
                 let c_path = std::ffi::CString::new(path.as_str())
                     .map_err(|_| raise("ValueError", "embedded null byte"))?;
+                // SAFETY: open(2) with a live NUL-terminated CString, O_CREAT|O_EXCL|O_RDWR and mode 0o600; fd checked below (negative -> OSError).
                 let fd = unsafe {
                     libc::open(
                         c_path.as_ptr(),
@@ -16642,6 +16709,7 @@ pub fn call_tempfile(name: &str, args: &[Value], kwargs: &[(String, Value)]) -> 
                     let cpath = std::ffi::CString::new(path.clone())
                         .map_err(|_| raise("ValueError", "embedded null byte in temp path"))?;
                     let fd =
+                        // SAFETY: open(2) with a live NUL-terminated CString, O_RDWR|O_CREAT and mode 0o600; the fd is stored unchecked (negative fd tolerated here).
                         unsafe { libc::open(cpath.as_ptr(), libc::O_RDWR | libc::O_CREAT, 0o600) };
                     let _ = fa.set(s("<fd>"), i(fd as i64));
                 }

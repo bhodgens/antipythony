@@ -95,6 +95,28 @@ struct Lowerer {
     /// local_names (visible only), so hidden slots never sync back to the
     /// frame — the comprehension's scope stays private.
     hidden_slots: u16,
+    /// Exception table under construction (leaf fp-exceptions). Range
+    /// brackets append; sorted at finalize.
+    excs: crate::exctable::ExcTable,
+    /// Current try-nesting depth (the ExcEntry tiebreak).
+    try_depth: u16,
+    /// FINALLY-PENDING (leaf fp-exceptions): the open try-finally bodies
+    /// (innermost last). A Return/Break/Continue fired while this stack
+    /// is non-empty INLINES every open finalbody at the exit site
+    /// (CPython 3.10's duplicated-block discipline — no runtime pending
+    /// slot needed; return-in-finally / break-in-finally override falls
+    /// out of the copy's own direct emission).
+    fin_bodies: Vec<Vec<Stmt>>,
+    /// True while lowering a finally body (inline copy OR the exception-
+    /// unwind epilogue copy): inner control flow emits DIRECTLY (its
+    /// return/break wins; no re-inlining — also bounds code growth).
+    inside_finally: bool,
+    /// Compile-time operand-stack depth at statement boundaries (the
+    /// residue loop iterators / comprehension handles leave across
+    /// statements). begin_range records it as the ExcEntry stack_depth —
+    /// the dispatch loop's unwind truncates the operand stack back to
+    /// this depth, preserving enclosing for-loop iterator handles.
+    operand_depth: u32,
 }
 
 /// One enclosing loop's pending break/continue jump sites (instruction
@@ -111,6 +133,10 @@ struct LoopFrame {
     /// enclosing loop peeks a stale handle). CPython's compiler synthesizes
     /// the same stack unwind on its break arcs.
     is_for: bool,
+    /// The operand-stack depth WITH this loop's iterator handle on it
+    /// (statement boundaries inside the loop sit one deeper than outside
+    /// for For loops). Restored on loop exit paths.
+    opdepth: u32,
 }
 
 impl Lowerer {
@@ -128,6 +154,11 @@ impl Lowerer {
             loop_stack: Vec::new(),
             comp_scopes: Vec::new(),
             hidden_slots: 0,
+            excs: crate::exctable::ExcTable::new(),
+            try_depth: 0,
+            fin_bodies: Vec::new(),
+            inside_finally: false,
+            operand_depth: 0,
         }
     }
 
@@ -139,11 +170,10 @@ impl Lowerer {
         idx
     }
 
-    fn emit_at_line(&mut self, i: Instr, line: usize) -> u32 {
+    fn emit_at_line(&mut self, i: Instr, line: usize) {
         let idx = self.emit(i);
         self.lines.record(idx, line);
         self.cur_line = line;
-        idx
     }
 
     fn intern_name(&mut self, name: &str) -> u32 {
@@ -224,7 +254,8 @@ impl Lowerer {
             | Instr::JumpIfTrue(t)
             | Instr::JumpIfFalseOrPop(t)
             | Instr::JumpIfTrueOrPop(t)
-            | Instr::ForNext(t) => *t = target,
+            | Instr::ForNext(t)
+            | Instr::CheckExcept(t) => *t = target,
             _ => unreachable!("patch_jump on non-jump"),
         }
     }
@@ -291,6 +322,10 @@ impl Lowerer {
             names: self.names,
             lines: self.lines,
             sites: self.sites,
+            excs: {
+                self.excs.sort();
+                self.excs
+            },
         })
     }
 
@@ -347,10 +382,40 @@ impl Lowerer {
             }
             Stmt::Return(Some(e)) => {
                 self.lower_expr(e)?;
+                // FINALLY-PENDING (inline-copy): a return through open
+                // try-finallys inlines their bodies at the exit site
+                // (CPython's return-through-finally). A return INSIDE a
+                // finally copy emits directly (return-in-finally
+                // overrides — CPython 3.14 emits a SyntaxWarning but the
+                // return wins).
+                let fin_bodies = if self.inside_finally {
+                    Vec::new()
+                } else {
+                    self.fin_bodies.clone()
+                };
+                // Inline copies are finally bodies: their inner control
+                // flow emits DIRECTLY (no re-inline — bounds recursion).
+                let saved = self.inside_finally;
+                self.inside_finally = true;
+                for fb in &fin_bodies {
+                    self.lower_stmts(fb)?;
+                }
+                self.inside_finally = saved;
                 self.emit_at_line(Instr::ReturnValue, self.cur_line);
                 Ok(())
             }
             Stmt::Return(None) => {
+                let fin_bodies = if self.inside_finally {
+                    Vec::new()
+                } else {
+                    self.fin_bodies.clone()
+                };
+                let saved = self.inside_finally;
+                self.inside_finally = true;
+                for fb in &fin_bodies {
+                    self.lower_stmts(fb)?;
+                }
+                self.inside_finally = saved;
                 self.emit_at_line(Instr::ReturnNone, self.cur_line);
                 Ok(())
             }
@@ -358,8 +423,29 @@ impl Lowerer {
             Stmt::While(cond, body, orelse) => self.lower_while(cond, body, orelse),
             Stmt::For(target, iter, body, orelse) => self.lower_for(target, iter, body, orelse),
             Stmt::With(..) => Err(Unsupported("with statement")),
-            Stmt::Try(..) => Err(Unsupported("try statement")),
-            Stmt::Raise(..) => Err(Unsupported("raise statement")),
+            Stmt::Try(t) => self.lower_try(t),
+            Stmt::Raise(exc_expr, cause_expr) => {
+                // raise [e [from cause]] (leaf fp-exceptions). The
+                // DISPATCH loop's Raise arm carries the full Stmt::Raise
+                // semantics via interp's shared helpers (raise_from_value
+                // / inflight re-raise / __cause__ chaining); the opcode
+                // carries only the operand shape.
+                let has_expr = exc_expr.is_some();
+                if !has_expr {
+                    // Bare raise: re-raise the in-flight exception.
+                    self.emit_at_line(Instr::Raise { mode: 2 }, self.cur_line);
+                    return Ok(());
+                }
+                let e = exc_expr.as_ref().expect("checked above");
+                self.lower_expr(e)?;
+                if let Some(c) = cause_expr {
+                    self.lower_expr(c)?;
+                    self.emit_at_line(Instr::Raise { mode: 1 }, self.cur_line);
+                } else {
+                    self.emit_at_line(Instr::Raise { mode: 0 }, self.cur_line);
+                }
+                Ok(())
+            }
             Stmt::Match(..) => Err(Unsupported("match statement")),
             Stmt::Assert(..) => Err(Unsupported("assert statement")),
             Stmt::Global(..) => Err(Unsupported("global declaration")),
@@ -371,9 +457,26 @@ impl Lowerer {
                 let Some(_) = self.loop_stack.last() else {
                     return Err(Unsupported("break outside loop"));
                 };
-                // For-loop break: the iterator handle is on the stack — pop
-                // it (the exit arc expects NO handle; exhaustion pops via
-                // ForNext, break must unwind the same slot).
+                // FINALLY-PENDING (inline-copy): every open try-finally's
+                // body is INLINED at this exit site (innermost LAST — the
+                // unwind order is inner-to-outer, and a break inside an
+                // inlined copy emits DIRECTLY, overriding any outer
+                // pending unwind — CPython break-in-finally semantics).
+                // After the copies, the For-iterator handle pops and the
+                // loop-exit Jump fires.
+                let fin_bodies = if self.inside_finally {
+                    Vec::new() // inside a finally copy: break wins directly
+                } else {
+                    self.fin_bodies.clone()
+                };
+                // Inline copies are finally bodies: their inner control
+                // flow emits DIRECTLY (no re-inline — bounds recursion).
+                let saved = self.inside_finally;
+                self.inside_finally = true;
+                for fb in &fin_bodies {
+                    self.lower_stmts(fb)?;
+                }
+                self.inside_finally = saved;
                 if self.loop_stack.last().is_some_and(|f| f.is_for) {
                     self.emit_at_line(Instr::PopTop, self.cur_line);
                 }
@@ -387,6 +490,17 @@ impl Lowerer {
                 let Some(_) = self.loop_stack.last() else {
                     return Err(Unsupported("continue outside loop"));
                 };
+                let fin_bodies = if self.inside_finally {
+                    Vec::new()
+                } else {
+                    self.fin_bodies.clone()
+                };
+                let saved = self.inside_finally;
+                self.inside_finally = true;
+                for fb in &fin_bodies {
+                    self.lower_stmts(fb)?;
+                }
+                self.inside_finally = saved;
                 let j = self.emit_jump(Instr::Jump(u32::MAX));
                 if let Some(frame) = self.loop_stack.last_mut() {
                     frame.continues.push(j);
@@ -452,6 +566,7 @@ impl Lowerer {
             breaks: Vec::new(),
             continues: Vec::new(),
             is_for: false,
+            opdepth: self.operand_depth,
         });
         self.lower_stmts(body)?;
         let frame = self.loop_stack.pop().expect("while frame pushed");
@@ -489,10 +604,15 @@ impl Lowerer {
         let loop_start = self.instrs.len() as u32;
         let j_exit = self.emit_jump(Instr::ForNext(u32::MAX));
         self.lower_store_target(target)?;
+        // The iterator handle sits on the operand stack for the whole
+        // loop: statement boundaries inside are ONE deeper (the dispatch
+        // loop's exc unwind preserves it — try-in-loop keeps its handle).
+        self.operand_depth += 1;
         self.loop_stack.push(LoopFrame {
             breaks: Vec::new(),
             continues: Vec::new(),
             is_for: true,
+            opdepth: self.operand_depth,
         });
         self.lower_stmts(body)?;
         let frame = self.loop_stack.pop().expect("for frame pushed");
@@ -502,7 +622,312 @@ impl Lowerer {
         self.patch_jump(j_exit, exit_here);
         self.lower_stmts(orelse)?;
         self.patch_all(&frame.breaks, self.instrs.len() as u32);
+        self.operand_depth -= 1;
         Ok(())
+    }
+
+    // --- exceptions (leaf fp-exceptions) ------------------------------------
+    //
+    // CPython-3.11-style zero-cost try ranges: guarded bytecode gets an
+    // (start, end, handler, stack_depth) arc; the dispatch loop consults
+    // the table ONLY when an exception is in flight. Finally bodies are
+    // DUPLICATED epilogues (CPython 3.11's thread-local finally style):
+    // one copy per exit arc (normal / in-flight-propagate), with the
+    // in-flight copy ending in ResumeUnwind. Finally-pending is the
+    // interp's in-flight machinery itself (current_exception / parked
+    // Flow) — no extra runtime slot.
+
+    /// `try: BODY [handlers] [else: ELSE] [finally: FIN]`.
+    fn lower_try(&mut self, t: &ap_ir::item::TryStmt) -> Result<(), Unsupported> {
+        let has_handlers = !t.handlers.is_empty();
+        let has_fin = !t.finalbody.is_empty();
+        if !has_handlers && !has_fin {
+            return Err(Unsupported("try without except or finally"));
+        }
+        match (has_handlers, has_fin) {
+            (true, false) => self.lower_try_handlers(t),
+            (false, true) => self.lower_try_finally_only(t),
+            (true, true) => self.lower_try_handlers_with_finally(t),
+            (false, false) => unreachable!("rejected above"),
+        }
+    }
+
+    /// try + finally (no except handlers):
+    /// ```text
+    ///   [range: body]                       (table arc -> unwinding epilogue)
+    ///   epilogue-normal (duplicated copy)
+    ///   Jump done
+    /// handler:
+    ///   epilogue-unwind (duplicated copy); ResumeUnwind
+    /// done:
+    /// ```
+    /// The finally body lowers TWICE (bytecode pays code size; the
+    /// non-exception path stays zero-cost). Statements inside the
+    /// finally that are loop breaks/continues/returns route through the
+    /// ordinary lower_stmt machinery, which emits the winning
+    /// jump/return — CPython's break-in-finally-override falls out.
+    fn lower_try_finally_only(&mut self, t: &ap_ir::item::TryStmt) -> Result<(), Unsupported> {
+        let (start, depth, opdepth) = self.begin_range();
+        // FINALLY-PENDING: the finalbody is open for everything lowered
+        // inside the guarded body (returns/breaks/continues inline it).
+        self.fin_bodies.push(t.finalbody.clone());
+        self.lower_stmts(&t.body)?;
+        self.fin_bodies.pop();
+        let end = self.instrs.len() as u32;
+        // Normal path: run the epilogue copy (direct emission — a return
+        // inside it emits ReturnValue, CPython's override), then jump
+        // over the unwinding copy.
+        let saved_inside = self.inside_finally;
+        self.inside_finally = true;
+        self.lower_stmts(&t.finalbody)?;
+        self.inside_finally = saved_inside;
+        let j_done = self.emit_jump(Instr::Jump(u32::MAX));
+        let handler = self.instrs.len() as u32;
+        self.end_range(start, end, handler, depth, opdepth);
+        // Unwinding path: same body, then resume the parked unwind.
+        self.lower_stmts(&t.finalbody)?;
+        self.emit_at_line(Instr::ResumeUnwind, self.cur_line);
+        let done = self.instrs.len() as u32;
+        self.patch_jump(j_done, done);
+        Ok(())
+    }
+
+    /// try + except handlers (+ else), no finally:
+    /// ```text
+    ///   [range: body+orelse]
+    ///   Jump done
+    /// matcher-1: <ty-expr>; CheckExcept ->next | CheckExceptBare
+    ///            [`as n`: StoreFast(n) | PopTop]
+    ///            handler-body; PopExc; Jump done
+    /// matcher-2: ...
+    /// nomatch:   ResumeUnwind
+    /// done:
+    /// ```
+    /// One table arc per handler matcher (same guarded span, handlers in
+    /// source order — find_handler's scan order preserves matcher order
+    /// for equal spans because arcs are recorded in source order and the
+    /// CheckExcept fall-through chains the matchers).
+    fn lower_try_handlers(&mut self, t: &ap_ir::item::TryStmt) -> Result<(), Unsupported> {
+        let body_start = self.instrs.len() as u32;
+        let depth = self.try_depth;
+        let opdepth = self.operand_depth;
+        self.try_depth += 1;
+        self.lower_stmts(&t.body)?;
+        self.lower_stmts(&t.orelse)?;
+        self.try_depth -= 1;
+        let body_end = self.instrs.len() as u32;
+        let mut done_jumps: Vec<u32> = vec![self.emit_jump(Instr::Jump(u32::MAX))];
+        let mut checkexcepts: Vec<u32> = Vec::new();
+        for h in &t.handlers {
+            let matcher_at = self.instrs.len() as u32;
+            self.excs.push(crate::exctable::ExcEntry {
+                start: body_start,
+                end: body_end,
+                handler: matcher_at,
+                stack_depth: opdepth,
+                depth,
+            });
+            self.cur_line = body_start.max(1) as usize;
+            if let Some(ty) = &h.ty {
+                self.lower_expr(ty)?;
+                // CheckExcept target = the NO-MATCH continuation (next
+                // matcher / no-match arc); the MATCH path falls through
+                // to the bind + handler body. Patched after all matchers
+                // are emitted.
+                let j = self.emit_jump(Instr::CheckExcept(u32::MAX));
+                checkexcepts.push(j);
+            } else {
+                self.emit_at_line(Instr::CheckExceptBare, self.cur_line);
+            }
+            if let Some(n) = &h.name {
+                let slot = self.slot_of(n).ok_or(Unsupported("except-as target"))?;
+                self.emit_at_line(Instr::StoreFast(slot), self.cur_line);
+            } else {
+                self.emit_at_line(Instr::PopTop, self.cur_line);
+            }
+            self.lower_stmts(&h.body)?;
+            // Handler completion: pop the saved-exception latch; an
+            // `as n` binding unbinds here (S-02-30). u16::MAX = no bind.
+            let unbind = h
+                .name
+                .as_ref()
+                .and_then(|n| self.slot_of(n))
+                .unwrap_or(u16::MAX);
+            self.emit_at_line(
+                Instr::PopExc {
+                    unbind_slot: unbind,
+                },
+                self.cur_line,
+            );
+            done_jumps.push(self.emit_jump(Instr::Jump(u32::MAX)));
+        }
+        // No matcher matched: the in-flight exception continues outward.
+        let nomatch = self.instrs.len() as u32;
+        self.emit_at_line(Instr::ResumeUnwind, self.cur_line);
+        // CheckExcept's NO-MATCH arcs land at the NEXT matcher's start —
+        // each entry i patches to matcher i+1; the last lands at nomatch.
+        let matcher_starts: Vec<u32> = {
+            self.excs
+                .entries()
+                .iter()
+                .filter(|e| e.depth == depth && e.end == body_end && e.start == body_start)
+                .map(|e| e.handler)
+                .collect()
+        };
+        for (i, &j) in checkexcepts.iter().enumerate() {
+            let target = matcher_starts.get(i + 1).copied().unwrap_or(nomatch);
+            self.patch_jump(j, target);
+        }
+        let done = self.instrs.len() as u32;
+        self.patch_all(&done_jumps, done);
+        Ok(())
+    }
+
+    /// try/except/else + finally: the handlers shape lowers exactly like
+    /// lower_try_handlers, with its normal exit and no-match exit routed
+    /// through the (duplicated) finally epilogues of an OUTER range.
+    fn lower_try_handlers_with_finally(
+        &mut self,
+        t: &ap_ir::item::TryStmt,
+    ) -> Result<(), Unsupported> {
+        //   [outer range: body+orelse+handler shapes]
+        //   <handled exits land here> epilogue-normal; Jump done
+        // outer-handler: epilogue-unwind; ResumeUnwind
+        // done:
+        // Inner arcs: one per matcher (span = body+orelse) AND the outer
+        // arc (span = everything up to the outer handler — catches
+        // exceptions raised inside handler bodies / matchers, which
+        // CPython routes through finally too).
+        let outer_start = self.instrs.len() as u32;
+        let outer_depth = self.try_depth;
+        let outer_opdepth = self.operand_depth;
+        self.try_depth += 1;
+
+        // FINALLY-PENDING: open for the body/orelse AND all handler
+        // bodies (a return inside any of them inlines the finalbody).
+        self.fin_bodies.push(t.finalbody.clone());
+
+        // --- inner handlers shape (exit routing deferred) ---
+        let body_start = self.instrs.len() as u32;
+        let inner_depth = self.try_depth;
+        let inner_opdepth = self.operand_depth;
+        self.try_depth += 1;
+        self.lower_stmts(&t.body)?;
+        self.lower_stmts(&t.orelse)?;
+        self.try_depth -= 1;
+        let body_end = self.instrs.len() as u32;
+        let mut normal_jumps: Vec<u32> = vec![self.emit_jump(Instr::Jump(u32::MAX))];
+        let mut unwind_jumps: Vec<u32> = Vec::new();
+        let mut checkexcepts: Vec<u32> = Vec::new();
+        for h in &t.handlers {
+            let matcher_at = self.instrs.len() as u32;
+            self.excs.push(crate::exctable::ExcEntry {
+                start: body_start,
+                end: body_end,
+                handler: matcher_at,
+                stack_depth: inner_opdepth,
+                depth: inner_depth,
+            });
+            self.cur_line = body_start.max(1) as usize;
+            if let Some(ty) = &h.ty {
+                self.lower_expr(ty)?;
+                // CheckExcept target = NO-MATCH continuation (patched
+                // after emission, same discipline as lower_try_handlers).
+                let j = self.emit_jump(Instr::CheckExcept(u32::MAX));
+                checkexcepts.push(j);
+            } else {
+                self.emit_at_line(Instr::CheckExceptBare, self.cur_line);
+            }
+            if let Some(n) = &h.name {
+                let slot = self.slot_of(n).ok_or(Unsupported("except-as target"))?;
+                self.emit_at_line(Instr::StoreFast(slot), self.cur_line);
+            } else {
+                self.emit_at_line(Instr::PopTop, self.cur_line);
+            }
+            self.lower_stmts(&h.body)?;
+            // Handler completion: pop the saved-exception latch; an
+            // `as n` binding unbinds here (S-02-30). u16::MAX = no bind.
+            let unbind = h
+                .name
+                .as_ref()
+                .and_then(|n| self.slot_of(n))
+                .unwrap_or(u16::MAX);
+            self.emit_at_line(
+                Instr::PopExc {
+                    unbind_slot: unbind,
+                },
+                self.cur_line,
+            );
+            normal_jumps.push(self.emit_jump(Instr::Jump(u32::MAX)));
+        }
+        self.fin_bodies.pop();
+        // No matcher matched: in-flight continues through the finally
+        // epilogue (unwinding copy), then re-raises.
+        unwind_jumps.push(self.emit_jump(Instr::Jump(u32::MAX)));
+
+        // --- normal-path epilogue (duplicated copy 1) ---
+        let normal_target = self.instrs.len() as u32;
+        let saved_inside = self.inside_finally;
+        self.inside_finally = true;
+        self.lower_stmts(&t.finalbody)?;
+        let j_done = self.emit_jump(Instr::Jump(u32::MAX));
+
+        // --- outer handler arc: in-flight unwinding epilogue (copy 2) ---
+        let outer_handler = self.instrs.len() as u32;
+        self.excs.push(crate::exctable::ExcEntry {
+            start: outer_start,
+            end: outer_handler,
+            handler: outer_handler,
+            stack_depth: outer_opdepth,
+            depth: outer_depth,
+        });
+        self.try_depth -= 1;
+        self.lower_stmts(&t.finalbody)?;
+        self.inside_finally = saved_inside;
+        self.emit_at_line(Instr::ResumeUnwind, self.cur_line);
+        let done = self.instrs.len() as u32;
+        self.patch_jump(j_done, done);
+        self.patch_all(&normal_jumps, normal_target);
+        self.patch_all(&unwind_jumps, outer_handler);
+        // CheckExcept NO-MATCH arcs -> the next matcher (or the no-match
+        // arc, which routes to the unwinding epilogue = outer_handler).
+        let matcher_starts: Vec<u32> = self
+            .excs
+            .entries()
+            .iter()
+            .filter(|e| e.depth == inner_depth && e.end == body_end && e.start == body_start)
+            .map(|e| e.handler)
+            .collect();
+        for (i, &j) in checkexcepts.iter().enumerate() {
+            let target = matcher_starts.get(i + 1).copied().unwrap_or(outer_handler);
+            self.patch_jump(j, target);
+        }
+        Ok(())
+    }
+
+    /// Open a guarded range at the current pc — returns (start, depth,
+    /// operand_depth) for the matching end_range. operand_depth records
+    /// the compile-time operand-stack residue at statement boundaries
+    /// (loop iterators the dispatch loop must preserve across unwinds).
+    fn begin_range(&mut self) -> (u32, u16, u32) {
+        let start = self.instrs.len() as u32;
+        let depth = self.try_depth;
+        let opdepth = self.operand_depth;
+        self.try_depth += 1;
+        (start, depth, opdepth)
+    }
+
+    /// Close the guarded range (record the table entry; the handler arc
+    /// is `handler`, emitted AFTER the normal-path Jump over it).
+    fn end_range(&mut self, start: u32, end: u32, handler: u32, depth: u16, opdepth: u32) {
+        self.try_depth -= 1;
+        self.excs.push(crate::exctable::ExcEntry {
+            start,
+            end,
+            handler,
+            stack_depth: opdepth,
+            depth,
+        });
     }
 
     fn lower_store_target(&mut self, t: &Target) -> Result<(), Unsupported> {
@@ -835,13 +1260,7 @@ impl Lowerer {
                     self.cur_line = line;
                 }
                 let idx = self.intern_name(attr);
-                // Fused calls get their own Call-kind site (leaf
-                // fp-inlinecache): the dispatcher's (receiver-tag, name)
-                // decision memoizes here.
-                let site = self.sites.alloc(SiteKind::Call, 0);
-                let ins_idx =
-                    self.emit_at_line(Instr::LoadAttrCall { idx, argc, site }, self.cur_line);
-                self.sites.retarget(ins_idx, site);
+                self.emit_at_line(Instr::LoadAttrCall { idx, argc }, self.cur_line);
                 return Ok(());
             }
             self.lower_expr(callee)?;
@@ -932,15 +1351,9 @@ impl Lowerer {
         self.lower_expr(&clauses[0].iter)?;
         self.emit_at_line(Instr::GetIter, self.cur_line);
         match shape {
-            CompShape::List => {
-                self.emit_at_line(Instr::BuildList(0), self.cur_line);
-            }
-            CompShape::Set => {
-                self.emit_at_line(Instr::BuildSet(0), self.cur_line);
-            }
-            CompShape::Dict => {
-                self.emit_at_line(Instr::BuildDict(0), self.cur_line);
-            }
+            CompShape::List => self.emit_at_line(Instr::BuildList(0), self.cur_line),
+            CompShape::Set => self.emit_at_line(Instr::BuildSet(0), self.cur_line),
+            CompShape::Dict => self.emit_at_line(Instr::BuildDict(0), self.cur_line),
         }
         self.emit_at_line(Instr::StoreFast(acc_slot), self.cur_line);
 
@@ -987,32 +1400,26 @@ impl Lowerer {
                 self.lower_expr(elt)?;
                 // acc.append(elt); PopTop — append's None result discards
                 // (the fused opcode never mints the BoundMethod).
-                let append_site = self.sites.alloc(SiteKind::Call, 0);
-                let ins_idx = self.emit_at_line(
+                self.emit_at_line(
                     Instr::LoadAttrCall {
                         idx: append_idx,
                         argc: 1,
-                        site: append_site,
                     },
                     self.cur_line,
                 );
-                self.sites.retarget(ins_idx, append_site);
                 self.emit_at_line(Instr::PopTop, self.cur_line);
             }
             CompShape::Set => {
                 let add_idx = self.intern_name("add");
                 self.emit_at_line(Instr::LoadFast(acc_slot), self.cur_line);
                 self.lower_expr(elt)?;
-                let add_site = self.sites.alloc(SiteKind::Call, 0);
-                let ins_idx = self.emit_at_line(
+                self.emit_at_line(
                     Instr::LoadAttrCall {
                         idx: add_idx,
                         argc: 1,
-                        site: add_site,
                     },
                     self.cur_line,
                 );
-                self.sites.retarget(ins_idx, add_site);
                 self.emit_at_line(Instr::PopTop, self.cur_line);
             }
             CompShape::Dict => {

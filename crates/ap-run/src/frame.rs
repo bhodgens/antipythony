@@ -683,7 +683,13 @@ pub struct Interpreter {
 // (Decision 1). The remaining Cell fields (depth/recursion_limit/exit_code
 // were converted too) — no Cell remains on a cross-thread path. Any new
 // RefCell/Cell added to this struct breaks the marker's soundness proof.
+// SAFETY: 02.09b worker-only-serialization discipline — fields are Arc
+// handles (refcount traffic atomic, Decision 1); the FnRegistry is an
+// RwLock (F1); no RefCell/Cell remains on a cross-thread path. Any new
+// interior-mutability field added here breaks this marker's soundness.
 unsafe impl Send for Interpreter {}
+// SAFETY: same Arc/RwLock interior as the Send marker above; every
+// mutation path holds the registry or worker lock first.
 unsafe impl Sync for Interpreter {}
 
 impl Interpreter {
@@ -830,6 +836,9 @@ impl Interpreter {
         // never read RunOutcome.stdout (verifier: 2x full output resident).
         if buf.len() >= STDOUT_FLUSH_THRESHOLD {
             let n = buf.len();
+            // SAFETY: write(2) on fd 1 (always open in a process) with a valid (ptr, len)
+            // into the live local buf; a short/failed write is handled by keeping the
+            // bytes buffered for the end-of-run flush.
             let ok = unsafe { libc::write(1, buf.as_ptr() as *const libc::c_void, n) };
             if ok == n as isize {
                 if self.stdout_capture {

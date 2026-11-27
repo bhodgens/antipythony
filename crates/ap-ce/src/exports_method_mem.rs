@@ -100,6 +100,8 @@ fn type_token(name: &str) -> PyObjPtr {
 
 /// The owned type NAME behind a handle (the objectproto vtable's
 /// ClassNameOf route; falls back to the handle's kind name).
+// SAFETY: callers pass h as a live minted ce handle (Box::into_raw'd, never freed); the
+// payload/descr_kind borrows are short (worker-serialization protocol, markers.rs claim).
 unsafe fn type_name_owned(h: CeHandle) -> String {
     let o = &*h;
     match o.payload.borrow().as_ref() {
@@ -248,6 +250,8 @@ pub unsafe extern "C" fn apx_PyMethod_Self(m: PyObjPtr) -> PyObjPtr {
     method_part(m, false)
 }
 
+// SAFETY: callers pass m as a live minted ce handle (or null, handled below); cached side
+// entries store raw handles of live minted objects (never freed), same contract.
 unsafe fn method_part(m: PyObjPtr, func: bool) -> PyObjPtr {
     let h = m as CeHandle;
     if h.is_null() {
@@ -621,6 +625,8 @@ pub unsafe extern "C" fn PyEval_RestoreThread(tstate: *mut c_void) {
     if !tstate.is_null() {
         let b = tstate as *mut u64;
         // SAFETY: tstate is the token PyEval_SaveThread returned (a
+        // Box::into_raw'd u64, consumed exactly once per CPython contract),
+        // so reclaiming it here is sound; the null case is skipped above.
         drop(unsafe { Box::from_raw(b) });
     }
 }

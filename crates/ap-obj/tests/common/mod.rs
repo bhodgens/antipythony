@@ -130,6 +130,8 @@ pub fn interpreter_gate() {
 fn memory_pressure_ok() -> bool {
     let mut level: libc::c_int = 0;
     let mut size = std::mem::size_of::<libc::c_int>();
+    // SAFETY: test-only harness — libc flock on an fd this harness
+    // opened; the file guard keeps the fd alive for the call.
     let rc = unsafe {
         libc::sysctlbyname(
             c"kern.memorystatus_vm_pressure_level".as_ptr() as *const libc::c_char,

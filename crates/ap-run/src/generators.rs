@@ -722,6 +722,9 @@ impl Drop for StackPool {
         #[cfg(unix)]
         for (len, regions) in self.0.iter() {
             for raw in regions {
+                // SAFETY: each (raw, len) was recorded from a successful map_region mmap on
+                // this thread and pooling is thread-local; at thread exit no live coroutine
+                // can alias a pooled region, so munmap of the exact original span is valid.
                 unsafe {
                     libc::munmap(*raw as *mut libc::c_void, *len);
                 }
@@ -754,6 +757,9 @@ impl PooledStack {
     /// on the usable span).
     fn map_region(mmap_len: usize, usable: usize) -> Result<usize, std::io::Error> {
         let map_flags = libc::MAP_ANONYMOUS | libc::MAP_PRIVATE;
+        // SAFETY: mmap MAP_ANONYMOUS|MAP_PRIVATE with a page-rounded length (result
+        // checked against MAP_FAILED); mprotect targets [mmap+page, mmap+page+usable)
+        // fully inside the mapping; munmap runs only on the mprotect-failure path.
         unsafe {
             let mmap = libc::mmap(
                 std::ptr::null_mut(),
@@ -810,6 +816,8 @@ fn page_size() -> usize {
     use std::sync::OnceLock;
     static PS: OnceLock<usize> = OnceLock::new();
     *PS.get_or_init(|| {
+        // SAFETY: sysconf(3) with a pure name query (_SC_PAGESIZE), no pointer
+        // arguments; the return is sanity-checked before use.
         let p = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
         if p.is_power_of_two() && p >= 4096 {
             p
@@ -834,6 +842,9 @@ impl Drop for PooledStack {
                 // life (madvise on it could return zero-filled RW pages
                 // on some platforms and silently kill the overflow guard).
                 let page = page_size();
+                // SAFETY: MADV_DONTNEED on the usable span only — [raw+page, raw+mmap_len)
+                // lies inside this thread's own mapping (page-rounded sizes), and the low
+                // PROT_NONE guard page is deliberately excluded.
                 unsafe {
                     libc::madvise(
                         (self.raw + page) as *mut libc::c_void,
@@ -848,6 +859,9 @@ impl Drop for PooledStack {
             }
         });
         if !keep {
+            // SAFETY: self.raw/self.mmap_len describe one mapping produced by map_region
+            // (or popped from this thread's pool) with no live stack aliasing it — Drop
+            // ownership was just taken; munmap of the exact original (addr, len) is valid.
             unsafe {
                 libc::munmap(self.raw as *mut _, self.mmap_len);
             }

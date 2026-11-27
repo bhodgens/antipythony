@@ -114,7 +114,10 @@ pub struct LxDoc {
 // in the DOCS table's Arc<RefCell<LxDoc>> slots. All slot mutation happens
 // under the process-global DOCS Mutex (the table's lock is the
 // serialization the type system cannot see); refcount traffic is Arc.
+// SAFETY: 02.09a P4/P5 staged marker (see comment above) — slot mutation
+// happens only under the DOCS Mutex; refcount traffic is Arc.
 unsafe impl Send for LxDoc {}
+// SAFETY: same DOCS-Mutex serialization as the Send marker above.
 unsafe impl Sync for LxDoc {}
 
 impl LxDoc {
@@ -149,7 +152,10 @@ impl Clone for SharedDoc {
     }
 }
 
+// SAFETY: SharedDoc is an Arc<RefCell<LxDoc>> handle; interior mutation
+// runs under the DOCS Mutex (02.09a P4/P5 marker chain above).
 unsafe impl Send for SharedDoc {}
+// SAFETY: same DOCS-Mutex serialization as the Send marker above.
 unsafe impl Sync for SharedDoc {}
 
 // ===========================================================================
@@ -1559,7 +1565,10 @@ impl WeakDoc {
     }
 }
 
+// SAFETY: WeakDoc upgrades to SharedDoc only; every upgrade+mutate
+// sequence runs under the DOCS Mutex (02.09a P4/P5 marker chain).
 unsafe impl Send for WeakDoc {}
+// SAFETY: same DOCS-Mutex serialization as the Send marker above.
 unsafe impl Sync for WeakDoc {}
 
 impl Clone for WeakDoc {
@@ -1598,7 +1607,10 @@ pub(crate) struct DocRegistry {
 struct PinsAreTableLocked {
     _p: std::marker::PhantomData<Arc<std::cell::RefCell<LxDoc>>>,
 }
+// SAFETY: witness type (never constructed); its PhantomData carries the
+// Arc<RefCell<LxDoc>> slots whose mutations are DOCS-Mutex-serialized.
 unsafe impl Send for PinsAreTableLocked {}
+// SAFETY: same witness/PhantomData argument as the Send marker above.
 unsafe impl Sync for PinsAreTableLocked {}
 static DOCS: std::sync::LazyLock<std::sync::Mutex<DocRegistry>> = std::sync::LazyLock::new(|| {
     std::sync::Mutex::new(DocRegistry {

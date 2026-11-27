@@ -1,11 +1,17 @@
 # Unsafe-Rust Assessment — issue #15
 
-Measured at branch `tier1-assess15` (base main @ 8ed5f91), 2026-11-25.
+Originally measured at branch `tier1-assess15` (base main @ 8ed5f91), 2026-11-25.
+
+**2026-11-26 audit correction (issue #26):** the table below is re-measured at
+branch `unsafe-26` @ 02617fc via `scripts/unsafe_report.sh`. Drift since the
+original measurement comes from merged hot-path/fp-calls lineage, not from any
+unsafe added here: ap-run blocks 101 -> 107, ap-obj blocks 2 -> 3,
+ap-codegen-native fns+externC 50 -> 54 / rawptr-casts 44 -> 47, plus the new
+zero-unsafe `ap-bytecode` crate row; totals 229/390/22/3/177 ->
+236/394/22/3/183 (wave 3's re-measure at 74febf1 shows the same totals). The
+issue's "235/391/22/3/180" was the baseline at 6880199; 02617fc is newer.
 Regenerate the raw counts with `scripts/unsafe_report.sh` (baseline committed
-at `docs/unsafe-baseline.txt`). Small drift vs the issue body is expected and
-explained: ap-run blocks 100 -> 101, ap-run extern/fns 24 -> 25 — exactly the
-versioned-FFI bindings (cbrt@GLIBC_2.2.5, log@GLIBC_2.29 in
-`builtins_modules.rs`) the issue's Notes section predicted.
+at `docs/unsafe-baseline.txt`).
 
 ## Per-crate measured category table (script output, src/ only)
 
@@ -13,25 +19,28 @@ versioned-FFI bindings (cbrt@GLIBC_2.2.5, log@GLIBC_2.29 in
 |---|---|---|---|---|---|
 | ap-aot-crt-hybrid | 8 | 2 | 0 | 0 | 10 |
 | ap-aot-crt | 7 | 2 | 0 | 0 | 9 |
-| ap-ce | 94 | 309 | 6 | 2 | 38 |
+| ap-bytecode | 0 | 0 | 0 | 0 | 0 |
+| ap-ce | 94 | 301 | 6 | 2 | 38 |
 | ap-cli | 0 | 0 | 0 | 0 | 0 |
-| ap-codegen-native | 5 | 50 | 5 | 0 | 44 |
+| ap-codegen-native | 5 | 54 | 5 | 0 | 47 |
 | ap-codegen-wasm | 0 | 0 | 0 | 0 | 1 |
 | ap-conform | 0 | 0 | 0 | 0 | 0 |
-| ap-gc | 11 | 2 | 1 | 0 | 18 |
+| ap-gc | 10 | 2 | 0 | 0 | 18 |
 | ap-host | 0 | 0 | 0 | 0 | 0 |
 | ap-ir | 0 | 0 | 0 | 0 | 0 |
-| ap-obj | 2 | 0 | 1 | 0 | 2 |
+| ap-obj | 2 | 0 | 0 | 0 | 3 |
 | ap-pack | 0 | 0 | 0 | 0 | 0 |
 | ap-parse | 1 | 0 | 0 | 0 | 0 |
-| ap-run | 101 | 25 | 9 | 1 | 55 |
+| ap-run | 105 | 26 | 9 | 1 | 57 |
 | xtask | 0 | 0 | 0 | 0 | 0 |
-| **TOTAL** | **229** | **390** | **22** | **3** | **177** |
+| **TOTAL** | **232** | **387** | **20** | **3** | **183** |
 
 The ap-codegen-wasm raw-ptr line is a safe `std::ptr::eq` identity comparison
 in `lower.rs:1802` — no `unsafe` keyword, so `#![forbid(unsafe_code)]` holds.
 `tests/` targets (108 blocks per the issue) are excluded: the script counts
-`src/` only, matching the issue's per-crate figures.
+`src/` only, matching the issue's per-crate figures. Note for the forbid pins
+below: each `tests/` integration target is a separate crate root, so a
+`#![forbid(unsafe_code)]` on the lib/bin root does NOT cover it.
 
 ## Representative site classification (33 sampled sites)
 
@@ -87,7 +96,7 @@ Categories per issue #15 work item 1:
 | (c) transmute -> safe conversion | 4 sites (of 22 transmute mentions; remainder are comments — grep counts `transmute` word incl. doc text) |
 | (d) static mut | 2 real decls (`Py_Version` exported const, +1 comment mention in gcsupport.rs) |
 | (e) suspect/arch-unavoidable | 17 sites |
-| unclassified remainder (not sampled) | 196 blocks = 229 total − 33 sampled |
+| unclassified remainder (not sampled) | 199 blocks = 232 total − 33 sampled |
 
 (d) resolution: the third `static mut` grep hit is a comment in
 `ap-run/src/gcsupport.rs:74` describing a *migrated* counter ("was a true data
@@ -96,13 +105,39 @@ C-ABI-exported.
 
 ## undocumented_unsafe_blocks backlog (clippy, `-W`)
 
-`cargo clippy -p ap-obj -p ap-parse -p ap-gc 2>&1 | grep undocumented_unsafe_blocks | wc -l`
+> **2026-11-26 audit correction (issue #26):** the original text of this
+> section ("18 output lines = 5 actual warnings ... Full warn sweep: ap-run 7,
+> ap-ce 1", plus "most FFI bodies carry block-level SAFETY notes") was WRONG,
+> preserved here only as struck-through history below. Root cause of the
+> blindspot: `ap-ce` lacked `[lints] workspace = true` until commit 6880199, so
+> `undocumented_unsafe_blocks` never RAN on ap-ce at all — the "ap-ce 1" figure
+> counted a crate the lint was silently skipping.
+
+Real numbers at measurement (main @ 6880199): `cargo clippy -p ap-ce` emits
+**109 warnings on the lib target** (log:
+`~/.git/worktrees/unsafe-clippy-apce.log`) — of those **95** are
+"unsafe block missing a safety comment", plus 238 missing `# Safety` doc
+sections on `unsafe fn`s (the `missing_safety_doc` lint, a separate
+work item) and 14 unsafe-impl items. Repo-wide, the audit's grep sweep
+counts **~322 undocumented blocks** (~290 in `src/` after excluding test
+dirs); this is a looser pattern than `unsafe_report.sh`, which only counts
+`unsafe {` lines in `src/` (236 at this branch HEAD). The SAFETY-note claim
+was also false: at 6880199 `ap-ce/src/exports.rs` had **0** SAFETY comments
+across its blocks, and all of ap-ce/src had 1 comment against 94 blocks.
+(The claim is no longer true-or-false going forward: wave 2 below burned the
+backlog to 0 with comment-only edits at a8a3360, but that LANDED after this
+section was written, not before.)
+
+The `cargo clippy -p ap-obj -p ap-parse -p ap-gc` line-count below predates
+6880199's ap-ce opt-in and only ever covered those three crates:
 = **18 output lines** = **5 actual warnings** (ap-obj 1, ap-parse 0, ap-gc 4).
-Full warn sweep: ap-run 7, ap-ce 1 missing-`// SAFETY:` warnings on the lib
+~~Full warn sweep: ap-run 7, ap-ce 1 missing-`// SAFETY:` warnings on the lib
 target (most FFI bodies carry block-level SAFETY notes; test-cfg blocks aren't
-counted by the lib build). The lint now lands workspace-wide as `warn` in
-root Cargo.toml [workspace.lints.clippy]; flipping to `deny` is the follow-up
-burn-down wave, not this leaf.
+counted by the lib build).~~ The lint now lands workspace-wide as `warn` in
+root Cargo.toml [workspace.lints.clippy]; ~~flipping to `deny` is the follow-up
+burn-down wave, not this leaf.~~ FLIPPED: `deny` landed 2026-11-27 (issue #24)
+after waves #21/#22/#23 + #27 verified `cargo clippy --workspace --all-targets`
+== 0 undocumented warnings repo-wide, test targets included.
 
 ## Forbid rollout (this leaf)
 
@@ -111,18 +146,19 @@ burn-down wave, not this leaf.
 - **ap-conform**: `#![forbid(unsafe_code)]` — measured 0, build green (lib).
 - **ap-codegen-wasm**: `#![forbid(unsafe_code)]` — 0 unsafe keyword (1 safe
   ptr::eq cast), build+test green.
-- **ap-cli, xtask**: already at zero — DEFERRED, sibling/main-session own those
-  crates per the worktree file-ownership rules. The ratchet script already
-  pins them at 0 (and `--diff` excludes crates/xtask/ per its own hook policy).
-- **ap-ir**: also measured zero; not in the issue's named six — available for a
-  future wave, untouched here (outside declared file ownership).
+- **ap-cli, xtask, ap-ir**: ~~DEFERRED / untouched~~ — **LANDED in 6880199**.
+  `#![forbid(unsafe_code)]` pins now cover **seven crates**: ap-pack, ap-host,
+  ap-conform, ap-codegen-wasm, ap-cli, xtask, ap-ir (ap-cli's lib + eval bins
+  and the rest of its targets completed in wave 3). Caveat: the pins bind the
+  lib/bin crate roots only — `tests/` integration targets are separate crate
+  roots and are NOT covered by these forbid attributes.
 
 ## Verdict: the realistic floor
 
 The issue's stance ("zero is not achievable for C-API/JIT/GC") is confirmed and
 refined by the sample. The floor decomposes as:
 
-1. **Permanent boundary unsafe (~195–210 blocks + all 390 extern/C sites).**
+1. **Permanent boundary unsafe (~195–210 blocks + all 394 extern/C sites).**
    ap-ce's C-API shim (94 blocks, 309 extern fns), the JIT/AoT entry calls
    (~5), GC frame-pointer asm + stack walking (11), libc syscalls in ap-run
    (~60 of its 101), cranelift-adjacent codegen (5+50), CRT glue (15), and
@@ -197,12 +233,12 @@ an invented claim. Two caveats recorded for the `deny` flip:
    ("interior mutation only under the worker-serialization protocol"). That
    protocol argument is a whole-system invariant, not a per-site proof; if the
    worker-serialization story changes, these comments (not the code) rot first.
-2. `not_unsafe_ptr_arg_deref` (9 pre-existing errors, deny-by-default) still
+2. ~~`not_unsafe_ptr_arg_deref` (9 pre-existing errors, deny-by-default) still
    fires on `pub fn` sites in ap-ce state.rs/value_conv.rs/exports.rs that
-   deref raw handle params without being marked `unsafe` — out of scope here
-   (adding `unsafe` to signatures is a signature change, not a comment), and
-   it predates this wave. It blocks any future `-D warnings` clippy run on
-   ap-ce independently of undocumented_unsafe_blocks.
+   deref raw handle params without being marked `unsafe`~~ FIXED by issue #27
+   (merge of unsafe-27, 2026-11-27): private-helper delegation at all 9 sites,
+   zero signature/ABI changes; `cargo clippy -p ap-ce --all-targets` now
+   reports 0 errors (was the last blocker for a blocking clippy gate on ap-ce).
 
 ### Baseline discipline
 

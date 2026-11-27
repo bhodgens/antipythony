@@ -345,6 +345,8 @@ fn render_traceback(interp: &Arc<Interpreter>, exc: &ExceptionValue) -> String {
         pre.push_str(&out);
         return pre;
     }
+    // CPython pin: an explicit `raise X from Y` sets __suppress_context__ —
+    // the implicit context is HELD (still on the instance) but NOT rendered.
     if let Some(ctx) = &exc.context {
         let mut pre = render_traceback(interp, ctx);
         pre.push_str("\nDuring handling of the above exception, another exception occurred:\n\n");
@@ -417,9 +419,10 @@ impl FnRegistry {
         let leaked: &'static ScopeInfoModule = Box::leak(Box::new(scopes));
         let mut index: HashMap<String, &'static ap_parse::ScopeInfo> = HashMap::new();
         for s in leaked.scopes.iter() {
-            let sp = unsafe {
-                std::mem::transmute::<&ap_parse::ScopeInfo, &'static ap_parse::ScopeInfo>(s)
-            };
+            // Safe rewrite (issue #22): `leaked` is a Box::leak (=&'static), so
+            // iterating its scopes already yields &'static ScopeInfo — the old
+            // transmute was a no-op lifetime cast.
+            let sp: &'static ap_parse::ScopeInfo = s;
             let key = sp.path.join(".");
             match index.get(&key) {
                 // Within ONE module duplicate paths shouldn't exist; keep
@@ -477,6 +480,9 @@ impl FnRegistry {
         // — e.g. exec_module's pre-registration adopt): scan it directly.
         for s in table.scopes.iter() {
             if s.path.join(".").as_str() == path {
+                // SAFETY: scope tables are process-lifetime (Box::leak'd via register_scopes;
+                // the adopt path in exec_module stores the same leaked table). AUDIT: verify no
+                // caller can reach this arm with a table that is not leaked.
                 return Some(unsafe {
                     std::mem::transmute::<&ap_parse::ScopeInfo, &'static ap_parse::ScopeInfo>(s)
                 });
@@ -516,9 +522,9 @@ impl FnRegistry {
         let mut by_path = HashMap::new();
         let mut index: HashMap<String, &'static ap_parse::ScopeInfo> = HashMap::new();
         for s in scopes.scopes.iter() {
-            let sp = unsafe {
-                std::mem::transmute::<&ap_parse::ScopeInfo, &'static ap_parse::ScopeInfo>(s)
-            };
+            // Safe rewrite (issue #22): `scopes` is &'static, so iteration already
+            // yields &'static ScopeInfo — the old transmute was a no-op lifetime cast.
+            let sp: &'static ap_parse::ScopeInfo = s;
             index.entry(sp.path.join(".")).or_insert(sp);
         }
         let reg = FnRegistry {
@@ -1546,16 +1552,126 @@ fn exec_stmt(
                 } else {
                     Some(Box::new(raise_from_value(&cv)?))
                 };
-                // from None also suppresses any implicit context.
+                // CPython pin (probe2Z): `from Y` sets __cause__ but does
+                // NOT clear __context__ — the implicit chain stays and
+                // __suppress_context__=True hides it from the RENDER.
+                // `from None`: cause stays None but the in-flight context
+                // is STILL chained on the instance with
+                // __suppress_context__=True (CPython 3.14 probe: both
+                // raise-from shapes carry context; the flag decides the
+                // render) — chain it here too so the attr surface matches.
                 let mut e = e;
                 e.cause = cause;
-                if e.cause.is_some() {
-                    e.context = None;
+                if e.context.is_none() {
+                    if let Some(prev) = interp
+                        .current_exception
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .clone()
+                    {
+                        let prev = (*prev).clone();
+                        if prev.class != "StopIteration" || !prev.args.is_empty() {
+                            e.context = Some(Box::new(prev));
+                        }
+                    }
+                }
+                // fp-exceptions: materialize the chain on the carried
+                // instance (raise X from Y constructs X — the instance
+                // route bypasses exception_instance's fallback).
+                if let Some(Value::Obj(io)) = &e.instance {
+                    let mut a = io.attrs.lock().unwrap_or_else(|p| p.into_inner());
+                    if let Some(ctx) = &e.context {
+                        let _ = a.set(
+                            Value::Str(PyString::new("__context__")),
+                            exception_instance(ctx),
+                        );
+                    }
+                    if let Some(cause) = &e.cause {
+                        let _ = a.set(
+                            Value::Str(PyString::new("__cause__")),
+                            exception_instance(cause),
+                        );
+                    }
+                    let _ = a.set(
+                        Value::Str(PyString::new("__suppress_context__")),
+                        Value::Bool(true), // any explicit `from` suppresses
+                    );
                 }
                 e.raise_line = frame.last_line.get();
                 return Err(Flow::Raise(e));
             }
             let mut e = e;
+            // fp-exceptions: IMPLICIT __context__ chaining AT RAISE TIME
+            // (CPython pin: a raise while an exception is being handled
+            // chains the handled exception as __context__; `from cause`
+            // suppresses it — handled above). The old wiring only set
+            // context at FRAME EXIT (call_function's Err arm), so a
+            // same-frame handler raise caught by an outer try in the SAME
+            // frame never chained (no frame boundary crossed). The
+            // frame-exit arm stays as the fallback for flows that skip
+            // the Raise arm (builtin-raised exceptions).
+            if e.context.is_none() && e.cause.is_none() {
+                if let Some(prev) = interp
+                    .current_exception
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone()
+                {
+                    // Self-chain guard: a bare/named RE-RAISE of the
+                    // in-flight exception must NOT chain it to itself
+                    // (raise e / raise: e.context = e -> infinite render
+                    // recursion). CPython: re-raise keeps the chain empty.
+                    // Identity: same carried instance object, or BOTH
+                    // instance-less with the same class + raise_line (the
+                    // class-raise shape clones the EV across unwinds).
+                    let prev = (*prev).clone();
+                    let same_inst = e
+                        .instance
+                        .as_ref()
+                        .zip(prev.instance.as_ref())
+                        .map(|(a, b)| match (a, b) {
+                            (Value::Obj(x), Value::Obj(y)) => std::sync::Arc::ptr_eq(x, y),
+                            _ => false,
+                        })
+                        .unwrap_or(false);
+                    let is_same = same_inst
+                        || (e.instance.is_none()
+                            && prev.instance.is_none()
+                            && e.class == prev.class
+                            && e.raise_line == prev.raise_line
+                            && e.args.len() == prev.args.len());
+                    if !is_same && (prev.class != "StopIteration" || !prev.args.is_empty()) {
+                        e.context = Some(Box::new(prev));
+                    }
+                }
+            }
+            // fp-exceptions: MATERIALIZED chain attrs on the carried
+            // instance (raise X / raise X from Y via a CONSTRUCTED
+            // exception: e.instance is Some and exception_instance returns
+            // it early — the walker/bc attr reads would see always-None).
+            // The EV chain is authoritative for rendering; the attrs make
+            // the chain Python-visible on the instance.
+            if e.context.is_some() || e.cause.is_some() {
+                if let Some(Value::Obj(io)) = &e.instance {
+                    let mut a = io.attrs.lock().unwrap_or_else(|p| p.into_inner());
+                    if let Some(ctx) = &e.context {
+                        let _ = a.set(
+                            Value::Str(PyString::new("__context__")),
+                            exception_instance(ctx),
+                        );
+                    }
+                    if let Some(cause) = &e.cause {
+                        let _ = a.set(
+                            Value::Str(PyString::new("__cause__")),
+                            exception_instance(cause),
+                        );
+                    }
+                    let _ = a.set(
+                        Value::Str(PyString::new("__suppress_context__")),
+                        Value::Bool(e.cause.is_some()),
+                    );
+                }
+            }
             // Wave-58: raise_line from THIS frame's own cell; the tb
             // entries are added by the frame-exit hooks (5573/501) —
             // the old hardcoded ("<module>", global-line) push here
@@ -1564,11 +1680,12 @@ fn exec_stmt(
             e.raise_line = frame.last_line.get();
             if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TbDbg) {
                 eprintln!(
-                    "[APTB4] raise {} set raise_line={} (last_line={}) frame={}",
+                    "[APTB4] raise {} set raise_line={} (last_line={}) frame={} ctx={:?}",
                     e.class,
                     e.raise_line,
                     frame.last_line.get(),
-                    frame.qualname
+                    frame.qualname,
+                    e.context.as_ref().map(|c| c.class.clone()),
                 );
             }
             Err(Flow::Raise(e))
@@ -2274,7 +2391,14 @@ fn exec_try(
                     if exc.class == "SystemExit" {
                         *interp.exit_code.lock().unwrap_or_else(|p| p.into_inner()) = None;
                     }
-                    exec_block(interp, frame, &t.finalbody, reg).map(|_| StmtOut::Next)
+                    // fp-exceptions: the finally's own return/break wins
+                    // over the handled path's Next (same override pin).
+                    match exec_block(interp, frame, &t.finalbody, reg) {
+                        Err(win @ (Flow::Return(_) | Flow::Break | Flow::Continue)) => {
+                            Ok(StmtOut::Unwind(win))
+                        }
+                        r => r.map(|_| StmtOut::Next),
+                    }
                 }
                 Some(Err(f)) => {
                     // Handler body raised: the NEW exception's traceback owns
@@ -2321,8 +2445,19 @@ fn exec_try(
         }
         Err(other) => {
             // return/break/continue through try: finally runs (S-02-33).
-            let _ = exec_block(interp, frame, &t.finalbody, reg);
-            Ok(StmtOut::Unwind(other))
+            // fp-exceptions (CPython pin): a return/break/continue INSIDE
+            // the finally body OVERRIDES the pending unwind. exec_block
+            // surfaces the finally's own control flow as
+            // Err(Flow::Return/Break/Continue) — that flow IS the
+            // continuation outward (the pending `other` is discarded);
+            // any OUTER exec_try unwinds it the same way (S-02-33
+            // cascade). A plain-completing finally keeps `other`.
+            match exec_block(interp, frame, &t.finalbody, reg) {
+                Err(win @ (Flow::Return(_) | Flow::Break | Flow::Continue)) => {
+                    Ok(StmtOut::Unwind(win))
+                }
+                _ => Ok(StmtOut::Unwind(other)),
+            }
         }
     }
 }
@@ -2762,6 +2897,33 @@ fn exception_instance(exc: &ExceptionValue) -> Value {
     }
     let o = ap_obj::PyObject::new(ap_obj::ObjKind::Exception, exc.class.clone());
     *o.args.lock().unwrap_or_else(|p| p.into_inner()) = exc.args.clone();
+    // fp-exceptions: materialize the chain dunders onto the instance so
+    // `e.__context__` / `e.__cause__` read the REAL chains (CPython pin:
+    // raise-from sets __cause__ + suppresses __context__; an in-flight
+    // handler raise chains implicitly). The read arms at interp.rs:17230 /
+    // classes.rs:3856 check attrs FIRST (the always-None defaults only
+    // fire when no attr was materialized), so writing here upgrades every
+    // consumer uniformly. One fresh instance Value per chain member (the
+    // recursion depth is the chain length — bounded in practice).
+    {
+        let mut a = o.attrs.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(ctx) = &exc.context {
+            let _ = a.set(
+                Value::Str(PyString::new("__context__")),
+                exception_instance(ctx),
+            );
+        }
+        if let Some(cause) = &exc.cause {
+            let _ = a.set(
+                Value::Str(PyString::new("__cause__")),
+                exception_instance(cause),
+            );
+        }
+        let _ = a.set(
+            Value::Str(PyString::new("__suppress_context__")),
+            Value::Bool(exc.cause.is_some()),
+        );
+    }
     // V016: UnicodeEncodeError/UnicodeDecodeError instances carry
     // start/end code-point (encode) or byte (decode) attributes that
     // CPython parses from the message shape. Both attribute reads
@@ -2807,7 +2969,12 @@ fn exception_instance(exc: &ExceptionValue) -> Value {
     // never did — the APTB/attach block only ran on the .instance arm).
     {
         if ap_obj::debug_flags::debug_flag(ap_obj::debug_flags::ApxFlag::TbDbg) {
-            eprintln!("[APTB-FALLBACK] cls={} tb_len={}", exc.class, exc.tb.len());
+            eprintln!(
+                "[APTB-FALLBACK] cls={} tb_len={} ctx={:?}",
+                exc.class,
+                exc.tb.len(),
+                exc.context.as_ref().map(|c| c.class.clone())
+            );
         }
         let entries: Vec<Value> = exc
             .tb
@@ -15627,6 +15794,21 @@ fn attr_get(interp: &Arc<Interpreter>, obj: &Value, name: &str) -> Result<Option
     }
     if let Value::Obj(o) = obj {
         if o.kind == ap_obj::ObjKind::Exception {
+            // fp-exceptions: MATERIALIZED chain dunders first —
+            // exception_instance writes __context__/__cause__/
+            // __suppress_context__ attrs when a chain exists; the
+            // always-None default at 17230 only answers when nothing was
+            // materialized (bare no-chain raises).
+            if matches!(name, "__context__" | "__cause__" | "__suppress_context__") {
+                if let Some(v) = o
+                    .attrs
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .get(&Value::Str(PyString::new(name)))
+                {
+                    return Ok(Some(v));
+                }
+            }
             // 02.08-full part 1: SyntaxError field surface (s001 e.msg pin).
             if o.name == "SyntaxError" {
                 match name {
@@ -18615,6 +18797,32 @@ pub fn raise_class_pub(
 
 pub fn is_builtin_exc_name_pub(n: &str) -> bool {
     is_builtin_exc_name(n)
+}
+
+// --- fp-exceptions public wrappers (bytecode_interp's exception ops route
+// through the SAME semantic bodies the tree-walker's exec_try/Raise arms
+// use — no semantic duplication, master.md) ----------------------------------
+
+/// exc_matches (typed except matching: MRO/tuple/bare + catch-time
+/// TypeError) — the bytecode CheckExcept route.
+pub fn exc_matches_pub(
+    _interp: &Arc<Interpreter>,
+    tv: &Value,
+    exc: &ExceptionValue,
+) -> Result<bool, Flow> {
+    exc_matches(tv, exc)
+}
+
+/// raise_from_value (exception instance / class / TypeError-otherwise,
+/// S-03-33) — the bytecode Raise route.
+pub fn raise_from_value_pub(v: &Value) -> Result<ExceptionValue, Flow> {
+    raise_from_value(v)
+}
+
+/// exception_instance (the handler-bound instance Value, e007 identity) —
+/// the bytecode CheckExcept bind route.
+pub fn exception_instance_pub(exc: &ExceptionValue) -> Value {
+    exception_instance(exc)
 }
 
 /// Public thread-local interpreter handle (classes.rs metaclass hooks).

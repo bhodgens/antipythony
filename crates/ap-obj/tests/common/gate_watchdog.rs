@@ -77,7 +77,13 @@ fn gate_wait_secs() -> Option<u64> {
 /// guard: a reused PID has a different start time.
 #[cfg(target_os = "macos")]
 pub fn process_start_time_secs(pid: u32) -> Option<u64> {
+    // SAFETY: test-only harness — libc flock/proc_bsdinfo/kill calls
+    // on fds and pid values this harness itself created or probed;
+    // no lifetime crosses the block.
     let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    // SAFETY: test-only harness — libc flock/proc_bsdinfo/kill calls
+    // on fds and pid values this harness itself created or probed;
+    // no lifetime crosses the block.
     let n = unsafe {
         libc::proc_pidinfo(
             pid as libc::c_int,
@@ -134,6 +140,9 @@ fn holder_liveness(pid: u32, recorded_start: u64) -> HolderLiveness {
             // Uninspectable: fall back to signal-0 probing. On EPERM (a
             // foreign-uid process with the same pid) treat as Gone — the
             // takeover attempt is still protected by LOCK_NB.
+            // SAFETY: test-only harness — libc flock/proc_bsdinfo/kill calls
+            // on fds and pid values this harness itself created or probed;
+            // no lifetime crosses the block.
             let rc = unsafe { libc::kill(pid as libc::c_int, 0) };
             if rc == 0 {
                 HolderLiveness::Reused
@@ -190,6 +199,9 @@ fn write_holder_record(file: &mut std::fs::File) {
 fn try_flock_ex(file: &std::fs::File) -> bool {
     use std::os::fd::AsFd as _;
     use std::os::fd::AsRawFd as _;
+    // SAFETY: test-only harness — libc flock/proc_bsdinfo/kill calls
+    // on fds and pid values this harness itself created or probed;
+    // no lifetime crosses the block.
     let rc = unsafe { libc::flock(file.as_fd().as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     rc == 0
 }
