@@ -63,7 +63,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use ap_bytecode::caches::{AttrPlan, CallPlan, IC_MAGIC};
 use ap_bytecode::code::CodeObject;
@@ -340,6 +340,34 @@ fn ic_call_fill(ic: &IcTable, site: u32, argc: u16, plan: CallPlan) {
 static BC_COMPILES: AtomicU64 = AtomicU64::new(0);
 static BC_FALLBACKS: AtomicU64 = AtomicU64::new(0);
 static BC_EXECS: AtomicU64 = AtomicU64::new(0);
+
+// === fp-superinstructions: opt-in opcode histogram ==========================
+// APX_BP_STATS=1 turns on per-dispatch opcode/pair/triple counting. One env
+// read at process start; the dispatch loop's `if bp_on` check is a single
+// predicted branch when the knob is off (zero atomics/locks/allocations).
+static BP_HIST: OnceLock<ap_bytecode::stats::OpHistogram> = OnceLock::new();
+
+/// Read once at the dispatch-loop seam (profile-only knob).
+#[inline]
+fn bp_stats_on() -> bool {
+    std::env::var("APX_BP_STATS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Emit the top-20 pair/triple histogram table to stderr (called from the
+/// process-exit stats hook, only when APX_BP_STATS=1). Returns None when no
+/// dispatch was ever recorded (toggle-off / tree-walk-only runs).
+pub fn bp_hist_line() -> Option<String> {
+    if !bp_stats_on() {
+        return None;
+    }
+    let h = BP_HIST.get()?;
+    if h.report(20).starts_with("[BP-HIST] total_dispatches=0\n") {
+        return None;
+    }
+    Some(h.report(20))
+}
 
 /// One-line stats report (called from jit_hook::report_line under
 /// APX_TIER_STATS=1). Empty when nothing was ever compiled (toggle-off runs
@@ -952,6 +980,15 @@ fn run_frame(
 
     let mut stack: Vec<Value> = Vec::with_capacity(8);
     let mut pc: usize = 0;
+    // fp-superinstructions profile: one env read per FRAME (cheap; the
+    // stats path is diagnostic-only). When off, the per-dispatch `if bp_on`
+    // below is a single predicted branch — no atomics, locks or allocation.
+    let bp_on = bp_stats_on();
+    if bp_on {
+        BP_HIST.get_or_init(ap_bytecode::stats::OpHistogram::default);
+    }
+    let mut bp_prev1: u16 = ap_bytecode::stats::NO_OP;
+    let mut bp_prev2: u16 = ap_bytecode::stats::NO_OP;
     let mut cur_line: u32 = c.dense_lines.first().copied().unwrap_or(1);
     // fp-exceptions: the interpreter-wide tb_frames length at frame ENTRY —
     // exc_enter truncates back to this before snapshotting (the callee
@@ -1047,6 +1084,23 @@ fn run_frame(
             ));
         }
         let ins = code.instrs[pc];
+        // fp-superinstructions profile (APX_BP_STATS=1 only). Record the
+        // dynamic predecessor chain at the dispatch boundary. A jump BREAKS
+        // adjacency (the next dispatch's predecessor is unrelated), which
+        // is exactly what a peephole may rewrite: only fall-through pairs
+        // are fusable. `continue` skips a frame, so preds live in locals.
+        if bp_on {
+            let h = BP_HIST.get().expect("bp hist initialized");
+            let cur = ins.opcode_index() as u16;
+            h.record(cur, bp_prev1, bp_prev2);
+            if ins.is_jump() {
+                bp_prev1 = ap_bytecode::stats::NO_OP;
+                bp_prev2 = ap_bytecode::stats::NO_OP;
+            } else {
+                bp_prev2 = bp_prev1;
+                bp_prev1 = cur;
+            }
+        }
         // Line bookkeeping: the LOCAL cur_line drives every error/exit sync
         // (sync_frame_line). Leaf fp-calls FIX: cur_line now follows the
         // dense line table (one Vec index per instruction, ~1ns) — the

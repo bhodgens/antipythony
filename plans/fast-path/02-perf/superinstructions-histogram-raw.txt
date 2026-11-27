@@ -1,0 +1,644 @@
+===== PROBE: tests/bench/primitive/probes/_dbg_dict_get_repro.py =====
+[BP-HIST] total_dispatches=2785345
+[BP-HIST] singles(top10): LoadFast=819210 StoreFast=327695 LoadGlobal=327690 BinOp=327680 LoadConst=163850 Compare=163845 JumpIfFalse=163845 Jump=163840 CallFunction=163840 Subscript=163840
+[BP-HIST] pairs(top20): (LoadFast, LoadGlobal)=327685 (BinOp, StoreFast)=327680 (LoadGlobal, Compare)=163845 (StoreFast, LoadFast)=163845 (Compare, JumpIfFalse)=163845 (LoadConst, BinOp)=163840 (LoadFast, LoadConst)=163840 (LoadFast, LoadFast)=163840 (LoadFast, Subscript)=163840 (LoadGlobal, LoadFast)=163840 (StoreFast, Jump)=163840 (CallFunction, BinOp)=163840 (Subscript, CallFunction)=163840 (LoadConst, StoreFast)=10 (StoreFast, LoadConst)=10 (LoadFast, ReturnValue)=5 (LoadGlobal, LoadAttr)=5 (LoadAttr, StoreFast)=5
+[BP-HIST] triples(top20): (LoadFast, LoadGlobal, Compare)=163845 (LoadGlobal, Compare, JumpIfFalse)=163845 (LoadConst, BinOp, StoreFast)=163840 (LoadFast, LoadConst, BinOp)=163840 (LoadFast, LoadFast, LoadGlobal)=163840 (LoadFast, LoadGlobal, LoadFast)=163840 (LoadFast, Subscript, CallFunction)=163840 (LoadGlobal, LoadFast, Subscript)=163840 (StoreFast, LoadFast, LoadConst)=163840 (BinOp, StoreFast, LoadFast)=163840 (BinOp, StoreFast, Jump)=163840 (CallFunction, BinOp, StoreFast)=163840 (Subscript, CallFunction, BinOp)=163840 (StoreFast, LoadConst, StoreFast)=10 (LoadConst, StoreFast, LoadConst)=5 (LoadConst, StoreFast, LoadFast)=5 (LoadGlobal, LoadAttr, StoreFast)=5 (StoreFast, LoadFast, LoadGlobal)=5 (LoadAttr, StoreFast, LoadConst)=5
+===== PROBE: tests/bench/primitive/probes/_iso_int_acc.py =====
+[BP-HIST] total_dispatches=2129970
+[BP-HIST] singles(top10): LoadFast=655370 StoreFast=327690 BinOp=327680 LoadConst=163850 LoadGlobal=163845 Compare=163845 JumpIfFalse=163845 Jump=163840 ReturnValue=5
+[BP-HIST] pairs(top20): (BinOp, StoreFast)=327680 (LoadFast, LoadGlobal)=163845 (LoadGlobal, Compare)=163845 (StoreFast, LoadFast)=163845 (Compare, JumpIfFalse)=163845 (LoadConst, BinOp)=163840 (LoadFast, LoadConst)=163840 (LoadFast, LoadFast)=163840 (LoadFast, BinOp)=163840 (StoreFast, Jump)=163840 (LoadConst, StoreFast)=10 (LoadFast, ReturnValue)=5 (StoreFast, LoadConst)=5
+[BP-HIST] triples(top20): (LoadFast, LoadGlobal, Compare)=163845 (LoadGlobal, Compare, JumpIfFalse)=163845 (LoadConst, BinOp, StoreFast)=163840 (LoadFast, LoadConst, BinOp)=163840 (LoadFast, LoadFast, BinOp)=163840 (LoadFast, BinOp, StoreFast)=163840 (StoreFast, LoadFast, LoadConst)=163840 (BinOp, StoreFast, LoadFast)=163840 (BinOp, StoreFast, Jump)=163840 (LoadConst, StoreFast, LoadConst)=5 (LoadConst, StoreFast, LoadFast)=5 (StoreFast, LoadConst, StoreFast)=5 (StoreFast, LoadFast, LoadGlobal)=5
+===== PROBE: tests/bench/primitive/probes/_min_v01_method_local_arg_binop_loop.py =====
+[BP-HIST] total_dispatches=973
+[BP-HIST] singles(top10): LoadFast=322 LoadConst=131 StoreFast=131 BinOp=128 Compare=65 JumpIfFalse=65 Jump=64 CallFunction=64 LoadGlobal=1 LoadAttr=1
+[BP-HIST] pairs(top20): (LoadFast, LoadConst)=129 (LoadFast, LoadFast)=128 (BinOp, StoreFast)=128 (LoadConst, Compare)=65 (StoreFast, LoadFast)=65 (Compare, JumpIfFalse)=65 (LoadConst, BinOp)=64 (LoadFast, CallFunction)=64 (StoreFast, Jump)=64 (CallFunction, BinOp)=64 (LoadConst, StoreFast)=2 (StoreFast, LoadConst)=2 (LoadFast, ReturnValue)=1 (LoadGlobal, LoadAttr)=1 (LoadAttr, StoreFast)=1
+[BP-HIST] triples(top20): (LoadConst, Compare, JumpIfFalse)=65 (LoadFast, LoadConst, Compare)=65 (StoreFast, LoadFast, LoadConst)=65 (LoadConst, BinOp, StoreFast)=64 (LoadFast, LoadConst, BinOp)=64 (LoadFast, LoadFast, LoadFast)=64 (LoadFast, LoadFast, CallFunction)=64 (LoadFast, CallFunction, BinOp)=64 (BinOp, StoreFast, LoadFast)=64 (BinOp, StoreFast, Jump)=64 (CallFunction, BinOp, StoreFast)=64 (StoreFast, LoadConst, StoreFast)=2 (LoadConst, StoreFast, LoadConst)=1 (LoadConst, StoreFast, LoadFast)=1 (LoadGlobal, LoadAttr, StoreFast)=1 (LoadAttr, StoreFast, LoadConst)=1
+===== PROBE: tests/bench/primitive/probes/_min10_p1_straightline_3helpers.py =====
+[BP-HIST] total_dispatches=20
+[BP-HIST] singles(top10): LoadFast=4 StoreFast=4 LoadConst=3 LoadGlobal=3 BinOp=2 LoadAttrCall=2 Subscript=1 ReturnValue=1
+[BP-HIST] pairs(top20): (LoadGlobal, LoadConst)=3 (LoadConst, LoadAttrCall)=2 (LoadFast, LoadFast)=2 (LoadFast, BinOp)=2 (StoreFast, LoadFast)=2 (StoreFast, LoadGlobal)=2 (LoadAttrCall, StoreFast)=2 (LoadConst, Subscript)=1 (BinOp, StoreFast)=1 (BinOp, ReturnValue)=1 (Subscript, StoreFast)=1
+[BP-HIST] triples(top20): (LoadConst, LoadAttrCall, StoreFast)=2 (LoadFast, LoadFast, BinOp)=2 (LoadGlobal, LoadConst, LoadAttrCall)=2 (StoreFast, LoadFast, LoadFast)=2 (StoreFast, LoadGlobal, LoadConst)=2 (LoadConst, Subscript, StoreFast)=1 (LoadFast, BinOp, StoreFast)=1 (LoadFast, BinOp, ReturnValue)=1 (LoadGlobal, LoadConst, Subscript)=1 (BinOp, StoreFast, LoadGlobal)=1 (Subscript, StoreFast, LoadFast)=1 (LoadAttrCall, StoreFast, LoadFast)=1 (LoadAttrCall, StoreFast, LoadGlobal)=1
+===== PROBE: tests/bench/primitive/probes/_min11_q1_sub_arg_plus_binop.py =====
+[BP-HIST] total_dispatches=146
+[BP-HIST] singles(top10): LoadFast=34 LoadConst=19 StoreFast=18 LoadGlobal=16 BinOp=16 Compare=9 JumpIfFalse=9 Jump=8 Subscript=8 LoadAttrCall=8
+[BP-HIST] pairs(top20): (LoadFast, LoadConst)=17 (BinOp, StoreFast)=16 (LoadConst, Compare)=9 (StoreFast, LoadFast)=9 (Compare, JumpIfFalse)=9 (LoadConst, BinOp)=8 (LoadFast, LoadGlobal)=8 (LoadFast, Subscript)=8 (LoadGlobal, LoadFast)=8 (LoadGlobal, LoadGlobal)=8 (StoreFast, Jump)=8 (Subscript, LoadAttrCall)=8 (LoadAttrCall, BinOp)=8 (LoadConst, StoreFast)=2 (LoadFast, ReturnValue)=1 (StoreFast, LoadConst)=1
+[BP-HIST] triples(top20): (LoadConst, Compare, JumpIfFalse)=9 (LoadFast, LoadConst, Compare)=9 (StoreFast, LoadFast, LoadConst)=9 (LoadConst, BinOp, StoreFast)=8 (LoadFast, LoadConst, BinOp)=8 (LoadFast, LoadGlobal, LoadGlobal)=8 (LoadFast, Subscript, LoadAttrCall)=8 (LoadGlobal, LoadFast, Subscript)=8 (LoadGlobal, LoadGlobal, LoadFast)=8 (BinOp, StoreFast, LoadFast)=8 (BinOp, StoreFast, Jump)=8 (Subscript, LoadAttrCall, BinOp)=8 (LoadAttrCall, BinOp, StoreFast)=8 (LoadConst, StoreFast, LoadConst)=1 (LoadConst, StoreFast, LoadFast)=1 (StoreFast, LoadConst, StoreFast)=1
+===== PROBE: tests/bench/primitive/probes/_min2_w01_call_subscript_arg_nobinop.py =====
+[BP-HIST] total_dispatches=973
+[BP-HIST] singles(top10): LoadFast=258 LoadConst=131 StoreFast=131 LoadGlobal=65 Compare=65 JumpIfFalse=65 BinOp=64 Jump=64 CallFunction=64 Subscript=64
+[BP-HIST] pairs(top20): (LoadFast, LoadConst)=129 (LoadConst, Compare)=65 (StoreFast, LoadFast)=65 (Compare, JumpIfFalse)=65 (LoadConst, BinOp)=64 (LoadFast, LoadGlobal)=64 (LoadFast, Subscript)=64 (LoadGlobal, LoadFast)=64 (StoreFast, Jump)=64 (BinOp, StoreFast)=64 (CallFunction, StoreFast)=64 (Subscript, CallFunction)=64 (LoadConst, StoreFast)=2 (StoreFast, LoadConst)=2 (LoadFast, ReturnValue)=1 (LoadGlobal, LoadAttr)=1 (LoadAttr, StoreFast)=1
+[BP-HIST] triples(top20): (LoadConst, Compare, JumpIfFalse)=65 (LoadFast, LoadConst, Compare)=65 (StoreFast, LoadFast, LoadConst)=65 (LoadConst, BinOp, StoreFast)=64 (LoadFast, LoadConst, BinOp)=64 (LoadFast, LoadGlobal, LoadFast)=64 (LoadFast, Subscript, CallFunction)=64 (LoadGlobal, LoadFast, Subscript)=64 (BinOp, StoreFast, Jump)=64 (CallFunction, StoreFast, LoadFast)=64 (Subscript, CallFunction, StoreFast)=64 (StoreFast, LoadConst, StoreFast)=2 (LoadConst, StoreFast, LoadConst)=1 (LoadConst, StoreFast, LoadFast)=1 (LoadGlobal, LoadAttr, StoreFast)=1 (LoadAttr, StoreFast, LoadConst)=1
+===== PROBE: tests/bench/primitive/probes/_min3_x01_while_method_subscriptarg_binop.py =====
+[BP-HIST] total_dispatches=1229
+[BP-HIST] singles(top10): LoadFast=386 StoreFast=195 LoadConst=131 BinOp=128 LoadGlobal=65 Compare=65 JumpIfFalse=65 Jump=64 CallFunction=64 Subscript=64
+[BP-HIST] pairs(top20): (LoadFast, LoadConst)=129 (StoreFast, LoadFast)=129 (BinOp, StoreFast)=128 (LoadConst, Compare)=65 (Compare, JumpIfFalse)=65 (LoadConst, BinOp)=64 (LoadFast, LoadFast)=64 (LoadFast, LoadGlobal)=64 (LoadFast, BinOp)=64 (LoadFast, Subscript)=64 (LoadGlobal, LoadFast)=64 (StoreFast, Jump)=64 (CallFunction, StoreFast)=64 (Subscript, CallFunction)=64 (LoadConst, StoreFast)=2 (StoreFast, LoadConst)=2 (LoadFast, ReturnValue)=1 (LoadGlobal, LoadAttr)=1 (LoadAttr, StoreFast)=1
+[BP-HIST] triples(top20): (LoadConst, Compare, JumpIfFalse)=65 (LoadFast, LoadConst, Compare)=65 (StoreFast, LoadFast, LoadConst)=65 (LoadConst, BinOp, StoreFast)=64 (LoadFast, LoadConst, BinOp)=64 (LoadFast, LoadFast, BinOp)=64 (LoadFast, LoadGlobal, LoadFast)=64 (LoadFast, BinOp, StoreFast)=64 (LoadFast, Subscript, CallFunction)=64 (LoadGlobal, LoadFast, Subscript)=64 (StoreFast, LoadFast, LoadFast)=64 (BinOp, StoreFast, LoadFast)=64 (BinOp, StoreFast, Jump)=64 (CallFunction, StoreFast, LoadFast)=64 (Subscript, CallFunction, StoreFast)=64 (StoreFast, LoadConst, StoreFast)=2 (LoadConst, StoreFast, LoadConst)=1 (LoadConst, StoreFast, LoadFast)=1 (LoadGlobal, LoadAttr, StoreFast)=1 (LoadAttr, StoreFast, LoadConst)=1
+===== PROBE: tests/bench/primitive/probes/_min4_y01_single_call_binop.py =====
+[BP-HIST] total_dispatches=970
+[BP-HIST] singles(top10): LoadFast=258 LoadConst=131 StoreFast=130 BinOp=128 Compare=65 JumpIfFalse=65 LoadGlobal=64 Jump=64 LoadAttrCall=64 ReturnValue=1
+[BP-HIST] pairs(top20): (LoadFast, LoadConst)=129 (BinOp, StoreFast)=128 (LoadConst, Compare)=65 (StoreFast, LoadFast)=65 (Compare, JumpIfFalse)=65 (LoadConst, BinOp)=64 (LoadFast, LoadGlobal)=64 (LoadFast, LoadAttrCall)=64 (LoadGlobal, LoadFast)=64 (StoreFast, Jump)=64 (LoadAttrCall, BinOp)=64 (LoadConst, StoreFast)=2 (LoadFast, ReturnValue)=1 (StoreFast, LoadConst)=1
+[BP-HIST] triples(top20): (LoadConst, Compare, JumpIfFalse)=65 (LoadFast, LoadConst, Compare)=65 (StoreFast, LoadFast, LoadConst)=65 (LoadConst, BinOp, StoreFast)=64 (LoadFast, LoadConst, BinOp)=64 (LoadFast, LoadGlobal, LoadFast)=64 (LoadFast, LoadAttrCall, BinOp)=64 (LoadGlobal, LoadFast, LoadAttrCall)=64 (BinOp, StoreFast, LoadFast)=64 (BinOp, StoreFast, Jump)=64 (LoadAttrCall, BinOp, StoreFast)=64 (LoadConst, StoreFast, LoadConst)=1 (LoadConst, StoreFast, LoadFast)=1 (StoreFast, LoadConst, StoreFast)=1
+===== PROBE: tests/bench/primitive/probes/_min5_z01_y02_control.py =====
+[BP-HIST] total_dispatches=1098
+[BP-HIST] singles(top10): LoadFast=322 StoreFast=194 LoadConst=131 BinOp=128 Compare=65 JumpIfFalse=65 LoadGlobal=64 Jump=64 LoadAttrCall=64 ReturnValue=1
+[BP-HIST] pairs(top20): (LoadFast, LoadConst)=129 (StoreFast, LoadFast)=129 (BinOp, StoreFast)=128 (LoadConst, Compare)=65 (Compare, JumpIfFalse)=65 (LoadConst, BinOp)=64 (LoadFast, LoadFast)=64 (LoadFast, BinOp)=64 (LoadFast, LoadAttrCall)=64 (LoadGlobal, LoadFast)=64 (StoreFast, Jump)=64 (LoadAttrCall, StoreFast)=64 (LoadConst, StoreFast)=2 (LoadFast, ReturnValue)=1 (StoreFast, LoadConst)=1
+[BP-HIST] triples(top20): (LoadConst, Compare, JumpIfFalse)=65 (LoadFast, LoadConst, Compare)=65 (StoreFast, LoadFast, LoadConst)=65 (LoadConst, BinOp, StoreFast)=64 (LoadFast, LoadConst, BinOp)=64 (LoadFast, LoadFast, BinOp)=64 (LoadFast, BinOp, StoreFast)=64 (LoadFast, LoadAttrCall, StoreFast)=64 (LoadGlobal, LoadFast, LoadAttrCall)=64 (StoreFast, LoadFast, LoadFast)=64 (BinOp, StoreFast, LoadFast)=64 (BinOp, StoreFast, Jump)=64 (LoadAttrCall, StoreFast, LoadFast)=64 (LoadConst, StoreFast, LoadConst)=1 (LoadConst, StoreFast, LoadFast)=1 (StoreFast, LoadConst, StoreFast)=1
+===== PROBE: tests/bench/primitive/probes/_min6_f01_resdiff_plainarg.py =====
+[BP-HIST] total_dispatches=842
+[BP-HIST] singles(top10): LoadFast=194 LoadConst=131 StoreFast=130 Compare=65 JumpIfFalse=65 LoadGlobal=64 BinOp=64 Jump=64 LoadAttrCall=64 ReturnValue=1
+[BP-HIST] pairs(top20): (LoadFast, LoadConst)=129 (LoadConst, Compare)=65 (StoreFast, LoadFast)=65 (Compare, JumpIfFalse)=65 (LoadConst, BinOp)=64 (LoadFast, LoadAttrCall)=64 (LoadGlobal, LoadFast)=64 (StoreFast, Jump)=64 (BinOp, StoreFast)=64 (LoadAttrCall, StoreFast)=64 (LoadConst, StoreFast)=2 (LoadFast, ReturnValue)=1 (StoreFast, LoadConst)=1
+[BP-HIST] triples(top20): (LoadConst, Compare, JumpIfFalse)=65 (LoadFast, LoadConst, Compare)=65 (StoreFast, LoadFast, LoadConst)=65 (LoadConst, BinOp, StoreFast)=64 (LoadFast, LoadConst, BinOp)=64 (LoadFast, LoadAttrCall, StoreFast)=64 (LoadGlobal, LoadFast, LoadAttrCall)=64 (BinOp, StoreFast, Jump)=64 (LoadAttrCall, StoreFast, LoadFast)=64 (LoadConst, StoreFast, LoadConst)=1 (LoadConst, StoreFast, LoadFast)=1 (StoreFast, LoadConst, StoreFast)=1
+===== PROBE: tests/bench/primitive/probes/_min7_s2_call_incr.py =====
+[BP-HIST] total_dispatches=842
+[BP-HIST] singles(top10): LoadFast=194 LoadConst=131 StoreFast=130 Compare=65 JumpIfFalse=65 LoadGlobal=64 BinOp=64 Jump=64 LoadAttrCall=64 ReturnValue=1
+[BP-HIST] pairs(top20): (LoadFast, LoadConst)=129 (LoadConst, Compare)=65 (StoreFast, LoadFast)=65 (Compare, JumpIfFalse)=65 (LoadConst, BinOp)=64 (LoadFast, LoadAttrCall)=64 (LoadGlobal, LoadFast)=64 (StoreFast, Jump)=64 (BinOp, StoreFast)=64 (LoadAttrCall, StoreFast)=64 (LoadConst, StoreFast)=2 (LoadFast, ReturnValue)=1 (StoreFast, LoadConst)=1
+[BP-HIST] triples(top20): (LoadConst, Compare, JumpIfFalse)=65 (LoadFast, LoadConst, Compare)=65 (StoreFast, LoadFast, LoadConst)=65 (LoadConst, BinOp, StoreFast)=64 (LoadFast, LoadConst, BinOp)=64 (LoadFast, LoadAttrCall, StoreFast)=64 (LoadGlobal, LoadFast, LoadAttrCall)=64 (BinOp, StoreFast, Jump)=64 (LoadAttrCall, StoreFast, LoadFast)=64 (LoadConst, StoreFast, LoadConst)=1 (LoadConst, StoreFast, LoadFast)=1 (StoreFast, LoadConst, StoreFast)=1
+===== PROBE: tests/bench/primitive/probes/_min8_n1_if_wrapped.py =====
+[BP-HIST] total_dispatches=1102
+[BP-HIST] singles(top10): LoadFast=259 LoadConst=196 StoreFast=194 BinOp=128 Compare=66 JumpIfFalse=66 LoadGlobal=64 Jump=64 LoadAttrCall=64 ReturnValue=1
+[BP-HIST] pairs(top20): (LoadFast, LoadConst)=194 (LoadConst, BinOp)=128 (BinOp, StoreFast)=128 (LoadConst, Compare)=66 (Compare, JumpIfFalse)=66 (StoreFast, LoadFast)=65 (LoadFast, LoadAttrCall)=64 (LoadGlobal, LoadFast)=64 (StoreFast, LoadGlobal)=64 (StoreFast, Jump)=64 (LoadAttrCall, StoreFast)=64 (LoadConst, StoreFast)=2 (LoadFast, ReturnValue)=1 (StoreFast, LoadConst)=1
+[BP-HIST] triples(top20): (LoadConst, BinOp, StoreFast)=128 (LoadFast, LoadConst, BinOp)=128 (LoadConst, Compare, JumpIfFalse)=66 (LoadFast, LoadConst, Compare)=66 (StoreFast, LoadFast, LoadConst)=65 (LoadFast, LoadAttrCall, StoreFast)=64 (LoadGlobal, LoadFast, LoadAttrCall)=64 (StoreFast, LoadGlobal, LoadFast)=64 (BinOp, StoreFast, LoadGlobal)=64 (BinOp, StoreFast, Jump)=64 (LoadAttrCall, StoreFast, LoadFast)=64 (LoadConst, StoreFast, LoadConst)=1 (LoadConst, StoreFast, LoadFast)=1 (StoreFast, LoadConst, StoreFast)=1
+===== PROBE: tests/bench/primitive/probes/_min9_m1_g_ks_i.py =====
+[BP-HIST] total_dispatches=1101
+[BP-HIST] singles(top10): LoadFast=322 LoadConst=131 StoreFast=131 BinOp=128 LoadGlobal=65 Compare=65 JumpIfFalse=65 Jump=64 CallFunction=64 Subscript=64
+[BP-HIST] pairs(top20): (LoadFast, LoadConst)=129 (BinOp, StoreFast)=128 (LoadConst, Compare)=65 (StoreFast, LoadFast)=65 (Compare, JumpIfFalse)=65 (LoadConst, BinOp)=64 (LoadFast, LoadFast)=64 (LoadFast, LoadGlobal)=64 (LoadFast, Subscript)=64 (LoadGlobal, LoadFast)=64 (StoreFast, Jump)=64 (CallFunction, BinOp)=64 (Subscript, CallFunction)=64 (LoadConst, StoreFast)=2 (StoreFast, LoadConst)=2 (LoadFast, ReturnValue)=1 (LoadGlobal, LoadAttr)=1 (LoadAttr, StoreFast)=1
+[BP-HIST] triples(top20): (LoadConst, Compare, JumpIfFalse)=65 (LoadFast, LoadConst, Compare)=65 (StoreFast, LoadFast, LoadConst)=65 (LoadConst, BinOp, StoreFast)=64 (LoadFast, LoadConst, BinOp)=64 (LoadFast, LoadFast, LoadGlobal)=64 (LoadFast, LoadGlobal, LoadFast)=64 (LoadFast, Subscript, CallFunction)=64 (LoadGlobal, LoadFast, Subscript)=64 (BinOp, StoreFast, LoadFast)=64 (BinOp, StoreFast, Jump)=64 (CallFunction, BinOp, StoreFast)=64 (Subscript, CallFunction, BinOp)=64 (StoreFast, LoadConst, StoreFast)=2 (LoadConst, StoreFast, LoadConst)=1 (LoadConst, StoreFast, LoadFast)=1 (LoadGlobal, LoadAttr, StoreFast)=1 (LoadAttr, StoreFast, LoadConst)=1
+===== PROBE: tests/bench/primitive/probes/_pp2_fallback_diag.py =====
+[BP-HIST] total_dispatches=8635
+[BP-HIST] singles(top10): LoadFast=2134 LoadGlobal=1004 CallFunction=607 StoreFast=517 LoadConst=474 JumpIfFalse=462 LoadAttr=430 Compare=353 ReturnValue=340 PopTop=308
+[BP-HIST] pairs(top20): (LoadGlobal, LoadFast)=566 (LoadFast, LoadFast)=482 (LoadFast, LoadAttr)=318 (LoadFast, CallFunction)=304 (StoreFast, LoadGlobal)=251 (LoadFast, LoadGlobal)=195 (StoreFast, LoadFast)=193 (Compare, JumpIfFalse)=184 (CallFunction, StoreFast)=178 (LoadFast, StoreAttr)=151 (LoadGlobal, CallFunction)=144 (LoadConst, PopTop)=136 (LoadFast, LoadAttrCall)=135 (LoadAttrCall, PopTop)=117 (StoreAttr, LoadFast)=113 (LoadAttr, LoadGlobal)=109 (LoadGlobal, Compare)=102 (GetIter, ForNext)=100 (LoadFast, LoadConst)=98 (LoadFast, LoadConstNone)=97
+[BP-HIST] triples(top20): (StoreFast, LoadGlobal, LoadFast)=239 (LoadGlobal, LoadFast, CallFunction)=193 (LoadGlobal, LoadFast, LoadFast)=172 (LoadFast, CallFunction, StoreFast)=132 (LoadFast, LoadGlobal, CallFunction)=113 (LoadGlobal, LoadFast, LoadGlobal)=113 (LoadFast, LoadFast, CallFunction)=109 (LoadFast, LoadFast, LoadAttr)=102 (LoadFast, StoreAttr, LoadFast)=96 (LoadGlobal, Compare, JumpIfFalse)=96 (CallFunction, StoreFast, LoadGlobal)=96 (LoadFast, LoadFast, LoadAttrCall)=92 (StoreFast, LoadFast, LoadFast)=79 (LoadGlobal, LoadFast, LoadConst)=77 (LoadFast, LoadGlobal, Compare)=74 (LoadFast, LoadAttr, Compare)=72 (LoadFast, LoadAttr, LoadGlobal)=71 (LoadConst, PopTop, LoadGlobal)=66 (LoadFast, CallFunction, LoadFast)=66 (LoadConst, LoadFast, BuildTuple)=64
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/bench/primitive/probes/_pp2_fallback_diag.py", line 114, in <module>
+    pf.unlink()
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 555, in run
+    with Popen(*popenargs, **kwargs) as process:
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 1075, in Popen.__init__
+    raise
+AttributeError: 'PosixPath' object has no attribute '_str'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/bench/primitive/probes/_pp2_fallback_diag.py", line 114, in <module>
+    pf.unlink()
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 555, in run
+    with Popen(*popenargs, **kwargs) as process:
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 1075, in Popen.__init__
+    raise
+TypeError: open() argument must be str, not int
+===== PROBE: tests/bench/primitive/probes/_pp2_iso_stats.py =====
+[BP-HIST] total_dispatches=8635
+[BP-HIST] singles(top10): LoadFast=2134 LoadGlobal=1004 CallFunction=607 StoreFast=517 LoadConst=474 JumpIfFalse=462 LoadAttr=430 Compare=353 ReturnValue=340 PopTop=308
+[BP-HIST] pairs(top20): (LoadGlobal, LoadFast)=566 (LoadFast, LoadFast)=482 (LoadFast, LoadAttr)=318 (LoadFast, CallFunction)=304 (StoreFast, LoadGlobal)=251 (LoadFast, LoadGlobal)=195 (StoreFast, LoadFast)=193 (Compare, JumpIfFalse)=184 (CallFunction, StoreFast)=178 (LoadFast, StoreAttr)=151 (LoadGlobal, CallFunction)=144 (LoadConst, PopTop)=136 (LoadFast, LoadAttrCall)=135 (LoadAttrCall, PopTop)=117 (StoreAttr, LoadFast)=113 (LoadAttr, LoadGlobal)=109 (LoadGlobal, Compare)=102 (GetIter, ForNext)=100 (LoadFast, LoadConst)=98 (LoadFast, LoadConstNone)=97
+[BP-HIST] triples(top20): (StoreFast, LoadGlobal, LoadFast)=239 (LoadGlobal, LoadFast, CallFunction)=193 (LoadGlobal, LoadFast, LoadFast)=172 (LoadFast, CallFunction, StoreFast)=132 (LoadFast, LoadGlobal, CallFunction)=113 (LoadGlobal, LoadFast, LoadGlobal)=113 (LoadFast, LoadFast, CallFunction)=109 (LoadFast, LoadFast, LoadAttr)=102 (LoadFast, StoreAttr, LoadFast)=96 (LoadGlobal, Compare, JumpIfFalse)=96 (CallFunction, StoreFast, LoadGlobal)=96 (LoadFast, LoadFast, LoadAttrCall)=92 (StoreFast, LoadFast, LoadFast)=79 (LoadGlobal, LoadFast, LoadConst)=77 (LoadFast, LoadGlobal, Compare)=74 (LoadFast, LoadAttr, Compare)=72 (LoadFast, LoadAttr, LoadGlobal)=71 (LoadConst, PopTop, LoadGlobal)=66 (LoadFast, CallFunction, LoadFast)=66 (LoadConst, LoadFast, BuildTuple)=64
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/bench/primitive/probes/_pp2_iso_stats.py", line 51, in <module>
+    pf.unlink()
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 555, in run
+    with Popen(*popenargs, **kwargs) as process:
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 1075, in Popen.__init__
+    raise
+AttributeError: 'PosixPath' object has no attribute '_str'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/bench/primitive/probes/_pp2_iso_stats.py", line 51, in <module>
+    pf.unlink()
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 555, in run
+    with Popen(*popenargs, **kwargs) as process:
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 1075, in Popen.__init__
+    raise
+TypeError: open() argument must be str, not int
+===== PROBE: tests/bench/primitive/probes/_pp2_minimize_bug.py =====
+[BP-HIST] total_dispatches=8635
+[BP-HIST] singles(top10): LoadFast=2134 LoadGlobal=1004 CallFunction=607 StoreFast=517 LoadConst=474 JumpIfFalse=462 LoadAttr=430 Compare=353 ReturnValue=340 PopTop=308
+[BP-HIST] pairs(top20): (LoadGlobal, LoadFast)=566 (LoadFast, LoadFast)=482 (LoadFast, LoadAttr)=318 (LoadFast, CallFunction)=304 (StoreFast, LoadGlobal)=251 (LoadFast, LoadGlobal)=195 (StoreFast, LoadFast)=193 (Compare, JumpIfFalse)=184 (CallFunction, StoreFast)=178 (LoadFast, StoreAttr)=151 (LoadGlobal, CallFunction)=144 (LoadConst, PopTop)=136 (LoadFast, LoadAttrCall)=135 (LoadAttrCall, PopTop)=117 (StoreAttr, LoadFast)=113 (LoadAttr, LoadGlobal)=109 (LoadGlobal, Compare)=102 (GetIter, ForNext)=100 (LoadFast, LoadConst)=98 (LoadFast, LoadConstNone)=97
+[BP-HIST] triples(top20): (StoreFast, LoadGlobal, LoadFast)=239 (LoadGlobal, LoadFast, CallFunction)=193 (LoadGlobal, LoadFast, LoadFast)=172 (LoadFast, CallFunction, StoreFast)=132 (LoadFast, LoadGlobal, CallFunction)=113 (LoadGlobal, LoadFast, LoadGlobal)=113 (LoadFast, LoadFast, CallFunction)=109 (LoadFast, LoadFast, LoadAttr)=102 (LoadFast, StoreAttr, LoadFast)=96 (LoadGlobal, Compare, JumpIfFalse)=96 (CallFunction, StoreFast, LoadGlobal)=96 (LoadFast, LoadFast, LoadAttrCall)=92 (StoreFast, LoadFast, LoadFast)=79 (LoadGlobal, LoadFast, LoadConst)=77 (LoadFast, LoadGlobal, Compare)=74 (LoadFast, LoadAttr, Compare)=72 (LoadFast, LoadAttr, LoadGlobal)=71 (LoadConst, PopTop, LoadGlobal)=66 (LoadFast, CallFunction, LoadFast)=66 (LoadConst, LoadFast, BuildTuple)=64
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/bench/primitive/probes/_pp2_minimize_bug.py", line 164, in <module>
+    pf.unlink()
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 555, in run
+    with Popen(*popenargs, **kwargs) as process:
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 1075, in Popen.__init__
+    raise
+AttributeError: 'PosixPath' object has no attribute '_str'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/bench/primitive/probes/_pp2_minimize_bug.py", line 164, in <module>
+    pf.unlink()
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 555, in run
+    with Popen(*popenargs, **kwargs) as process:
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 1075, in Popen.__init__
+    raise
+TypeError: open() argument must be str, not int
+===== PROBE: tests/bench/primitive/probes/_pp2_minimize10.py =====
+[BP-HIST] total_dispatches=8635
+[BP-HIST] singles(top10): LoadFast=2134 LoadGlobal=1004 CallFunction=607 StoreFast=517 LoadConst=474 JumpIfFalse=462 LoadAttr=430 Compare=353 ReturnValue=340 PopTop=308
+[BP-HIST] pairs(top20): (LoadGlobal, LoadFast)=566 (LoadFast, LoadFast)=482 (LoadFast, LoadAttr)=318 (LoadFast, CallFunction)=304 (StoreFast, LoadGlobal)=251 (LoadFast, LoadGlobal)=195 (StoreFast, LoadFast)=193 (Compare, JumpIfFalse)=184 (CallFunction, StoreFast)=178 (LoadFast, StoreAttr)=151 (LoadGlobal, CallFunction)=144 (LoadConst, PopTop)=136 (LoadFast, LoadAttrCall)=135 (LoadAttrCall, PopTop)=117 (StoreAttr, LoadFast)=113 (LoadAttr, LoadGlobal)=109 (LoadGlobal, Compare)=102 (GetIter, ForNext)=100 (LoadFast, LoadConst)=98 (LoadFast, LoadConstNone)=97
+[BP-HIST] triples(top20): (StoreFast, LoadGlobal, LoadFast)=239 (LoadGlobal, LoadFast, CallFunction)=193 (LoadGlobal, LoadFast, LoadFast)=172 (LoadFast, CallFunction, StoreFast)=132 (LoadFast, LoadGlobal, CallFunction)=113 (LoadGlobal, LoadFast, LoadGlobal)=113 (LoadFast, LoadFast, CallFunction)=109 (LoadFast, LoadFast, LoadAttr)=102 (LoadFast, StoreAttr, LoadFast)=96 (LoadGlobal, Compare, JumpIfFalse)=96 (CallFunction, StoreFast, LoadGlobal)=96 (LoadFast, LoadFast, LoadAttrCall)=92 (StoreFast, LoadFast, LoadFast)=79 (LoadGlobal, LoadFast, LoadConst)=77 (LoadFast, LoadGlobal, Compare)=74 (LoadFast, LoadAttr, Compare)=72 (LoadFast, LoadAttr, LoadGlobal)=71 (LoadConst, PopTop, LoadGlobal)=66 (LoadFast, CallFunction, LoadFast)=66 (LoadConst, LoadFast, BuildTuple)=64
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/bench/primitive/probes/_pp2_minimize10.py", line 124, in <module>
+    pf.unlink()
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 555, in run
+    with Popen(*popenargs, **kwargs) as process:
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 1075, in Popen.__init__
+    raise
+AttributeError: 'PosixPath' object has no attribute '_str'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/bench/primitive/probes/_pp2_minimize10.py", line 124, in <module>
+    pf.unlink()
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 555, in run
+    with Popen(*popenargs, **kwargs) as process:
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 1075, in Popen.__init__
+    raise
+TypeError: open() argument must be str, not int
+===== PROBE: tests/bench/primitive/probes/_pp2_minimize11.py =====
+[BP-HIST] total_dispatches=8635
+[BP-HIST] singles(top10): LoadFast=2134 LoadGlobal=1004 CallFunction=607 StoreFast=517 LoadConst=474 JumpIfFalse=462 LoadAttr=430 Compare=353 ReturnValue=340 PopTop=308
+[BP-HIST] pairs(top20): (LoadGlobal, LoadFast)=566 (LoadFast, LoadFast)=482 (LoadFast, LoadAttr)=318 (LoadFast, CallFunction)=304 (StoreFast, LoadGlobal)=251 (LoadFast, LoadGlobal)=195 (StoreFast, LoadFast)=193 (Compare, JumpIfFalse)=184 (CallFunction, StoreFast)=178 (LoadFast, StoreAttr)=151 (LoadGlobal, CallFunction)=144 (LoadConst, PopTop)=136 (LoadFast, LoadAttrCall)=135 (LoadAttrCall, PopTop)=117 (StoreAttr, LoadFast)=113 (LoadAttr, LoadGlobal)=109 (LoadGlobal, Compare)=102 (GetIter, ForNext)=100 (LoadFast, LoadConst)=98 (LoadFast, LoadConstNone)=97
+[BP-HIST] triples(top20): (StoreFast, LoadGlobal, LoadFast)=239 (LoadGlobal, LoadFast, CallFunction)=193 (LoadGlobal, LoadFast, LoadFast)=172 (LoadFast, CallFunction, StoreFast)=132 (LoadFast, LoadGlobal, CallFunction)=113 (LoadGlobal, LoadFast, LoadGlobal)=113 (LoadFast, LoadFast, CallFunction)=109 (LoadFast, LoadFast, LoadAttr)=102 (LoadFast, StoreAttr, LoadFast)=96 (LoadGlobal, Compare, JumpIfFalse)=96 (CallFunction, StoreFast, LoadGlobal)=96 (LoadFast, LoadFast, LoadAttrCall)=92 (StoreFast, LoadFast, LoadFast)=79 (LoadGlobal, LoadFast, LoadConst)=77 (LoadFast, LoadGlobal, Compare)=74 (LoadFast, LoadAttr, Compare)=72 (LoadFast, LoadAttr, LoadGlobal)=71 (LoadConst, PopTop, LoadGlobal)=66 (LoadFast, CallFunction, LoadFast)=66 (LoadConst, LoadFast, BuildTuple)=64
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/bench/primitive/probes/_pp2_minimize11.py", line 63, in <module>
+    pf.unlink()
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 555, in run
+    with Popen(*popenargs, **kwargs) as process:
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 1075, in Popen.__init__
+    raise
+AttributeError: 'PosixPath' object has no attribute '_str'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/bench/primitive/probes/_pp2_minimize11.py", line 63, in <module>
+    pf.unlink()
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 555, in run
+    with Popen(*popenargs, **kwargs) as process:
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 1075, in Popen.__init__
+    raise
+TypeError: open() argument must be str, not int
+===== PROBE: tests/bench/primitive/probes/_pp2_minimize2.py =====
+[BP-HIST] total_dispatches=8635
+[BP-HIST] singles(top10): LoadFast=2134 LoadGlobal=1004 CallFunction=607 StoreFast=517 LoadConst=474 JumpIfFalse=462 LoadAttr=430 Compare=353 ReturnValue=340 PopTop=308
+[BP-HIST] pairs(top20): (LoadGlobal, LoadFast)=566 (LoadFast, LoadFast)=482 (LoadFast, LoadAttr)=318 (LoadFast, CallFunction)=304 (StoreFast, LoadGlobal)=251 (LoadFast, LoadGlobal)=195 (StoreFast, LoadFast)=193 (Compare, JumpIfFalse)=184 (CallFunction, StoreFast)=178 (LoadFast, StoreAttr)=151 (LoadGlobal, CallFunction)=144 (LoadConst, PopTop)=136 (LoadFast, LoadAttrCall)=135 (LoadAttrCall, PopTop)=117 (StoreAttr, LoadFast)=113 (LoadAttr, LoadGlobal)=109 (LoadGlobal, Compare)=102 (GetIter, ForNext)=100 (LoadFast, LoadConst)=98 (LoadFast, LoadConstNone)=97
+[BP-HIST] triples(top20): (StoreFast, LoadGlobal, LoadFast)=239 (LoadGlobal, LoadFast, CallFunction)=193 (LoadGlobal, LoadFast, LoadFast)=172 (LoadFast, CallFunction, StoreFast)=132 (LoadFast, LoadGlobal, CallFunction)=113 (LoadGlobal, LoadFast, LoadGlobal)=113 (LoadFast, LoadFast, CallFunction)=109 (LoadFast, LoadFast, LoadAttr)=102 (LoadFast, StoreAttr, LoadFast)=96 (LoadGlobal, Compare, JumpIfFalse)=96 (CallFunction, StoreFast, LoadGlobal)=96 (LoadFast, LoadFast, LoadAttrCall)=92 (StoreFast, LoadFast, LoadFast)=79 (LoadGlobal, LoadFast, LoadConst)=77 (LoadFast, LoadGlobal, Compare)=74 (LoadFast, LoadAttr, Compare)=72 (LoadFast, LoadAttr, LoadGlobal)=71 (LoadConst, PopTop, LoadGlobal)=66 (LoadFast, CallFunction, LoadFast)=66 (LoadConst, LoadFast, BuildTuple)=64
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/bench/primitive/probes/_pp2_minimize2.py", line 107, in <module>
+    pf.unlink()
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 555, in run
+    with Popen(*popenargs, **kwargs) as process:
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 1075, in Popen.__init__
+    raise
+AttributeError: 'PosixPath' object has no attribute '_str'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/bench/primitive/probes/_pp2_minimize2.py", line 107, in <module>
+    pf.unlink()
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 555, in run
+    with Popen(*popenargs, **kwargs) as process:
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 1075, in Popen.__init__
+    raise
+TypeError: open() argument must be str, not int
+===== PROBE: tests/bench/primitive/probes/_pp2_minimize3.py =====
+[BP-HIST] total_dispatches=8635
+[BP-HIST] singles(top10): LoadFast=2134 LoadGlobal=1004 CallFunction=607 StoreFast=517 LoadConst=474 JumpIfFalse=462 LoadAttr=430 Compare=353 ReturnValue=340 PopTop=308
+[BP-HIST] pairs(top20): (LoadGlobal, LoadFast)=566 (LoadFast, LoadFast)=482 (LoadFast, LoadAttr)=318 (LoadFast, CallFunction)=304 (StoreFast, LoadGlobal)=251 (LoadFast, LoadGlobal)=195 (StoreFast, LoadFast)=193 (Compare, JumpIfFalse)=184 (CallFunction, StoreFast)=178 (LoadFast, StoreAttr)=151 (LoadGlobal, CallFunction)=144 (LoadConst, PopTop)=136 (LoadFast, LoadAttrCall)=135 (LoadAttrCall, PopTop)=117 (StoreAttr, LoadFast)=113 (LoadAttr, LoadGlobal)=109 (LoadGlobal, Compare)=102 (GetIter, ForNext)=100 (LoadFast, LoadConst)=98 (LoadFast, LoadConstNone)=97
+[BP-HIST] triples(top20): (StoreFast, LoadGlobal, LoadFast)=239 (LoadGlobal, LoadFast, CallFunction)=193 (LoadGlobal, LoadFast, LoadFast)=172 (LoadFast, CallFunction, StoreFast)=132 (LoadFast, LoadGlobal, CallFunction)=113 (LoadGlobal, LoadFast, LoadGlobal)=113 (LoadFast, LoadFast, CallFunction)=109 (LoadFast, LoadFast, LoadAttr)=102 (LoadFast, StoreAttr, LoadFast)=96 (LoadGlobal, Compare, JumpIfFalse)=96 (CallFunction, StoreFast, LoadGlobal)=96 (LoadFast, LoadFast, LoadAttrCall)=92 (StoreFast, LoadFast, LoadFast)=79 (LoadGlobal, LoadFast, LoadConst)=77 (LoadFast, LoadGlobal, Compare)=74 (LoadFast, LoadAttr, Compare)=72 (LoadFast, LoadAttr, LoadGlobal)=71 (LoadConst, PopTop, LoadGlobal)=66 (LoadFast, CallFunction, LoadFast)=66 (LoadConst, LoadFast, BuildTuple)=64
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/bench/primitive/probes/_pp2_minimize3.py", line 79, in <module>
+    pf.unlink()
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 555, in run
+    with Popen(*popenargs, **kwargs) as process:
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 1075, in Popen.__init__
+    raise
+AttributeError: 'PosixPath' object has no attribute '_str'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/bench/primitive/probes/_pp2_minimize3.py", line 79, in <module>
+    pf.unlink()
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 555, in run
+    with Popen(*popenargs, **kwargs) as process:
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 1075, in Popen.__init__
+    raise
+TypeError: open() argument must be str, not int
+===== PROBE: tests/bench/primitive/probes/_pp2_minimize4.py =====
+[BP-HIST] total_dispatches=8635
+[BP-HIST] singles(top10): LoadFast=2134 LoadGlobal=1004 CallFunction=607 StoreFast=517 LoadConst=474 JumpIfFalse=462 LoadAttr=430 Compare=353 ReturnValue=340 PopTop=308
+[BP-HIST] pairs(top20): (LoadGlobal, LoadFast)=566 (LoadFast, LoadFast)=482 (LoadFast, LoadAttr)=318 (LoadFast, CallFunction)=304 (StoreFast, LoadGlobal)=251 (LoadFast, LoadGlobal)=195 (StoreFast, LoadFast)=193 (Compare, JumpIfFalse)=184 (CallFunction, StoreFast)=178 (LoadFast, StoreAttr)=151 (LoadGlobal, CallFunction)=144 (LoadConst, PopTop)=136 (LoadFast, LoadAttrCall)=135 (LoadAttrCall, PopTop)=117 (StoreAttr, LoadFast)=113 (LoadAttr, LoadGlobal)=109 (LoadGlobal, Compare)=102 (GetIter, ForNext)=100 (LoadFast, LoadConst)=98 (LoadFast, LoadConstNone)=97
+[BP-HIST] triples(top20): (StoreFast, LoadGlobal, LoadFast)=239 (LoadGlobal, LoadFast, CallFunction)=193 (LoadGlobal, LoadFast, LoadFast)=172 (LoadFast, CallFunction, StoreFast)=132 (LoadFast, LoadGlobal, CallFunction)=113 (LoadGlobal, LoadFast, LoadGlobal)=113 (LoadFast, LoadFast, CallFunction)=109 (LoadFast, LoadFast, LoadAttr)=102 (LoadFast, StoreAttr, LoadFast)=96 (LoadGlobal, Compare, JumpIfFalse)=96 (CallFunction, StoreFast, LoadGlobal)=96 (LoadFast, LoadFast, LoadAttrCall)=92 (StoreFast, LoadFast, LoadFast)=79 (LoadGlobal, LoadFast, LoadConst)=77 (LoadFast, LoadGlobal, Compare)=74 (LoadFast, LoadAttr, Compare)=72 (LoadFast, LoadAttr, LoadGlobal)=71 (LoadConst, PopTop, LoadGlobal)=66 (LoadFast, CallFunction, LoadFast)=66 (LoadConst, LoadFast, BuildTuple)=64
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/bench/primitive/probes/_pp2_minimize4.py", line 131, in <module>
+    pf.unlink()
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 555, in run
+    with Popen(*popenargs, **kwargs) as process:
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 1075, in Popen.__init__
+    raise
+AttributeError: 'PosixPath' object has no attribute '_str'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/bench/primitive/probes/_pp2_minimize4.py", line 131, in <module>
+    pf.unlink()
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 555, in run
+    with Popen(*popenargs, **kwargs) as process:
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 1075, in Popen.__init__
+    raise
+TypeError: open() argument must be str, not int
+===== PROBE: tests/bench/primitive/probes/_pp2_minimize5.py =====
+[BP-HIST] total_dispatches=8635
+[BP-HIST] singles(top10): LoadFast=2134 LoadGlobal=1004 CallFunction=607 StoreFast=517 LoadConst=474 JumpIfFalse=462 LoadAttr=430 Compare=353 ReturnValue=340 PopTop=308
+[BP-HIST] pairs(top20): (LoadGlobal, LoadFast)=566 (LoadFast, LoadFast)=482 (LoadFast, LoadAttr)=318 (LoadFast, CallFunction)=304 (StoreFast, LoadGlobal)=251 (LoadFast, LoadGlobal)=195 (StoreFast, LoadFast)=193 (Compare, JumpIfFalse)=184 (CallFunction, StoreFast)=178 (LoadFast, StoreAttr)=151 (LoadGlobal, CallFunction)=144 (LoadConst, PopTop)=136 (LoadFast, LoadAttrCall)=135 (LoadAttrCall, PopTop)=117 (StoreAttr, LoadFast)=113 (LoadAttr, LoadGlobal)=109 (LoadGlobal, Compare)=102 (GetIter, ForNext)=100 (LoadFast, LoadConst)=98 (LoadFast, LoadConstNone)=97
+[BP-HIST] triples(top20): (StoreFast, LoadGlobal, LoadFast)=239 (LoadGlobal, LoadFast, CallFunction)=193 (LoadGlobal, LoadFast, LoadFast)=172 (LoadFast, CallFunction, StoreFast)=132 (LoadFast, LoadGlobal, CallFunction)=113 (LoadGlobal, LoadFast, LoadGlobal)=113 (LoadFast, LoadFast, CallFunction)=109 (LoadFast, LoadFast, LoadAttr)=102 (LoadFast, StoreAttr, LoadFast)=96 (LoadGlobal, Compare, JumpIfFalse)=96 (CallFunction, StoreFast, LoadGlobal)=96 (LoadFast, LoadFast, LoadAttrCall)=92 (StoreFast, LoadFast, LoadFast)=79 (LoadGlobal, LoadFast, LoadConst)=77 (LoadFast, LoadGlobal, Compare)=74 (LoadFast, LoadAttr, Compare)=72 (LoadFast, LoadAttr, LoadGlobal)=71 (LoadConst, PopTop, LoadGlobal)=66 (LoadFast, CallFunction, LoadFast)=66 (LoadConst, LoadFast, BuildTuple)=64
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/bench/primitive/probes/_pp2_minimize5.py", line 145, in <module>
+    pf.unlink()
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 555, in run
+    with Popen(*popenargs, **kwargs) as process:
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 1075, in Popen.__init__
+    raise
+AttributeError: 'PosixPath' object has no attribute '_str'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/bench/primitive/probes/_pp2_minimize5.py", line 145, in <module>
+    pf.unlink()
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 555, in run
+    with Popen(*popenargs, **kwargs) as process:
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 1075, in Popen.__init__
+    raise
+TypeError: open() argument must be str, not int
+===== PROBE: tests/bench/primitive/probes/_pp2_minimize6.py =====
+[BP-HIST] total_dispatches=8635
+[BP-HIST] singles(top10): LoadFast=2134 LoadGlobal=1004 CallFunction=607 StoreFast=517 LoadConst=474 JumpIfFalse=462 LoadAttr=430 Compare=353 ReturnValue=340 PopTop=308
+[BP-HIST] pairs(top20): (LoadGlobal, LoadFast)=566 (LoadFast, LoadFast)=482 (LoadFast, LoadAttr)=318 (LoadFast, CallFunction)=304 (StoreFast, LoadGlobal)=251 (LoadFast, LoadGlobal)=195 (StoreFast, LoadFast)=193 (Compare, JumpIfFalse)=184 (CallFunction, StoreFast)=178 (LoadFast, StoreAttr)=151 (LoadGlobal, CallFunction)=144 (LoadConst, PopTop)=136 (LoadFast, LoadAttrCall)=135 (LoadAttrCall, PopTop)=117 (StoreAttr, LoadFast)=113 (LoadAttr, LoadGlobal)=109 (LoadGlobal, Compare)=102 (GetIter, ForNext)=100 (LoadFast, LoadConst)=98 (LoadFast, LoadConstNone)=97
+[BP-HIST] triples(top20): (StoreFast, LoadGlobal, LoadFast)=239 (LoadGlobal, LoadFast, CallFunction)=193 (LoadGlobal, LoadFast, LoadFast)=172 (LoadFast, CallFunction, StoreFast)=132 (LoadFast, LoadGlobal, CallFunction)=113 (LoadGlobal, LoadFast, LoadGlobal)=113 (LoadFast, LoadFast, CallFunction)=109 (LoadFast, LoadFast, LoadAttr)=102 (LoadFast, StoreAttr, LoadFast)=96 (LoadGlobal, Compare, JumpIfFalse)=96 (CallFunction, StoreFast, LoadGlobal)=96 (LoadFast, LoadFast, LoadAttrCall)=92 (StoreFast, LoadFast, LoadFast)=79 (LoadGlobal, LoadFast, LoadConst)=77 (LoadFast, LoadGlobal, Compare)=74 (LoadFast, LoadAttr, Compare)=72 (LoadFast, LoadAttr, LoadGlobal)=71 (LoadConst, PopTop, LoadGlobal)=66 (LoadFast, CallFunction, LoadFast)=66 (LoadConst, LoadFast, BuildTuple)=64
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/bench/primitive/probes/_pp2_minimize6.py", line 137, in <module>
+    pf.unlink()
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 555, in run
+    with Popen(*popenargs, **kwargs) as process:
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 1075, in Popen.__init__
+    raise
+AttributeError: 'PosixPath' object has no attribute '_str'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/bench/primitive/probes/_pp2_minimize6.py", line 137, in <module>
+    pf.unlink()
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 555, in run
+    with Popen(*popenargs, **kwargs) as process:
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 1075, in Popen.__init__
+    raise
+TypeError: open() argument must be str, not int
+===== PROBE: tests/bench/primitive/probes/_pp2_minimize7.py =====
+[BP-HIST] total_dispatches=8635
+[BP-HIST] singles(top10): LoadFast=2134 LoadGlobal=1004 CallFunction=607 StoreFast=517 LoadConst=474 JumpIfFalse=462 LoadAttr=430 Compare=353 ReturnValue=340 PopTop=308
+[BP-HIST] pairs(top20): (LoadGlobal, LoadFast)=566 (LoadFast, LoadFast)=482 (LoadFast, LoadAttr)=318 (LoadFast, CallFunction)=304 (StoreFast, LoadGlobal)=251 (LoadFast, LoadGlobal)=195 (StoreFast, LoadFast)=193 (Compare, JumpIfFalse)=184 (CallFunction, StoreFast)=178 (LoadFast, StoreAttr)=151 (LoadGlobal, CallFunction)=144 (LoadConst, PopTop)=136 (LoadFast, LoadAttrCall)=135 (LoadAttrCall, PopTop)=117 (StoreAttr, LoadFast)=113 (LoadAttr, LoadGlobal)=109 (LoadGlobal, Compare)=102 (GetIter, ForNext)=100 (LoadFast, LoadConst)=98 (LoadFast, LoadConstNone)=97
+[BP-HIST] triples(top20): (StoreFast, LoadGlobal, LoadFast)=239 (LoadGlobal, LoadFast, CallFunction)=193 (LoadGlobal, LoadFast, LoadFast)=172 (LoadFast, CallFunction, StoreFast)=132 (LoadFast, LoadGlobal, CallFunction)=113 (LoadGlobal, LoadFast, LoadGlobal)=113 (LoadFast, LoadFast, CallFunction)=109 (LoadFast, LoadFast, LoadAttr)=102 (LoadFast, StoreAttr, LoadFast)=96 (LoadGlobal, Compare, JumpIfFalse)=96 (CallFunction, StoreFast, LoadGlobal)=96 (LoadFast, LoadFast, LoadAttrCall)=92 (StoreFast, LoadFast, LoadFast)=79 (LoadGlobal, LoadFast, LoadConst)=77 (LoadFast, LoadGlobal, Compare)=74 (LoadFast, LoadAttr, Compare)=72 (LoadFast, LoadAttr, LoadGlobal)=71 (LoadConst, PopTop, LoadGlobal)=66 (LoadFast, CallFunction, LoadFast)=66 (LoadConst, LoadFast, BuildTuple)=64
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/bench/primitive/probes/_pp2_minimize7.py", line 150, in <module>
+    pf.unlink()
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 555, in run
+    with Popen(*popenargs, **kwargs) as process:
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 1075, in Popen.__init__
+    raise
+AttributeError: 'PosixPath' object has no attribute '_str'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/bench/primitive/probes/_pp2_minimize7.py", line 150, in <module>
+    pf.unlink()
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 555, in run
+    with Popen(*popenargs, **kwargs) as process:
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 1075, in Popen.__init__
+    raise
+TypeError: open() argument must be str, not int
+===== PROBE: tests/bench/primitive/probes/_pp2_minimize8.py =====
+[BP-HIST] total_dispatches=8635
+[BP-HIST] singles(top10): LoadFast=2134 LoadGlobal=1004 CallFunction=607 StoreFast=517 LoadConst=474 JumpIfFalse=462 LoadAttr=430 Compare=353 ReturnValue=340 PopTop=308
+[BP-HIST] pairs(top20): (LoadGlobal, LoadFast)=566 (LoadFast, LoadFast)=482 (LoadFast, LoadAttr)=318 (LoadFast, CallFunction)=304 (StoreFast, LoadGlobal)=251 (LoadFast, LoadGlobal)=195 (StoreFast, LoadFast)=193 (Compare, JumpIfFalse)=184 (CallFunction, StoreFast)=178 (LoadFast, StoreAttr)=151 (LoadGlobal, CallFunction)=144 (LoadConst, PopTop)=136 (LoadFast, LoadAttrCall)=135 (LoadAttrCall, PopTop)=117 (StoreAttr, LoadFast)=113 (LoadAttr, LoadGlobal)=109 (LoadGlobal, Compare)=102 (GetIter, ForNext)=100 (LoadFast, LoadConst)=98 (LoadFast, LoadConstNone)=97
+[BP-HIST] triples(top20): (StoreFast, LoadGlobal, LoadFast)=239 (LoadGlobal, LoadFast, CallFunction)=193 (LoadGlobal, LoadFast, LoadFast)=172 (LoadFast, CallFunction, StoreFast)=132 (LoadFast, LoadGlobal, CallFunction)=113 (LoadGlobal, LoadFast, LoadGlobal)=113 (LoadFast, LoadFast, CallFunction)=109 (LoadFast, LoadFast, LoadAttr)=102 (LoadFast, StoreAttr, LoadFast)=96 (LoadGlobal, Compare, JumpIfFalse)=96 (CallFunction, StoreFast, LoadGlobal)=96 (LoadFast, LoadFast, LoadAttrCall)=92 (StoreFast, LoadFast, LoadFast)=79 (LoadGlobal, LoadFast, LoadConst)=77 (LoadFast, LoadGlobal, Compare)=74 (LoadFast, LoadAttr, Compare)=72 (LoadFast, LoadAttr, LoadGlobal)=71 (LoadConst, PopTop, LoadGlobal)=66 (LoadFast, CallFunction, LoadFast)=66 (LoadConst, LoadFast, BuildTuple)=64
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/bench/primitive/probes/_pp2_minimize8.py", line 145, in <module>
+    pf.unlink()
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 555, in run
+    with Popen(*popenargs, **kwargs) as process:
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 1075, in Popen.__init__
+    raise
+AttributeError: 'PosixPath' object has no attribute '_str'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/bench/primitive/probes/_pp2_minimize8.py", line 145, in <module>
+    pf.unlink()
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 555, in run
+    with Popen(*popenargs, **kwargs) as process:
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 1075, in Popen.__init__
+    raise
+TypeError: open() argument must be str, not int
+===== PROBE: tests/bench/primitive/probes/_pp2_minimize9.py =====
+[BP-HIST] total_dispatches=8635
+[BP-HIST] singles(top10): LoadFast=2134 LoadGlobal=1004 CallFunction=607 StoreFast=517 LoadConst=474 JumpIfFalse=462 LoadAttr=430 Compare=353 ReturnValue=340 PopTop=308
+[BP-HIST] pairs(top20): (LoadGlobal, LoadFast)=566 (LoadFast, LoadFast)=482 (LoadFast, LoadAttr)=318 (LoadFast, CallFunction)=304 (StoreFast, LoadGlobal)=251 (LoadFast, LoadGlobal)=195 (StoreFast, LoadFast)=193 (Compare, JumpIfFalse)=184 (CallFunction, StoreFast)=178 (LoadFast, StoreAttr)=151 (LoadGlobal, CallFunction)=144 (LoadConst, PopTop)=136 (LoadFast, LoadAttrCall)=135 (LoadAttrCall, PopTop)=117 (StoreAttr, LoadFast)=113 (LoadAttr, LoadGlobal)=109 (LoadGlobal, Compare)=102 (GetIter, ForNext)=100 (LoadFast, LoadConst)=98 (LoadFast, LoadConstNone)=97
+[BP-HIST] triples(top20): (StoreFast, LoadGlobal, LoadFast)=239 (LoadGlobal, LoadFast, CallFunction)=193 (LoadGlobal, LoadFast, LoadFast)=172 (LoadFast, CallFunction, StoreFast)=132 (LoadFast, LoadGlobal, CallFunction)=113 (LoadGlobal, LoadFast, LoadGlobal)=113 (LoadFast, LoadFast, CallFunction)=109 (LoadFast, LoadFast, LoadAttr)=102 (LoadFast, StoreAttr, LoadFast)=96 (LoadGlobal, Compare, JumpIfFalse)=96 (CallFunction, StoreFast, LoadGlobal)=96 (LoadFast, LoadFast, LoadAttrCall)=92 (StoreFast, LoadFast, LoadFast)=79 (LoadGlobal, LoadFast, LoadConst)=77 (LoadFast, LoadGlobal, Compare)=74 (LoadFast, LoadAttr, Compare)=72 (LoadFast, LoadAttr, LoadGlobal)=71 (LoadConst, PopTop, LoadGlobal)=66 (LoadFast, CallFunction, LoadFast)=66 (LoadConst, LoadFast, BuildTuple)=64
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/bench/primitive/probes/_pp2_minimize9.py", line 151, in <module>
+    pf.unlink()
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 555, in run
+    with Popen(*popenargs, **kwargs) as process:
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 1075, in Popen.__init__
+    raise
+AttributeError: 'PosixPath' object has no attribute '_str'
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/bench/primitive/probes/_pp2_minimize9.py", line 151, in <module>
+    pf.unlink()
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 555, in run
+    with Popen(*popenargs, **kwargs) as process:
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/vendored_stdlib/subprocess.py", line 1075, in Popen.__init__
+    raise
+TypeError: open() argument must be str, not int
+===== PROBE: tests/bench/primitive/probes/fixc_bisect.py =====
+[BP-HIST] total_dispatches=18765152
+[BP-HIST] singles(top10): LoadFast=4956696 StoreFast=3540488 Jump=2478084 ForNext=2124184 AugOp=1416000 LoadAttrCall=1062168 PopTop=1062084 LoadConst=1062076 Compare=354152 JumpIfFalse=354096
+[BP-HIST] pairs(top20): (StoreFast, LoadFast)=2124216 (LoadFast, LoadFast)=2124152 (StoreFast, Jump)=1416052 (AugOp, StoreFast)=1416000 (LoadConst, AugOp)=1062000 (LoadFast, LoadConst)=1062000 (LoadFast, LoadAttrCall)=1062000 (PopTop, Jump)=1062000 (LoadAttrCall, PopTop)=1062000 (LoadFast, Compare)=354068 (Compare, JumpIfFalse)=354068 (LoadFast, Subscript)=354000 (Subscript, AugOp)=354000 (LoadFast, CallFunction)=168 (LoadGlobal, LoadAttrCall)=168 (StoreFast, LoadGlobal)=136 (LoadFast, BinOp)=84 (LoadFast, LoadConstNone)=84 (LoadGlobal, LoadFast)=84 (PopTop, LoadGlobal)=84
+[BP-HIST] triples(top20): (StoreFast, LoadFast, LoadFast)=1416096 (AugOp, StoreFast, Jump)=1416000 (LoadConst, AugOp, StoreFast)=1062000 (LoadFast, LoadConst, AugOp)=1062000 (LoadFast, LoadFast, LoadAttrCall)=1062000 (LoadFast, LoadAttrCall, PopTop)=1062000 (LoadAttrCall, PopTop, Jump)=1062000 (StoreFast, LoadFast, LoadConst)=708000 (LoadFast, LoadFast, Compare)=354068 (LoadFast, Compare, JumpIfFalse)=354068 (LoadFast, LoadFast, LoadFast)=354000 (LoadFast, LoadFast, Subscript)=354000 (LoadFast, Subscript, AugOp)=354000 (Subscript, AugOp, StoreFast)=354000 (LoadFast, LoadFast, CallFunction)=84 (LoadFast, BinOp, StoreFast)=84 (LoadFast, CallFunction, PopTop)=84 (LoadFast, LoadConstNone, Compare)=84 (LoadGlobal, LoadFast, CallFunction)=84 (LoadGlobal, LoadAttrCall, LoadFast)=84
+===== PROBE: tests/bench/primitive/probes/fixc_dict.py =====
+[BP-HIST] total_dispatches=4325985
+[BP-HIST] singles(top10): LoadFast=1409145 StoreFast=852062 ForNext=524328 Jump=524308 AugOp=327680 StoreSubscript=196608 LoadGlobal=163905 CallFunction=163864 Subscript=163840 LoadAttrCall=40
+[BP-HIST] pairs(top20): (LoadFast, LoadFast)=720912 (StoreFast, LoadFast)=524328 (StoreFast, Jump)=327689 (AugOp, StoreFast)=327680 (LoadFast, StoreSubscript)=196608 (StoreSubscript, Jump)=196608 (LoadFast, CallFunction)=163860 (LoadFast, LoadGlobal)=163840 (LoadFast, Subscript)=163840 (LoadGlobal, LoadFast)=163840 (CallFunction, AugOp)=163840 (Subscript, AugOp)=163840 (LoadGlobal, LoadAttrCall)=40 (StoreFast, LoadGlobal)=40 (LoadFast, BinOp)=20 (LoadFast, LoadConstNone)=20 (LoadFast, ReturnValue)=20 (PopTop, LoadGlobal)=20 (BinOp, StoreFast)=20 (Compare, JumpIfTrueOrPop)=20
+[BP-HIST] triples(top20): (LoadFast, LoadFast, LoadFast)=360448 (StoreFast, LoadFast, LoadFast)=360448 (AugOp, StoreFast, Jump)=327680 (LoadFast, LoadFast, StoreSubscript)=196608 (LoadFast, StoreSubscript, Jump)=196608 (LoadFast, LoadFast, CallFunction)=163840 (LoadFast, LoadGlobal, LoadFast)=163840 (LoadFast, CallFunction, AugOp)=163840 (LoadFast, Subscript, AugOp)=163840 (LoadGlobal, LoadFast, Subscript)=163840 (StoreFast, LoadFast, LoadGlobal)=163840 (CallFunction, AugOp, StoreFast)=163840 (Subscript, AugOp, StoreFast)=163840 (LoadFast, BinOp, StoreFast)=20 (LoadFast, CallFunction, PopTop)=20 (LoadFast, LoadConstNone, Compare)=20 (LoadGlobal, LoadAttrCall, LoadFast)=20 (LoadGlobal, LoadAttrCall, StoreFast)=20 (StoreFast, LoadFast, CallFunction)=20 (StoreFast, LoadFast, LoadConstNone)=20
+===== PROBE: tests/bench/primitive/probes/fixc_mint.py =====
+[BP-HIST] total_dispatches=3861349
+[BP-HIST] singles(top10): LoadFast=1019614 LoadConst=656008 StoreFast=406985 ForNext=308641 Jump=308623 BinOp=288015 BuildList=192007 LoadAttrCall=112030 PopTop=112015 LoadGlobal=98358
+[BP-HIST] pairs(top20): (LoadFast, LoadFast)=356618 (StoreFast, LoadFast)=308638 (LoadFast, LoadConst)=304000 (LoadConst, LoadConst)=224000 (LoadConst, BinOp)=224000 (LoadConst, LoadFast)=144000 (BinOp, BuildList)=128000 (PopTop, Jump)=112000 (BinOp, LoadFast)=112000 (LoadAttrCall, PopTop)=112000 (StoreFast, Jump)=98314 (LoadGlobal, LoadFast)=98305 (LoadFast, LoadGlobal)=98304 (LoadFast, Subscript)=98304 (LoadFast, StoreSubscript)=98304 (Subscript, AugOp)=98304 (StoreSubscript, Jump)=98304 (AugOp, StoreFast)=98304 (BuildList, LoadConst)=80000 (LoadFast, BinOp)=64015
+[BP-HIST] triples(top20): (LoadFast, LoadConst, BinOp)=224000 (LoadFast, LoadFast, LoadFast)=146304 (StoreFast, LoadFast, LoadFast)=146304 (LoadConst, LoadConst, LoadConst)=128000 (LoadConst, BinOp, LoadFast)=112000 (LoadConst, BinOp, BuildList)=112000 (LoadFast, LoadFast, LoadConst)=112000 (BinOp, LoadFast, LoadConst)=112000 (LoadAttrCall, PopTop, Jump)=112000 (LoadFast, LoadFast, StoreSubscript)=98304 (LoadFast, LoadGlobal, LoadFast)=98304 (LoadFast, Subscript, AugOp)=98304 (LoadFast, StoreSubscript, Jump)=98304 (LoadGlobal, LoadFast, Subscript)=98304 (StoreFast, LoadFast, LoadGlobal)=98304 (Subscript, AugOp, StoreFast)=98304 (AugOp, StoreFast, Jump)=98304 (BinOp, BuildList, LoadConst)=80000 (LoadConst, LoadConst, BuildList)=64000 (LoadConst, LoadFast, LoadFast)=64000
+===== PROBE: tests/bench/primitive/probes/fixsort2_isolation.py =====
+[BP-HIST] total_dispatches=19228842
+[BP-HIST] singles(top10): BinOp=4524312 LoadConst=4524288 LoadFast=3393358 StoreFast=2262242 LoadAttrCall=1131120 ForNext=1131104 PopTop=1131096 Jump=1131096 LoadGlobal=56 Compare=42
+[BP-HIST] pairs(top20): (LoadConst, BinOp)=3393216 (StoreFast, LoadFast)=2262194 (BinOp, LoadConst)=2262144 (BinOp, StoreFast)=1131096 (LoadFast, LoadFast)=1131090 (LoadConst, LoadConst)=1131072 (LoadFast, LoadConst)=1131072 (LoadFast, LoadAttrCall)=1131072 (PopTop, Jump)=1131072 (BinOp, BinOp)=1131072 (LoadAttrCall, PopTop)=1131072 (LoadGlobal, LoadAttrCall)=48 (LoadFast, CallFunction)=32 (StoreFast, LoadGlobal)=32 (LoadFast, BinOp)=24 (LoadFast, LoadConstNone)=24 (PopTop, LoadGlobal)=24 (Compare, JumpIfTrueOrPop)=24 (CallFunction, PopTop)=24 (LoadConstNone, Compare)=24
+[BP-HIST] triples(top20): (LoadConst, BinOp, LoadConst)=2262144 (BinOp, StoreFast, LoadFast)=1131096 (LoadConst, LoadConst, BinOp)=1131072 (LoadConst, BinOp, BinOp)=1131072 (LoadFast, LoadConst, BinOp)=1131072 (LoadFast, LoadFast, LoadAttrCall)=1131072 (LoadFast, LoadAttrCall, PopTop)=1131072 (StoreFast, LoadFast, LoadConst)=1131072 (StoreFast, LoadFast, LoadFast)=1131072 (BinOp, LoadConst, LoadConst)=1131072 (BinOp, LoadConst, BinOp)=1131072 (BinOp, BinOp, StoreFast)=1131072 (LoadAttrCall, PopTop, Jump)=1131072 (LoadFast, BinOp, StoreFast)=24 (LoadFast, CallFunction, PopTop)=24 (LoadFast, LoadConstNone, Compare)=24 (LoadGlobal, LoadAttrCall, LoadFast)=24 (LoadGlobal, LoadAttrCall, StoreFast)=24 (StoreFast, LoadFast, CallFunction)=24 (StoreFast, LoadFast, LoadConstNone)=24
+===== PROBE: tests/bench/primitive/probes/hp_mint.py =====
+[BP-HIST] total_dispatches=24000708
+[BP-HIST] singles(top10): StoreFast=5000127 LoadFast=3000148 LoadGlobal=3000075 Jump=3000025 ForNext=2000040 LoadAttr=2000000 AugOp=2000000 LoadConst=1000016 PopTop=1000000 PopExc=1000000
+[BP-HIST] pairs(top20): (StoreFast, LoadGlobal)=2000065 (LoadGlobal, LoadAttr)=2000000 (AugOp, StoreFast)=2000000 (StoreFast, LoadFast)=1000050 (LoadFast, LoadFast)=1000025 (StoreFast, Jump)=1000012 (LoadConst, AugOp)=1000000 (LoadFast, LoadConst)=1000000 (LoadFast, AugOp)=1000000 (LoadGlobal, CheckExcept)=1000000 (StoreFast, PopExc)=1000000 (PopTop, LoadFast)=1000000 (LoadAttr, LoadGlobal)=1000000 (LoadAttr, StoreFast)=1000000 (PopExc, Jump)=1000000 (LoadGlobal, LoadAttrCall)=50 (LoadFast, BinOp)=25 (LoadFast, CallFunction)=25 (LoadFast, LoadConstNone)=25 (BinOp, StoreFast)=25
+[BP-HIST] triples(top20): (StoreFast, LoadGlobal, LoadAttr)=2000000 (LoadConst, AugOp, StoreFast)=1000000 (LoadFast, LoadConst, AugOp)=1000000 (LoadFast, LoadFast, AugOp)=1000000 (LoadFast, AugOp, StoreFast)=1000000 (LoadGlobal, LoadAttr, LoadGlobal)=1000000 (LoadGlobal, LoadAttr, StoreFast)=1000000 (StoreFast, LoadFast, LoadFast)=1000000 (StoreFast, PopExc, Jump)=1000000 (PopTop, LoadFast, LoadConst)=1000000 (LoadAttr, LoadGlobal, CheckExcept)=1000000 (LoadAttr, StoreFast, LoadFast)=1000000 (AugOp, StoreFast, Jump)=1000000 (AugOp, StoreFast, PopExc)=1000000 (StoreFast, LoadGlobal, LoadAttrCall)=50 (LoadFast, BinOp, StoreFast)=25 (LoadFast, CallFunction, StoreFast)=25 (LoadFast, LoadConstNone, Compare)=25 (LoadGlobal, LoadAttrCall, LoadFast)=25 (LoadGlobal, LoadAttrCall, StoreFast)=25
+===== PROBE: tests/bench/primitive/probes/ic_base.py =====
+[BP-HIST] total_dispatches=14700256
+[BP-HIST] singles(top10): StoreFast=4200028 LoadFast=2450029 LoadGlobal=1400056 ForNext=1400028 Jump=1400000 AugOp=1400000 LoadConst=1050029 LoadAttrCall=700000 ReturnValue=350028 LoadAttr=350000
+[BP-HIST] pairs(top20): (StoreFast, LoadGlobal)=1400028 (StoreFast, LoadFast)=1400000 (StoreFast, Jump)=1400000 (AugOp, StoreFast)=1400000 (LoadFast, LoadFast)=1050000 (LoadFast, AugOp)=1050000 (LoadAttrCall, StoreFast)=700000 (LoadConst, ReturnValue)=350000 (LoadConst, AugOp)=350000 (LoadConst, LoadAttrCall)=350000 (LoadFast, LoadConst)=350000 (LoadGlobal, LoadConst)=350000 (LoadGlobal, StoreFast)=350000 (LoadGlobal, LoadAttr)=350000 (LoadGlobal, LoadAttrCall)=350000 (LoadAttr, StoreFast)=350000 (LoadConst, StoreFast)=28 (LoadFast, ReturnValue)=28 (LoadGlobal, LoadGlobal)=28 (LoadGlobal, CallFunction)=28
+[BP-HIST] triples(top20): (AugOp, StoreFast, Jump)=1400000 (LoadFast, LoadFast, AugOp)=1050000 (LoadFast, AugOp, StoreFast)=1050000 (StoreFast, LoadFast, LoadFast)=1050000 (LoadAttrCall, StoreFast, LoadFast)=700000 (LoadConst, AugOp, StoreFast)=350000 (LoadConst, LoadAttrCall, StoreFast)=350000 (LoadFast, LoadConst, AugOp)=350000 (LoadGlobal, LoadConst, LoadAttrCall)=350000 (LoadGlobal, StoreFast, LoadFast)=350000 (LoadGlobal, LoadAttr, StoreFast)=350000 (LoadGlobal, LoadAttrCall, StoreFast)=350000 (StoreFast, LoadFast, LoadConst)=350000 (StoreFast, LoadGlobal, LoadConst)=350000 (StoreFast, LoadGlobal, StoreFast)=350000 (StoreFast, LoadGlobal, LoadAttr)=350000 (StoreFast, LoadGlobal, LoadAttrCall)=350000 (LoadAttr, StoreFast, LoadFast)=350000 (LoadConst, StoreFast, LoadGlobal)=28 (LoadGlobal, LoadGlobal, CallFunction)=28
+===== PROBE: tests/bench/primitive/probes/p01_base64.py =====
+[BP-HIST] total_dispatches=20
+[BP-HIST] singles(top10): LoadConst=4 LoadGlobal=4 BinOp=4 CallFunction=4 LoadFast=2 ReturnValue=2
+[BP-HIST] pairs(top20): (LoadConst, BinOp)=2 (LoadConst, CallFunction)=2 (LoadFast, LoadConst)=2 (LoadGlobal, LoadConst)=2 (LoadGlobal, LoadGlobal)=2 (BinOp, BinOp)=2 (BinOp, ReturnValue)=2 (CallFunction, LoadFast)=2 (CallFunction, CallFunction)=2
+[BP-HIST] triples(top20): (LoadConst, BinOp, BinOp)=2 (LoadConst, CallFunction, CallFunction)=2 (LoadFast, LoadConst, BinOp)=2 (LoadGlobal, LoadConst, CallFunction)=2 (LoadGlobal, LoadGlobal, LoadConst)=2 (BinOp, BinOp, ReturnValue)=2 (CallFunction, LoadFast, LoadConst)=2 (CallFunction, CallFunction, LoadFast)=2
+===== PROBE: tests/bench/primitive/probes/p03_hexlify.py =====
+[BP-HIST] total_dispatches=20
+[BP-HIST] singles(top10): LoadConst=4 LoadGlobal=4 BinOp=4 CallFunction=4 LoadFast=2 ReturnValue=2
+[BP-HIST] pairs(top20): (LoadConst, BinOp)=2 (LoadConst, CallFunction)=2 (LoadFast, LoadConst)=2 (LoadGlobal, LoadConst)=2 (LoadGlobal, LoadGlobal)=2 (BinOp, BinOp)=2 (BinOp, ReturnValue)=2 (CallFunction, LoadFast)=2 (CallFunction, CallFunction)=2
+[BP-HIST] triples(top20): (LoadConst, BinOp, BinOp)=2 (LoadConst, CallFunction, CallFunction)=2 (LoadFast, LoadConst, BinOp)=2 (LoadGlobal, LoadConst, CallFunction)=2 (LoadGlobal, LoadGlobal, LoadConst)=2 (BinOp, BinOp, ReturnValue)=2 (CallFunction, LoadFast, LoadConst)=2 (CallFunction, CallFunction, LoadFast)=2
+===== PROBE: tests/bench/primitive/probes/p04_compress.py =====
+[BP-HIST] total_dispatches=20
+[BP-HIST] singles(top10): LoadConst=4 LoadGlobal=4 BinOp=4 CallFunction=4 LoadFast=2 ReturnValue=2
+[BP-HIST] pairs(top20): (LoadConst, BinOp)=2 (LoadConst, CallFunction)=2 (LoadFast, LoadConst)=2 (LoadGlobal, LoadConst)=2 (LoadGlobal, LoadGlobal)=2 (BinOp, BinOp)=2 (BinOp, ReturnValue)=2 (CallFunction, LoadFast)=2 (CallFunction, CallFunction)=2
+[BP-HIST] triples(top20): (LoadConst, BinOp, BinOp)=2 (LoadConst, CallFunction, CallFunction)=2 (LoadFast, LoadConst, BinOp)=2 (LoadGlobal, LoadConst, CallFunction)=2 (LoadGlobal, LoadGlobal, LoadConst)=2 (BinOp, BinOp, ReturnValue)=2 (CallFunction, LoadFast, LoadConst)=2 (CallFunction, CallFunction, LoadFast)=2
+===== PROBE: tests/bench/primitive/probes/p05_hash.py =====
+[BP-HIST] total_dispatches=20
+[BP-HIST] singles(top10): LoadConst=4 LoadGlobal=4 BinOp=4 CallFunction=4 LoadFast=2 ReturnValue=2
+[BP-HIST] pairs(top20): (LoadConst, BinOp)=2 (LoadConst, CallFunction)=2 (LoadFast, LoadConst)=2 (LoadGlobal, LoadConst)=2 (LoadGlobal, LoadGlobal)=2 (BinOp, BinOp)=2 (BinOp, ReturnValue)=2 (CallFunction, LoadFast)=2 (CallFunction, CallFunction)=2
+[BP-HIST] triples(top20): (LoadConst, BinOp, BinOp)=2 (LoadConst, CallFunction, CallFunction)=2 (LoadFast, LoadConst, BinOp)=2 (LoadGlobal, LoadConst, CallFunction)=2 (LoadGlobal, LoadGlobal, LoadConst)=2 (BinOp, BinOp, ReturnValue)=2 (CallFunction, LoadFast, LoadConst)=2 (CallFunction, CallFunction, LoadFast)=2
+===== PROBE: tests/bench/primitive/probes/p06_str.py =====
+===== PROBE: tests/bench/primitive/probes/p07_bytes_int.py =====
+[BP-HIST] total_dispatches=20
+[BP-HIST] singles(top10): LoadConst=4 LoadGlobal=4 BinOp=4 CallFunction=4 LoadFast=2 ReturnValue=2
+[BP-HIST] pairs(top20): (LoadConst, BinOp)=2 (LoadConst, CallFunction)=2 (LoadFast, LoadConst)=2 (LoadGlobal, LoadConst)=2 (LoadGlobal, LoadGlobal)=2 (BinOp, BinOp)=2 (BinOp, ReturnValue)=2 (CallFunction, LoadFast)=2 (CallFunction, CallFunction)=2
+[BP-HIST] triples(top20): (LoadConst, BinOp, BinOp)=2 (LoadConst, CallFunction, CallFunction)=2 (LoadFast, LoadConst, BinOp)=2 (LoadGlobal, LoadConst, CallFunction)=2 (LoadGlobal, LoadGlobal, LoadConst)=2 (BinOp, BinOp, ReturnValue)=2 (CallFunction, LoadFast, LoadConst)=2 (CallFunction, CallFunction, LoadFast)=2
+===== PROBE: tests/bench/primitive/probes/p08_sort.py =====
+[BP-HIST] total_dispatches=95526417
+[BP-HIST] singles(top10): LoadConst=23881536 LoadFast=15921087 LoadAttrCall=15921045 StoreFast=7960554 ForNext=7960533 PopTop=7960512 BinOp=7960512 Jump=7960512 LoadGlobal=42 GetIter=21
+[BP-HIST] pairs(top20): (LoadConst, LoadConst)=15921024 (LoadConst, BinOp)=7960512 (LoadFast, LoadConst)=7960512 (LoadFast, LoadFast)=7960512 (StoreFast, LoadFast)=7960512 (PopTop, Jump)=7960512 (BinOp, LoadAttrCall)=7960512 (LoadAttrCall, PopTop)=7960512 (LoadAttrCall, LoadAttrCall)=7960512 (LoadGlobal, LoadFast)=42 (LoadFast, CallFunction)=21 (LoadFast, ReturnValue)=21 (LoadFast, LoadAttrCall)=21 (StoreFast, LoadGlobal)=21 (StoreFast, ForNext)=21 (GetIter, BuildList)=21 (CallFunction, GetIter)=21 (BuildList, StoreFast)=21 (LoadAttrCall, StoreFast)=21
+[BP-HIST] triples(top20): (LoadConst, LoadConst, LoadConst)=7960512 (LoadConst, LoadConst, BinOp)=7960512 (LoadConst, BinOp, LoadAttrCall)=7960512 (LoadFast, LoadConst, LoadConst)=7960512 (LoadFast, LoadFast, LoadConst)=7960512 (StoreFast, LoadFast, LoadFast)=7960512 (BinOp, LoadAttrCall, LoadAttrCall)=7960512 (LoadAttrCall, PopTop, Jump)=7960512 (LoadAttrCall, LoadAttrCall, PopTop)=7960512 (LoadFast, CallFunction, GetIter)=21 (LoadFast, LoadAttrCall, StoreFast)=21 (LoadGlobal, LoadFast, CallFunction)=21 (LoadGlobal, LoadFast, LoadAttrCall)=21 (StoreFast, LoadGlobal, LoadFast)=21 (GetIter, BuildList, StoreFast)=21 (CallFunction, GetIter, BuildList)=21 (BuildList, StoreFast, ForNext)=21 (LoadAttrCall, StoreFast, LoadGlobal)=21
+===== PROBE: tests/bench/primitive/probes/p09_dict.py =====
+[BP-HIST] total_dispatches=20423220
+[BP-HIST] singles(top10): LoadFast=5602204 StoreFast=4112974 ForNext=1843790 Jump=1843712 LoadConst=1489208 AugOp=1276416 Compare=850944 JumpIfFalse=850944 LoadConstNone=850944 StoreSubscript=496384
+[BP-HIST] pairs(top20): (LoadFast, LoadFast)=2411008 (StoreFast, LoadFast)=2340150 (LoadFast, LoadConst)=1347328 (LoadConst, AugOp)=1276416 (StoreFast, Jump)=1276416 (AugOp, StoreFast)=1276416 (Compare, JumpIfFalse)=850944 (LoadConstNone, Compare)=850944 (LoadFast, StoreFast)=496384 (LoadFast, StoreSubscript)=496384 (StoreFast, StoreFast)=496384 (StoreSubscript, Jump)=496384 (LoadFast, Subscript)=425472 (LoadFast, LoadAttrCall)=425472 (Subscript, LoadConstNone)=425472 (LoadAttrCall, LoadConstNone)=425472 (LoadConst, BinOp)=141824 (LoadConst, LoadConst)=70912 (PopTop, Jump)=70912 (BinOp, LoadConst)=70912
+[BP-HIST] triples(top20): (StoreFast, LoadFast, LoadFast)=1914624 (LoadConst, AugOp, StoreFast)=1276416 (LoadFast, LoadConst, AugOp)=1276416 (AugOp, StoreFast, Jump)=1276416 (LoadConstNone, Compare, JumpIfFalse)=850944 (LoadFast, LoadFast, LoadFast)=496384 (LoadFast, LoadFast, StoreFast)=496384 (LoadFast, LoadFast, StoreSubscript)=496384 (LoadFast, StoreFast, StoreFast)=496384 (LoadFast, StoreSubscript, Jump)=496384 (StoreFast, StoreFast, LoadFast)=496384 (LoadFast, LoadFast, Subscript)=425472 (LoadFast, LoadFast, LoadAttrCall)=425472 (LoadFast, Subscript, LoadConstNone)=425472 (LoadFast, LoadAttrCall, LoadConstNone)=425472 (StoreFast, LoadFast, LoadConst)=425472 (Subscript, LoadConstNone, Compare)=425472 (LoadAttrCall, LoadConstNone, Compare)=425472 (LoadConst, LoadConst, BinOp)=70912 (LoadConst, BinOp, LoadConst)=70912
+===== PROBE: tests/bench/primitive/probes/p10_json.py =====
+[BP-HIST] total_dispatches=336124
+[BP-HIST] singles(top10): LoadConst=139278 LoadFast=49218 BinOp=40960 JumpIfFalse=16384 Compare=8224 LoadAttrCall=8224 StoreFast=8196 BuildDict=8196 BuildList=8194 PopTop=8192
+[BP-HIST] pairs(top20): (LoadConst, LoadConst)=49160 (LoadFast, LoadConst)=40960 (LoadConst, BinOp)=32768 (BinOp, LoadConst)=32768 (LoadConst, LoadFast)=24576 (LoadConst, BuildList)=8194 (BuildList, LoadConst)=8194 (LoadConst, Compare)=8192 (LoadConst, Subscript)=8192 (LoadConst, AugOp)=8192 (LoadFast, BinOp)=8192 (StoreFast, LoadFast)=8192 (PopTop, LoadFast)=8192 (BinOp, BuildDict)=8192 (Compare, JumpIfFalseOrPop)=8192 (Subscript, LoadConst)=8192 (LoadConstTrue, JumpIfFalse)=8192 (BuildDict, LoadAttrCall)=8192 (AugOp, StoreFast)=8192 (LoadAttrCall, PopTop)=8192
+[BP-HIST] triples(top20): (LoadConst, LoadConst, LoadConst)=24582 (LoadConst, BinOp, LoadConst)=24576 (LoadConst, LoadFast, LoadConst)=16384 (LoadFast, LoadConst, BinOp)=16384 (BinOp, LoadConst, LoadConst)=16384 (LoadConst, BuildList, LoadConst)=8194 (LoadConst, LoadConst, LoadFast)=8192 (LoadConst, LoadConst, BinOp)=8192 (LoadConst, LoadConst, BuildList)=8192 (LoadConst, LoadFast, BinOp)=8192 (LoadConst, BinOp, BuildDict)=8192 (LoadConst, Compare, JumpIfFalseOrPop)=8192 (LoadConst, Subscript, LoadConst)=8192 (LoadConst, AugOp, StoreFast)=8192 (LoadFast, LoadConst, LoadConst)=8192 (LoadFast, LoadConst, Subscript)=8192 (LoadFast, LoadConst, AugOp)=8192 (LoadFast, BinOp, LoadConst)=8192 (StoreFast, LoadFast, LoadConst)=8192 (PopTop, LoadFast, LoadConst)=8192
+===== PROBE: tests/bench/primitive/probes/p11_bz2lzma.py =====
+[BP-HIST] total_dispatches=20
+[BP-HIST] singles(top10): LoadConst=4 LoadGlobal=4 BinOp=4 CallFunction=4 LoadFast=2 ReturnValue=2
+[BP-HIST] pairs(top20): (LoadConst, BinOp)=2 (LoadConst, CallFunction)=2 (LoadFast, LoadConst)=2 (LoadGlobal, LoadConst)=2 (LoadGlobal, LoadGlobal)=2 (BinOp, BinOp)=2 (BinOp, ReturnValue)=2 (CallFunction, LoadFast)=2 (CallFunction, CallFunction)=2
+[BP-HIST] triples(top20): (LoadConst, BinOp, BinOp)=2 (LoadConst, CallFunction, CallFunction)=2 (LoadFast, LoadConst, BinOp)=2 (LoadGlobal, LoadConst, CallFunction)=2 (LoadGlobal, LoadGlobal, LoadConst)=2 (BinOp, BinOp, ReturnValue)=2 (CallFunction, LoadFast, LoadConst)=2 (CallFunction, CallFunction, LoadFast)=2
+===== PROBE: tests/bench/primitive/probes/p11_crc.py =====
+[BP-HIST] total_dispatches=20
+[BP-HIST] singles(top10): LoadConst=4 LoadGlobal=4 BinOp=4 CallFunction=4 LoadFast=2 ReturnValue=2
+[BP-HIST] pairs(top20): (LoadConst, BinOp)=2 (LoadConst, CallFunction)=2 (LoadFast, LoadConst)=2 (LoadGlobal, LoadConst)=2 (LoadGlobal, LoadGlobal)=2 (BinOp, BinOp)=2 (BinOp, ReturnValue)=2 (CallFunction, LoadFast)=2 (CallFunction, CallFunction)=2
+[BP-HIST] triples(top20): (LoadConst, BinOp, BinOp)=2 (LoadConst, CallFunction, CallFunction)=2 (LoadFast, LoadConst, BinOp)=2 (LoadGlobal, LoadConst, CallFunction)=2 (LoadGlobal, LoadGlobal, LoadConst)=2 (BinOp, BinOp, ReturnValue)=2 (CallFunction, LoadFast, LoadConst)=2 (CallFunction, CallFunction, LoadFast)=2
+===== PROBE: tests/bench/primitive/probes/pp2_tier1_dispatch.py =====
+[BP-HIST] total_dispatches=10333827
+[BP-HIST] singles(top10): LoadFast=3265260 StoreFast=1641661 BinOp=1182750 Jump=935454 LoadGlobal=695411 LoadConst=509005 Compare=476754 JumpIfFalse=476730 ForNext=458802 CallFunction=229426
+[BP-HIST] pairs(top20): (BinOp, StoreFast)=1182750 (LoadFast, LoadFast)=1146904 (StoreFast, Jump)=935440 (StoreFast, LoadFast)=706136 (LoadFast, LoadGlobal)=691726 (LoadFast, LoadConst)=508942 (LoadConst, BinOp)=491008 (Compare, JumpIfFalse)=476724 (LoadGlobal, Compare)=458766 (LoadFast, CallFunction)=229426 (LoadFast, BinOp)=229406 (LoadGlobal, LoadFast)=229396 (LoadFast, Subscript)=229376 (LoadFast, StoreSubscript)=229376 (CallFunction, BinOp)=229376 (Subscript, BinOp)=229376 (StoreSubscript, LoadFast)=229376 (LoadConst, Compare)=17934 (LoadGlobal, LoadAttrCall)=3644 (LoadGlobal, LoadGlobal)=3584
+[BP-HIST] triples(top20): (BinOp, StoreFast, Jump)=935424 (LoadConst, BinOp, StoreFast)=491008 (LoadFast, LoadConst, BinOp)=491008 (LoadFast, LoadGlobal, Compare)=458766 (LoadGlobal, Compare, JumpIfFalse)=458766 (LoadFast, LoadFast, LoadFast)=458752 (BinOp, StoreFast, LoadFast)=247326 (StoreFast, LoadFast, LoadConst)=247310 (LoadFast, BinOp, StoreFast)=229406 (StoreFast, LoadFast, LoadGlobal)=229390 (LoadFast, LoadFast, BinOp)=229376 (LoadFast, LoadFast, CallFunction)=229376 (LoadFast, LoadFast, StoreSubscript)=229376 (LoadFast, LoadGlobal, LoadFast)=229376 (LoadFast, CallFunction, BinOp)=229376 (LoadFast, Subscript, BinOp)=229376 (LoadFast, StoreSubscript, LoadFast)=229376 (LoadGlobal, LoadFast, Subscript)=229376 (StoreFast, LoadFast, LoadFast)=229376 (CallFunction, BinOp, StoreFast)=229376
+===== PROBE: tests/bench/primitive/probes/pp2_tier1_harness.py =====
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/bench/primitive/probes/pp2_tier1_harness.py", line 10, in <module>
+    from pathlib import Path
+ModuleNotFoundError: No module named 'statistics'
+===== IC PROBE: tests/bench/primitive/probes/_dbg_dict_get_repro.py =====
+[BP-HIST] total_dispatches=2785345
+[BP-HIST] singles(top10): LoadFast=819210 StoreFast=327695 LoadGlobal=327690 BinOp=327680 LoadConst=163850 Compare=163845 JumpIfFalse=163845 Jump=163840 CallFunction=163840 Subscript=163840
+[BP-HIST] pairs(top20): (LoadFast, LoadGlobal)=327685 (BinOp, StoreFast)=327680 (LoadGlobal, Compare)=163845 (StoreFast, LoadFast)=163845 (Compare, JumpIfFalse)=163845 (LoadConst, BinOp)=163840 (LoadFast, LoadConst)=163840 (LoadFast, LoadFast)=163840 (LoadFast, Subscript)=163840 (LoadGlobal, LoadFast)=163840 (StoreFast, Jump)=163840 (CallFunction, BinOp)=163840 (Subscript, CallFunction)=163840 (LoadConst, StoreFast)=10 (StoreFast, LoadConst)=10 (LoadFast, ReturnValue)=5 (LoadGlobal, LoadAttr)=5 (LoadAttr, StoreFast)=5
+[BP-HIST] triples(top20): (LoadFast, LoadGlobal, Compare)=163845 (LoadGlobal, Compare, JumpIfFalse)=163845 (LoadConst, BinOp, StoreFast)=163840 (LoadFast, LoadConst, BinOp)=163840 (LoadFast, LoadFast, LoadGlobal)=163840 (LoadFast, LoadGlobal, LoadFast)=163840 (LoadFast, Subscript, CallFunction)=163840 (LoadGlobal, LoadFast, Subscript)=163840 (StoreFast, LoadFast, LoadConst)=163840 (BinOp, StoreFast, LoadFast)=163840 (BinOp, StoreFast, Jump)=163840 (CallFunction, BinOp, StoreFast)=163840 (Subscript, CallFunction, BinOp)=163840 (StoreFast, LoadConst, StoreFast)=10 (LoadConst, StoreFast, LoadConst)=5 (LoadConst, StoreFast, LoadFast)=5 (LoadGlobal, LoadAttr, StoreFast)=5 (StoreFast, LoadFast, LoadGlobal)=5 (LoadAttr, StoreFast, LoadConst)=5
+===== IC PROBE: tests/bench/primitive/probes/fixc_dict.py =====
+[BP-HIST] total_dispatches=4325987
+[BP-HIST] singles(top10): LoadFast=1409146 StoreFast=852063 ForNext=524328 Jump=524308 AugOp=327680 StoreSubscript=196608 LoadGlobal=163905 CallFunction=163864 Subscript=163840 LoadAttrCall=40
+[BP-HIST] pairs(top20): (LoadFast, LoadFast)=720912 (StoreFast, LoadFast)=524328 (StoreFast, Jump)=327690 (AugOp, StoreFast)=327680 (LoadFast, StoreSubscript)=196608 (StoreSubscript, Jump)=196608 (LoadFast, CallFunction)=163860 (LoadFast, LoadGlobal)=163840 (LoadFast, Subscript)=163840 (LoadGlobal, LoadFast)=163840 (CallFunction, AugOp)=163840 (Subscript, AugOp)=163840 (LoadGlobal, LoadAttrCall)=40 (StoreFast, LoadGlobal)=40 (LoadFast, BinOp)=20 (LoadFast, LoadConstNone)=20 (LoadFast, ReturnValue)=20 (PopTop, LoadGlobal)=20 (BinOp, StoreFast)=20 (Compare, JumpIfTrueOrPop)=20
+[BP-HIST] triples(top20): (LoadFast, LoadFast, LoadFast)=360448 (StoreFast, LoadFast, LoadFast)=360448 (AugOp, StoreFast, Jump)=327680 (LoadFast, LoadFast, StoreSubscript)=196608 (LoadFast, StoreSubscript, Jump)=196608 (LoadFast, LoadFast, CallFunction)=163840 (LoadFast, LoadGlobal, LoadFast)=163840 (LoadFast, CallFunction, AugOp)=163840 (LoadFast, Subscript, AugOp)=163840 (LoadGlobal, LoadFast, Subscript)=163840 (StoreFast, LoadFast, LoadGlobal)=163840 (CallFunction, AugOp, StoreFast)=163840 (Subscript, AugOp, StoreFast)=163840 (LoadFast, BinOp, StoreFast)=20 (LoadFast, CallFunction, PopTop)=20 (LoadFast, LoadConstNone, Compare)=20 (LoadGlobal, LoadAttrCall, LoadFast)=20 (LoadGlobal, LoadAttrCall, StoreFast)=20 (StoreFast, LoadFast, CallFunction)=20 (StoreFast, LoadFast, LoadConstNone)=20
+===== IC PROBE: tests/bench/primitive/probes/ic_base.py =====
+[BP-HIST] total_dispatches=14700256
+[BP-HIST] singles(top10): StoreFast=4200028 LoadFast=2450029 LoadGlobal=1400056 ForNext=1400028 Jump=1400000 AugOp=1400000 LoadConst=1050029 LoadAttrCall=700000 ReturnValue=350028 LoadAttr=350000
+[BP-HIST] pairs(top20): (StoreFast, LoadGlobal)=1400028 (StoreFast, LoadFast)=1400000 (StoreFast, Jump)=1400000 (AugOp, StoreFast)=1400000 (LoadFast, LoadFast)=1050000 (LoadFast, AugOp)=1050000 (LoadAttrCall, StoreFast)=700000 (LoadConst, ReturnValue)=350000 (LoadConst, AugOp)=350000 (LoadConst, LoadAttrCall)=350000 (LoadFast, LoadConst)=350000 (LoadGlobal, LoadConst)=350000 (LoadGlobal, StoreFast)=350000 (LoadGlobal, LoadAttr)=350000 (LoadGlobal, LoadAttrCall)=350000 (LoadAttr, StoreFast)=350000 (LoadConst, StoreFast)=28 (LoadFast, ReturnValue)=28 (LoadGlobal, LoadGlobal)=28 (LoadGlobal, CallFunction)=28
+[BP-HIST] triples(top20): (AugOp, StoreFast, Jump)=1400000 (LoadFast, LoadFast, AugOp)=1050000 (LoadFast, AugOp, StoreFast)=1050000 (StoreFast, LoadFast, LoadFast)=1050000 (LoadAttrCall, StoreFast, LoadFast)=700000 (LoadConst, AugOp, StoreFast)=350000 (LoadConst, LoadAttrCall, StoreFast)=350000 (LoadFast, LoadConst, AugOp)=350000 (LoadGlobal, LoadConst, LoadAttrCall)=350000 (LoadGlobal, StoreFast, LoadFast)=350000 (LoadGlobal, LoadAttr, StoreFast)=350000 (LoadGlobal, LoadAttrCall, StoreFast)=350000 (StoreFast, LoadFast, LoadConst)=350000 (StoreFast, LoadGlobal, LoadConst)=350000 (StoreFast, LoadGlobal, StoreFast)=350000 (StoreFast, LoadGlobal, LoadAttr)=350000 (StoreFast, LoadGlobal, LoadAttrCall)=350000 (LoadAttr, StoreFast, LoadFast)=350000 (LoadConst, StoreFast, LoadGlobal)=28 (LoadGlobal, LoadGlobal, CallFunction)=28
+===== IC PROBE: tests/bench/primitive/probes/p09_dict.py =====
+[BP-HIST] total_dispatches=20423220
+[BP-HIST] singles(top10): LoadFast=5602204 StoreFast=4112974 ForNext=1843790 Jump=1843712 LoadConst=1489208 AugOp=1276416 Compare=850944 JumpIfFalse=850944 LoadConstNone=850944 StoreSubscript=496384
+[BP-HIST] pairs(top20): (LoadFast, LoadFast)=2411008 (StoreFast, LoadFast)=2340150 (LoadFast, LoadConst)=1347328 (LoadConst, AugOp)=1276416 (StoreFast, Jump)=1276416 (AugOp, StoreFast)=1276416 (Compare, JumpIfFalse)=850944 (LoadConstNone, Compare)=850944 (LoadFast, StoreFast)=496384 (LoadFast, StoreSubscript)=496384 (StoreFast, StoreFast)=496384 (StoreSubscript, Jump)=496384 (LoadFast, Subscript)=425472 (LoadFast, LoadAttrCall)=425472 (Subscript, LoadConstNone)=425472 (LoadAttrCall, LoadConstNone)=425472 (LoadConst, BinOp)=141824 (LoadConst, LoadConst)=70912 (PopTop, Jump)=70912 (BinOp, LoadConst)=70912
+[BP-HIST] triples(top20): (StoreFast, LoadFast, LoadFast)=1914624 (LoadConst, AugOp, StoreFast)=1276416 (LoadFast, LoadConst, AugOp)=1276416 (AugOp, StoreFast, Jump)=1276416 (LoadConstNone, Compare, JumpIfFalse)=850944 (LoadFast, LoadFast, LoadFast)=496384 (LoadFast, LoadFast, StoreFast)=496384 (LoadFast, LoadFast, StoreSubscript)=496384 (LoadFast, StoreFast, StoreFast)=496384 (LoadFast, StoreSubscript, Jump)=496384 (StoreFast, StoreFast, LoadFast)=496384 (LoadFast, LoadFast, Subscript)=425472 (LoadFast, LoadFast, LoadAttrCall)=425472 (LoadFast, Subscript, LoadConstNone)=425472 (LoadFast, LoadAttrCall, LoadConstNone)=425472 (StoreFast, LoadFast, LoadConst)=425472 (Subscript, LoadConstNone, Compare)=425472 (LoadAttrCall, LoadConstNone, Compare)=425472 (LoadConst, LoadConst, BinOp)=70912 (LoadConst, BinOp, LoadConst)=70912
+===== IC PROBE: tests/ce-s1/pydantic_core_driver.py =====
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/ce-s1/pydantic_core_driver.py", line 14, in <module>
+    print("MODEL", type(pc.Model).__name__)
+ModuleNotFoundError: No module named 'pydantic_core'
+===== IC PROBE: tests/ce-s1/pydantic_diff_driver.py =====
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/ce-s1/pydantic_diff_driver.py", line 8, in <module>
+    pd.t_mapping()
+ModuleNotFoundError: No module named 'pydantic_diff'
+===== IC PROBE: tests/corpus/classes/c001_class_basics.py =====
+===== IC PROBE: tests/corpus/classes/c002_class_dict_and_body.py =====
+[BP-HIST] total_dispatches=13
+[BP-HIST] singles(top10): LoadGlobal=3 LoadConst=2 LoadFast=2 PopTop=2 ReturnValue=2 LoadAttrCall=2
+[BP-HIST] pairs(top20): (LoadConst, LoadAttrCall)=2 (LoadFast, ReturnValue)=2 (LoadGlobal, LoadConst)=2 (PopTop, LoadFast)=2 (LoadAttrCall, PopTop)=2
+[BP-HIST] triples(top20): (LoadConst, LoadAttrCall, PopTop)=2 (LoadGlobal, LoadConst, LoadAttrCall)=2 (PopTop, LoadFast, ReturnValue)=2 (LoadAttrCall, PopTop, LoadFast)=2
+===== IC PROBE: tests/corpus/classes/c018_slots_dict_member.py =====
+===== IC PROBE: tests/corpus/classes/c025_dunder_bypass_instance_dict.py =====
+[BP-HIST] total_dispatches=2
+[BP-HIST] singles(top10): LoadConst=1 ReturnValue=1
+[BP-HIST] pairs(top20): (LoadConst, ReturnValue)=1
+[BP-HIST] triples(top20): 
+===== IC PROBE: tests/corpus/controlflow_wasm/CF010-call-static-arity.py =====
+[BP-HIST] total_dispatches=32
+[BP-HIST] singles(top10): LoadFast=13 ReturnValue=7 BinOp=6 LoadConst=2 LoadGlobal=2 CallFunction=2
+[BP-HIST] pairs(top20): (LoadFast, LoadFast)=6 (LoadFast, BinOp)=6 (BinOp, ReturnValue)=6 (LoadConst, LoadConst)=1 (LoadConst, CallFunction)=1 (LoadFast, LoadGlobal)=1 (LoadGlobal, LoadConst)=1 (LoadGlobal, LoadFast)=1 (CallFunction, CallFunction)=1 (CallFunction, ReturnValue)=1
+[BP-HIST] triples(top20): (LoadFast, LoadFast, BinOp)=6 (LoadFast, BinOp, ReturnValue)=6 (LoadConst, LoadConst, CallFunction)=1 (LoadConst, CallFunction, CallFunction)=1 (LoadFast, LoadGlobal, LoadConst)=1 (LoadGlobal, LoadConst, LoadConst)=1 (LoadGlobal, LoadFast, LoadGlobal)=1 (CallFunction, CallFunction, ReturnValue)=1
+===== IC PROBE: tests/corpus/controlflow_wasm/CF012-call-dynamic-name.py =====
+[BP-HIST] total_dispatches=8
+[BP-HIST] singles(top10): LoadConst=2 LoadFast=2 BinOp=2 ReturnValue=2
+[BP-HIST] pairs(top20): (LoadConst, BinOp)=2 (LoadFast, LoadConst)=2 (BinOp, ReturnValue)=2
+[BP-HIST] triples(top20): (LoadConst, BinOp, ReturnValue)=2 (LoadFast, LoadConst, BinOp)=2
+===== IC PROBE: tests/corpus/fstrings/cases/f02_nested_dict_subscript.py =====
+===== IC PROBE: tests/corpus/fstrings/cases/f24_dict_literal.py =====
+===== IC PROBE: tests/corpus/fstrings/cases/f31_implicit_concat_mixed.py =====
+===== IC PROBE: tests/corpus/fstrings/tools/cases/f02_nested_dict_subscript.py =====
+===== IC PROBE: tests/corpus/fstrings/tools/cases/f24_dict_literal.py =====
+===== IC PROBE: tests/corpus/fstrings/tools/cases/f31_implicit_concat_mixed.py =====
+===== IC PROBE: tests/corpus/gc/gc007_is_tracked_basics.py =====
+===== IC PROBE: tests/corpus/gc/gc012_gc_disable_explicit_collect.py =====
+[BP-HIST] total_dispatches=5
+[BP-HIST] singles(top10): LoadConst=1 LoadGlobal=1 PopTop=1 ReturnNone=1 LoadAttrCall=1
+[BP-HIST] pairs(top20): (LoadConst, LoadAttrCall)=1 (LoadGlobal, LoadConst)=1 (PopTop, ReturnNone)=1 (LoadAttrCall, PopTop)=1
+[BP-HIST] triples(top20): (LoadConst, LoadAttrCall, PopTop)=1 (LoadGlobal, LoadConst, LoadAttrCall)=1 (LoadAttrCall, PopTop, ReturnNone)=1
+===== IC PROBE: tests/corpus/match_wasm/MA001-patterns-slice.py =====
+===== IC PROBE: tests/corpus/stdlib/s006_math_basics.py =====
+===== IC PROBE: tests/corpus/stdlib/s020_inspect_basics.py =====
+[BP-HIST] total_dispatches=18611
+[BP-HIST] singles(top10): LoadFast=4399 LoadGlobal=2454 CallFunction=1390 LoadConst=1242 LoadAttr=1190 JumpIfFalse=1080 ReturnValue=1050 StoreFast=962 Compare=788 PopTop=758
+[BP-HIST] pairs(top20): (LoadGlobal, LoadFast)=1358 (LoadFast, LoadAttr)=841 (LoadFast, LoadFast)=825 (LoadFast, CallFunction)=611 (LoadFast, LoadGlobal)=607 (LoadConst, PopTop)=503 (Compare, JumpIfFalse)=470 (StoreFast, LoadFast)=422 (PopTop, LoadGlobal)=372 (StoreFast, LoadGlobal)=363 (LoadFast, LoadConst)=327 (LoadGlobal, LoadAttr)=317 (CallFunction, StoreFast)=294 (LoadAttr, CallFunction)=282 (CallFunction, JumpIfFalse)=278 (LoadGlobal, CallFunction)=268 (LoadGlobal, Compare)=262 (CallFunction, ReturnValue)=247 (LoadFast, LoadAttrCall)=246 (LoadAttr, LoadGlobal)=235
+[BP-HIST] triples(top20): (LoadGlobal, LoadFast, CallFunction)=443 (LoadGlobal, LoadFast, LoadGlobal)=390 (LoadConst, PopTop, LoadGlobal)=336 (PopTop, LoadGlobal, LoadFast)=329 (StoreFast, LoadGlobal, LoadFast)=308 (LoadGlobal, LoadFast, LoadFast)=297 (LoadGlobal, Compare, JumpIfFalse)=245 (LoadFast, LoadFast, LoadAttr)=239 (LoadFast, CallFunction, StoreFast)=232 (LoadFast, LoadGlobal, CallFunction)=224 (LoadFast, LoadGlobal, Compare)=189 (LoadGlobal, LoadFast, LoadConst)=186 (LoadFast, CallFunction, JumpIfFalse)=174 (LoadFast, LoadGlobal, LoadAttr)=172 (LoadAttr, CallFunction, ReturnValue)=171 (LoadFast, LoadFast, CallFunction)=168 (LoadFast, LoadAttr, LoadGlobal)=165 (LoadGlobal, LoadAttr, CallFunction)=163 (LoadFast, LoadAttr, Compare)=161 (LoadFast, LoadAttr, ReturnValue)=158
+===== IC PROBE: tests/corpus/stdlib/s034_weakref_basics.py =====
+[BP-HIST] total_dispatches=14
+[BP-HIST] singles(top10): LoadConst=4 LoadFast=3 ReturnNone=3 StoreAttr=3 ReturnValue=1
+[BP-HIST] pairs(top20): (LoadConst, LoadFast)=3 (LoadFast, StoreAttr)=3 (StoreAttr, ReturnNone)=3 (LoadConst, ReturnValue)=1
+[BP-HIST] triples(top20): (LoadConst, LoadFast, StoreAttr)=3 (LoadFast, StoreAttr, ReturnNone)=3
+===== IC PROBE: tests/corpus/stdlib/s047_importlib_basics.py =====
+[BP-HIST] total_dispatches=2136
+[BP-HIST] singles(top10): LoadFast=575 LoadGlobal=293 CallFunction=181 LoadAttr=175 ReturnValue=131 JumpIfFalse=118 PopTop=115 LoadConst=97 Compare=79 StoreFast=67
+[BP-HIST] pairs(top20): (LoadGlobal, LoadFast)=177 (LoadFast, LoadAttr)=157 (LoadFast, LoadFast)=149 (LoadFast, CallFunction)=100 (LoadConst, PopTop)=59 (LoadAttr, Compare)=57 (LoadFast, ReturnValue)=56 (LoadAttrCall, PopTop)=56 (LoadFast, LoadGlobal)=55 (CallFunction, JumpIfFalse)=53 (PopTop, LoadGlobal)=50 (StoreFast, Jump)=47 (Compare, ReturnValue)=47 (CallFunction, StoreFast)=47 (StoreAttr, LoadFast)=43 (LoadAttr, CallFunction)=40 (PopTop, ReturnNone)=39 (CallFunction, LoadAttrCall)=39 (LoadAttr, LoadGlobal)=39 (LoadGlobal, CallFunction)=33
+[BP-HIST] triples(top20): (LoadFast, LoadFast, LoadAttr)=96 (LoadGlobal, LoadFast, LoadFast)=92 (LoadFast, LoadAttr, Compare)=57 (LoadFast, LoadFast, CallFunction)=53 (LoadFast, CallFunction, JumpIfFalse)=53 (LoadFast, CallFunction, StoreFast)=47 (LoadGlobal, LoadFast, CallFunction)=47 (CallFunction, StoreFast, Jump)=47 (LoadAttr, Compare, ReturnValue)=47 (StoreAttr, LoadFast, ReturnValue)=43 (LoadFast, LoadAttr, LoadGlobal)=39 (LoadFast, LoadAttr, CallFunction)=39 (CallFunction, LoadAttrCall, PopTop)=39 (LoadAttr, LoadGlobal, LoadFast)=39 (LoadAttr, CallFunction, LoadAttrCall)=39 (LoadAttrCall, PopTop, ReturnNone)=39 (LoadConst, PopTop, LoadGlobal)=33 (LoadFast, LoadGlobal, CallFunction)=33 (LoadGlobal, LoadFast, LoadGlobal)=33 (LoadGlobal, CallFunction, UnaryOp)=33
+===== IC PROBE: tests/corpus/threading/T105-lock-rlock-semantics.py =====
+===== IC PROBE: tests/corpus/threading/T110-thread-error-semantics.py =====
+[BP-HIST] total_dispatches=48
+[BP-HIST] singles(top10): LoadFast=9 LoadGlobal=9 CallFunction=9 BinOp=6 LoadConst=3 StoreFast=3 LoadAttr=3 ReturnValue=3 CheckExcept=3
+[BP-HIST] pairs(top20): (LoadFast, CallFunction)=9 (LoadGlobal, LoadFast)=6 (LoadConst, BinOp)=3 (LoadGlobal, CheckExcept)=3 (StoreFast, LoadGlobal)=3 (BinOp, LoadGlobal)=3 (BinOp, ReturnValue)=3 (CallFunction, LoadGlobal)=3 (CallFunction, BinOp)=3 (CallFunction, LoadAttr)=3 (LoadAttr, LoadConst)=3
+[BP-HIST] triples(top20): (LoadGlobal, LoadFast, CallFunction)=6 (LoadConst, BinOp, LoadGlobal)=3 (LoadFast, CallFunction, LoadGlobal)=3 (LoadFast, CallFunction, BinOp)=3 (LoadFast, CallFunction, LoadAttr)=3 (StoreFast, LoadGlobal, LoadFast)=3 (BinOp, LoadGlobal, LoadFast)=3 (CallFunction, LoadGlobal, CheckExcept)=3 (CallFunction, BinOp, ReturnValue)=3 (CallFunction, LoadAttr, LoadConst)=3 (LoadAttr, LoadConst, BinOp)=3
+===== IC PROBE: tests/corpus/tier1-transparency/t1_003_attr_ic_class_switch.py =====
+[BP-HIST] total_dispatches=8
+[BP-HIST] singles(top10): LoadConst=2 LoadFast=2 ReturnNone=2 StoreAttr=2
+[BP-HIST] pairs(top20): (LoadConst, LoadFast)=2 (LoadFast, StoreAttr)=2 (StoreAttr, ReturnNone)=2
+[BP-HIST] triples(top20): (LoadConst, LoadFast, StoreAttr)=2 (LoadFast, StoreAttr, ReturnNone)=2
+===== IC PROBE: tests/corpus/tier1-transparency/t1_008_dict_hot_ic.py =====
+===== IC PROBE: tests/corpus/tier1-transparency/t1_013_megamorphic_binop.py =====
+[BP-HIST] total_dispatches=121000
+[BP-HIST] singles(top10): LoadFast=60500 BinOp=30250 ReturnValue=30250
+[BP-HIST] pairs(top20): (LoadFast, LoadFast)=30250 (LoadFast, BinOp)=30250 (BinOp, ReturnValue)=30250
+[BP-HIST] triples(top20): (LoadFast, LoadFast, BinOp)=30250 (LoadFast, BinOp, ReturnValue)=30250
+===== IC PROBE: tests/corpus/values/V013-slice-algorithm.py =====
+===== IC PROBE: tests/corpus/values/V040-dict-insertion-order.py =====
+===== IC PROBE: tests/corpus/values/V041-dict-equality-order-free.py =====
+===== IC PROBE: tests/corpus/values/V042-dict-collision-keys.py =====
+===== IC PROBE: tests/corpus/values/V043-dict-key-errors.py =====
+===== IC PROBE: tests/corpus/values/V052-cross-type-numeric-eq.py =====
+===== IC PROBE: tests/fixtures/parse/valid_dict_comprehension.py =====
+===== IC PROBE: tests/fixtures/parse/valid_fstring_basic.py =====
+===== IC PROBE: tests/fixtures/parse/valid_generic_class_312.py =====
+===== IC PROBE: tests/fixtures/parse/valid_lambda_basic.py =====
+===== IC PROBE: tests/fixtures/parse/valid_literals_dict_display.py =====
+===== IC PROBE: tests/struct1/gate_pydantic.py =====
+[BP-HIST] total_dispatches=14559
+[BP-HIST] singles(top10): LoadFast=3849 LoadGlobal=1572 CallFunction=1262 LoadConst=1221 LoadAttrCall=765 PopTop=754 Jump=689 ReturnValue=612 JumpIfFalse=530 LoadAttr=425
+[BP-HIST] pairs(top20): (LoadFast, LoadFast)=1116 (LoadGlobal, LoadFast)=1013 (LoadFast, CallFunction)=746 (LoadFast, LoadConst)=523 (LoadConst, LoadConst)=465 (PopTop, Jump)=413 (LoadAttrCall, PopTop)=394 (LoadFast, LoadAttr)=390 (LoadConst, LoadAttrCall)=368 (LoadGlobal, CallFunction)=322 (LoadFast, StoreAttr)=315 (LoadFast, LoadAttrCall)=288 (StoreFast, LoadGlobal)=268 (CallFunction, JumpIfTrueOrPop)=256 (LoadAttrCall, JumpIfFalseOrPop)=256 (StoreAttr, LoadFast)=256 (CallFunction, LoadFast)=255 (Compare, JumpIfFalse)=243 (LoadFast, LoadGlobal)=197 (CallFunction, StoreFast)=182
+[BP-HIST] triples(top20): (LoadGlobal, LoadFast, LoadFast)=487 (LoadGlobal, LoadFast, CallFunction)=442 (LoadFast, LoadConst, LoadAttrCall)=367 (LoadConst, LoadConst, LoadConst)=309 (LoadFast, LoadFast, CallFunction)=303 (LoadFast, LoadAttrCall, PopTop)=287 (LoadAttrCall, PopTop, Jump)=273 (StoreFast, LoadGlobal, LoadFast)=267 (LoadConst, LoadAttrCall, JumpIfFalseOrPop)=256 (LoadFast, CallFunction, JumpIfTrueOrPop)=256 (LoadFast, LoadFast, LoadAttrCall)=255 (LoadGlobal, CallFunction, LoadFast)=255 (CallFunction, LoadFast, LoadFast)=255 (LoadFast, StoreAttr, LoadFast)=224 (LoadFast, LoadFast, LoadAttr)=221 (LoadFast, CallFunction, StoreFast)=182 (LoadFast, LoadFast, StoreAttr)=157 (LoadFast, LoadConst, LoadConst)=156 (LoadConst, LoadConst, BuildSet)=145 (LoadConst, BuildSet, Compare)=145
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/struct1/gate_pydantic.py", line 106, in <module>
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/struct1/core_schema_shim.py", line 82, in upgrade
+    setattr(ns, n, _protocol_type(n))
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/struct1/core_schema_shim.py", line 60, in _protocol_type
+    import typing_extensions as te
+ModuleNotFoundError: No module named 'typing_extensions'
+===== IC PROBE: tests/struct1/gate1_dictsub.py =====
+===== IC PROBE: tests/t01_parse_diagnostics/fixtures/invalid/unicode_unclosed_paren.py =====
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/t01_parse_diagnostics/fixtures/invalid/unicode_unclosed_paren.py", line 4
+    
+    ^
+SyntaxError: unexpected EOF while parsing
+===== IC PROBE: tests/t01_parse_diagnostics/fixtures/valid/async_def_basic.py =====
+[BP-HIST] total_dispatches=2443
+[BP-HIST] singles(top10): LoadFast=681 LoadGlobal=326 CallFunction=205 LoadAttr=177 ReturnValue=138 PopTop=135 JumpIfFalse=119 LoadConst=103 StoreFast=89 Jump=83
+[BP-HIST] pairs(top20): (LoadGlobal, LoadFast)=204 (LoadFast, LoadFast)=200 (LoadFast, LoadAttr)=159 (LoadFast, CallFunction)=122 (LoadConst, PopTop)=65 (LoadFast, ReturnValue)=60 (StoreAttr, LoadFast)=60 (LoadAttrCall, PopTop)=58 (LoadAttr, Compare)=57 (LoadFast, LoadGlobal)=55 (CallFunction, StoreFast)=55 (CallFunction, JumpIfFalse)=53 (PopTop, LoadGlobal)=52 (StoreFast, Jump)=47 (Compare, ReturnValue)=47 (LoadFast, StoreAttr)=44 (CallFunction, LoadAttrCall)=41 (LoadAttr, CallFunction)=40 (PopTop, ReturnNone)=39 (LoadAttr, LoadGlobal)=39
+[BP-HIST] triples(top20): (LoadGlobal, LoadFast, LoadFast)=118 (LoadFast, LoadFast, LoadAttr)=96 (LoadFast, LoadFast, CallFunction)=75 (LoadFast, LoadAttr, Compare)=57 (LoadFast, CallFunction, StoreFast)=55 (LoadFast, CallFunction, JumpIfFalse)=53 (LoadGlobal, LoadFast, CallFunction)=47 (CallFunction, StoreFast, Jump)=47 (LoadAttr, Compare, ReturnValue)=47 (StoreAttr, LoadFast, ReturnValue)=47 (LoadFast, StoreAttr, LoadFast)=43 (CallFunction, LoadAttrCall, PopTop)=41 (LoadFast, LoadAttr, LoadGlobal)=39 (LoadFast, LoadAttr, CallFunction)=39 (LoadAttr, LoadGlobal, LoadFast)=39 (LoadAttr, CallFunction, LoadAttrCall)=39 (LoadAttrCall, PopTop, ReturnNone)=39 (LoadConst, PopTop, LoadGlobal)=35 (LoadFast, LoadGlobal, CallFunction)=33 (LoadGlobal, LoadFast, LoadGlobal)=33
+===== IC PROBE: tests/t01_parse_diagnostics/fixtures/valid/decorators_basic.py =====
+[BP-HIST] total_dispatches=24
+[BP-HIST] singles(top10): LoadGlobal=5 LoadFast=4 PopTop=4 ReturnValue=4 LoadAttrCall=4 LoadConst=3
+[BP-HIST] pairs(top20): (LoadFast, ReturnValue)=4 (PopTop, LoadFast)=4 (LoadAttrCall, PopTop)=4 (LoadConst, LoadAttrCall)=3 (LoadGlobal, LoadConst)=3 (LoadGlobal, LoadGlobal)=1 (LoadGlobal, LoadAttrCall)=1
+[BP-HIST] triples(top20): (PopTop, LoadFast, ReturnValue)=4 (LoadAttrCall, PopTop, LoadFast)=4 (LoadConst, LoadAttrCall, PopTop)=3 (LoadGlobal, LoadConst, LoadAttrCall)=3 (LoadGlobal, LoadGlobal, LoadAttrCall)=1 (LoadGlobal, LoadAttrCall, PopTop)=1
+===== IC PROBE: tests/t01_parse_diagnostics/fixtures/valid/fstring_basic.py =====
+===== IC PROBE: tests/t01_parse_diagnostics/test_t01_parse_diagnostics.py =====
+[BP-HIST] total_dispatches=8280
+[BP-HIST] singles(top10): LoadFast=1991 LoadGlobal=986 CallFunction=599 StoreFast=512 LoadConst=464 JumpIfFalse=454 LoadAttr=387 Compare=351 ReturnValue=310 PopTop=294
+[BP-HIST] pairs(top20): (LoadGlobal, LoadFast)=556 (LoadFast, LoadFast)=439 (LoadFast, CallFunction)=299 (LoadFast, LoadAttr)=285 (StoreFast, LoadGlobal)=250 (LoadFast, LoadGlobal)=193 (StoreFast, LoadFast)=189 (Compare, JumpIfFalse)=182 (CallFunction, StoreFast)=178 (LoadGlobal, CallFunction)=144 (LoadFast, StoreAttr)=135 (LoadConst, PopTop)=127 (LoadFast, LoadAttrCall)=119 (LoadAttrCall, PopTop)=117 (LoadAttr, LoadGlobal)=105 (LoadGlobal, Compare)=102 (GetIter, ForNext)=100 (LoadFast, LoadConst)=98 (StoreAttr, LoadFast)=98 (LoadFast, LoadConstNone)=96
+[BP-HIST] triples(top20): (StoreFast, LoadGlobal, LoadFast)=238 (LoadGlobal, LoadFast, CallFunction)=189 (LoadGlobal, LoadFast, LoadFast)=170 (LoadFast, CallFunction, StoreFast)=132 (LoadFast, LoadGlobal, CallFunction)=113 (LoadGlobal, LoadFast, LoadGlobal)=113 (LoadFast, LoadFast, CallFunction)=108 (LoadFast, LoadFast, LoadAttr)=98 (LoadGlobal, Compare, JumpIfFalse)=96 (CallFunction, StoreFast, LoadGlobal)=96 (LoadFast, LoadFast, LoadAttrCall)=83 (LoadFast, StoreAttr, LoadFast)=81 (LoadGlobal, LoadFast, LoadConst)=77 (StoreFast, LoadFast, LoadFast)=77 (LoadFast, LoadGlobal, Compare)=74 (LoadFast, LoadAttr, Compare)=72 (LoadFast, LoadAttr, LoadGlobal)=67 (LoadFast, CallFunction, LoadFast)=66 (LoadConst, PopTop, LoadGlobal)=65 (LoadConst, LoadFast, BuildTuple)=64
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/t01_parse_diagnostics/test_t01_parse_diagnostics.py", line 324, in <module>
+    assert token not in proc.stderr, (
+ModuleNotFoundError: No module named 'pytest'
+===== IC PROBE: tests/t01_parse/test_parse_diagnostics.py =====
+[BP-HIST] total_dispatches=8380
+[BP-HIST] singles(top10): LoadFast=2051 LoadGlobal=986 CallFunction=599 StoreFast=512 LoadConst=464 JumpIfFalse=454 LoadAttr=387 Compare=351 ReturnValue=310 PopTop=294
+[BP-HIST] pairs(top20): (LoadGlobal, LoadFast)=556 (LoadFast, LoadFast)=469 (LoadFast, CallFunction)=299 (LoadFast, LoadAttr)=285 (StoreFast, LoadGlobal)=250 (LoadFast, LoadGlobal)=193 (StoreFast, LoadFast)=189 (Compare, JumpIfFalse)=182 (CallFunction, StoreFast)=178 (LoadFast, StoreAttr)=165 (LoadGlobal, CallFunction)=144 (LoadConst, PopTop)=127 (LoadFast, LoadAttrCall)=119 (StoreAttr, LoadFast)=118 (LoadAttrCall, PopTop)=117 (LoadAttr, LoadGlobal)=105 (LoadGlobal, Compare)=102 (GetIter, ForNext)=100 (LoadFast, LoadConst)=98 (LoadFast, LoadConstNone)=96
+[BP-HIST] triples(top20): (StoreFast, LoadGlobal, LoadFast)=238 (LoadGlobal, LoadFast, CallFunction)=189 (LoadGlobal, LoadFast, LoadFast)=170 (LoadFast, CallFunction, StoreFast)=132 (LoadFast, LoadGlobal, CallFunction)=113 (LoadGlobal, LoadFast, LoadGlobal)=113 (LoadFast, LoadFast, CallFunction)=108 (LoadFast, StoreAttr, LoadFast)=101 (LoadFast, LoadFast, LoadAttr)=98 (LoadGlobal, Compare, JumpIfFalse)=96 (CallFunction, StoreFast, LoadGlobal)=96 (LoadFast, LoadFast, LoadAttrCall)=83 (LoadFast, LoadFast, StoreAttr)=82 (LoadGlobal, LoadFast, LoadConst)=77 (StoreFast, LoadFast, LoadFast)=77 (LoadFast, LoadGlobal, Compare)=74 (LoadFast, LoadAttr, Compare)=72 (LoadFast, LoadAttr, LoadGlobal)=67 (LoadFast, CallFunction, LoadFast)=66 (LoadConst, PopTop, LoadGlobal)=65
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/t01_parse/test_parse_diagnostics.py", line 509, in <module>
+    assert col == 5, (
+ModuleNotFoundError: No module named 'pytest'
+===== IC PROBE: tests/t03_lowering_semantics/test_t03_lowering_semantics.py =====
+[BP-HIST] total_dispatches=8280
+[BP-HIST] singles(top10): LoadFast=1991 LoadGlobal=986 CallFunction=599 StoreFast=512 LoadConst=464 JumpIfFalse=454 LoadAttr=387 Compare=351 ReturnValue=310 PopTop=294
+[BP-HIST] pairs(top20): (LoadGlobal, LoadFast)=556 (LoadFast, LoadFast)=439 (LoadFast, CallFunction)=299 (LoadFast, LoadAttr)=285 (StoreFast, LoadGlobal)=250 (LoadFast, LoadGlobal)=193 (StoreFast, LoadFast)=189 (Compare, JumpIfFalse)=182 (CallFunction, StoreFast)=178 (LoadGlobal, CallFunction)=144 (LoadFast, StoreAttr)=135 (LoadConst, PopTop)=127 (LoadFast, LoadAttrCall)=119 (LoadAttrCall, PopTop)=117 (LoadAttr, LoadGlobal)=105 (LoadGlobal, Compare)=102 (GetIter, ForNext)=100 (LoadFast, LoadConst)=98 (StoreAttr, LoadFast)=98 (LoadFast, LoadConstNone)=96
+[BP-HIST] triples(top20): (StoreFast, LoadGlobal, LoadFast)=238 (LoadGlobal, LoadFast, CallFunction)=189 (LoadGlobal, LoadFast, LoadFast)=170 (LoadFast, CallFunction, StoreFast)=132 (LoadFast, LoadGlobal, CallFunction)=113 (LoadGlobal, LoadFast, LoadGlobal)=113 (LoadFast, LoadFast, CallFunction)=108 (LoadFast, LoadFast, LoadAttr)=98 (LoadGlobal, Compare, JumpIfFalse)=96 (CallFunction, StoreFast, LoadGlobal)=96 (LoadFast, LoadFast, LoadAttrCall)=83 (LoadFast, StoreAttr, LoadFast)=81 (LoadGlobal, LoadFast, LoadConst)=77 (StoreFast, LoadFast, LoadFast)=77 (LoadFast, LoadGlobal, Compare)=74 (LoadFast, LoadAttr, Compare)=72 (LoadFast, LoadAttr, LoadGlobal)=67 (LoadFast, CallFunction, LoadFast)=66 (LoadConst, PopTop, LoadGlobal)=65 (LoadConst, LoadFast, BuildTuple)=64
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/t03_lowering_semantics/test_t03_lowering_semantics.py", line 237, in <module>
+    assert idx["A"] < idx["B"] < idx["C"], (
+ModuleNotFoundError: No module named 'pytest'
+===== IC PROBE: tests/t04_ir_verify/probes/p01_unbound_basic.py =====
+[BP-HIST] total_dispatches=2
+[BP-HIST] singles(top10): LoadFast=1 LoadGlobal=1
+[BP-HIST] pairs(top20): (LoadGlobal, LoadFast)=1
+[BP-HIST] triples(top20): 
+Traceback (most recent call last):
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/t04_ir_verify/probes/p01_unbound_basic.py", line 2, in <module>
+    print(z)
+  File "/Users/caimlas/.git/worktrees/leaf-fp-superinst/tests/t04_ir_verify/probes/p01_unbound_basic.py", line 2, in f
+    print(z)
+UnboundLocalError: cannot access local variable 'z' where it is not associated with a value

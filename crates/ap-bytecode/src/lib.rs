@@ -35,6 +35,7 @@ pub mod linetable;
 pub mod lower;
 pub mod pool;
 pub mod sites;
+pub mod stats;
 #[cfg(test)]
 mod tests;
 
