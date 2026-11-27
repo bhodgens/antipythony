@@ -23,25 +23,24 @@ pub use census::{
 /// the process registry); every collect calls this FIRST so a worker's
 /// allocations are visible to the pass scope. Without an installer (pure
 /// ap-gc tests) this is a no-op.
-static BRIDGE_DRAIN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+// Issue #23 real fix (inventory category c): was AtomicUsize + usize->fn
+// reinterpretation; OnceLock stores the typed fn directly, so the call
+// path is fully safe. Publication semantics are unchanged (OnceLock is
+// atomic internally); the first install wins and every in-repo caller
+// installs the same fn (ap-run::gcsupport::install — single call site),
+// so no overwriting behavior is lost.
+static BRIDGE_DRAIN: std::sync::OnceLock<fn() -> usize> = std::sync::OnceLock::new();
 
 /// Install the drain fn (ap-run::gcsupport, once at run entry).
 pub fn set_bridge_drain(f: fn() -> usize) {
-    BRIDGE_DRAIN.store(f as usize, std::sync::atomic::Ordering::Release);
+    let _ = BRIDGE_DRAIN.set(f);
 }
 
 fn gc_bridge_drain() -> usize {
-    let f = BRIDGE_DRAIN.load(std::sync::atomic::Ordering::Acquire);
-    if f != 0 {
-        // SAFETY: BRIDGE_DRAIN stores a fn() -> usize pointer written once by
-        // set_bridge_drain (ap-run::gcsupport at run entry); transmuting the
-        // usize back to that exact fn type is lossless, and the Acquire load
-        // pairs with the install-time Release store, so a non-zero read is the
-        // live drain fn.
-        let f: fn() -> usize = unsafe { std::mem::transmute(f) };
-        return f();
+    match BRIDGE_DRAIN.get() {
+        Some(f) => f(),
+        None => 0,
     }
-    0
 }
 
 pub use gcmod::{
