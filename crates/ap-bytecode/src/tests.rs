@@ -545,22 +545,9 @@ fn for_and_try_functions_fall_back() {
         c.instrs
     );
 
-    // try/except still falls back (01-core/03 owns exceptions).
-    let t = fn_def(
-        "t",
-        &[],
-        vec![Stmt::Try(TryStmt {
-            body: vec![Stmt::Pass],
-            handlers: vec![ExceptHandler {
-                ty: Some(name("E")),
-                name: Some("e".into()),
-                body: vec![Stmt::Pass],
-            }],
-            orelse: vec![],
-            finalbody: vec![],
-        })],
-    );
-    assert_eq!(must_fallback(&t), "try statement");
+    // try/except LOWERS since leaf fp-exceptions (01-core/03): the
+    // fallback-refusal test became a lowering test (see
+    // try_except_lowers_with_exc_table below).
 }
 
 #[test]
@@ -577,7 +564,16 @@ fn other_unsupported_statements_fall_back() {
                 vec![Stmt::Pass],
             )],
         ),
-        ("raise statement", vec![Stmt::Raise(Some(lit(1)), None)]),
+        (
+            "with statement-2",
+            vec![Stmt::With(
+                vec![WithItem {
+                    expr: name("y"),
+                    target: None,
+                }],
+                vec![Stmt::Pass],
+            )],
+        ),
         (
             "match statement",
             vec![Stmt::Match(
@@ -886,7 +882,7 @@ fn comp_targets_shadow_enclosing_locals() {
 fn opcode_names_table_in_sync_leaf_fpcalls() {
     // StoreAttr + CallFunctionKw ride the same table discipline.
     let names: Vec<&str> = OPCODE_NAMES.to_vec();
-    assert_eq!(names.len(), 35);
+    assert_eq!(names.len(), 40);
     assert_eq!(names[32], "StoreAttr");
     assert_eq!(names[33], "CallFunctionKw");
     let sa = Instr::StoreAttr { idx: 0 };
@@ -1050,6 +1046,13 @@ fn opcode_names_table_in_sync() {
             site: 0,
         },
         Instr::FallbackToTreeWalk,
+        Instr::Raise { mode: 2 },
+        Instr::PopExc {
+            unbind_slot: u16::MAX,
+        },
+        Instr::ResumeUnwind,
+        Instr::CheckExcept(1),
+        Instr::CheckExceptBare,
     ];
     assert_eq!(samples.len(), OPCODE_NAMES.len());
     let mut seen = std::collections::HashSet::new();
@@ -1058,7 +1061,7 @@ fn opcode_names_table_in_sync() {
         assert!(!name.is_empty());
         assert!(seen.insert(name), "duplicate opcode name {name}");
     }
-    assert_eq!(all.len(), 35);
+    assert_eq!(all.len(), 40);
 }
 
 #[test]
@@ -1075,8 +1078,9 @@ fn decode_disassembles_and_renders() {
 }
 
 #[test]
-fn decode_fallback_shape() {
-    // Try-containing bodies still fall back wholesale (01-core/03).
+fn decode_try_lowers_now() {
+    // fp-exceptions: bare-except try lowers (01-core/03 landed); the
+    // fallback probe moved to shapes WITHOUT any try.
     let f = fn_def(
         "f",
         &[],
@@ -1092,8 +1096,10 @@ fn decode_fallback_shape() {
         })],
     );
     match lower_fn(&f) {
-        LowerOutcome::Fallback(_) => {}
-        LowerOutcome::Code(_) => panic!("Try must not lower until 01-core/03"),
+        LowerOutcome::Code(c) => {
+            assert!(c.excs.len() >= 1, "bare-except try records an arc");
+        }
+        LowerOutcome::Fallback(u) => panic!("try must lower now: {u:?}"),
     }
 }
 
@@ -1482,8 +1488,9 @@ fn loop_var_scoping_leaks_to_function_scope() {
 }
 
 #[test]
-fn try_inside_loop_still_falls_back() {
-    // The loop body's Try rejects the WHOLE function (01-core/03).
+fn try_inside_loop_lowers_with_preserved_handle() {
+    // fp-exceptions: a Try inside a loop body lowers; the exc entry's
+    // stack_depth pins the enclosing ForNext handle (opdepth 1).
     let f = fn_def(
         "f",
         &["xs"],
@@ -1492,14 +1499,28 @@ fn try_inside_loop_still_falls_back() {
             name("xs"),
             vec![Stmt::Try(TryStmt {
                 body: vec![Stmt::Pass],
-                handlers: vec![],
+                handlers: vec![ExceptHandler {
+                    ty: Some(name("ValueError")),
+                    name: Some("e".into()),
+                    body: vec![Stmt::Pass],
+                }],
                 orelse: vec![],
                 finalbody: vec![],
             })],
             vec![],
         )],
     );
-    assert_eq!(must_fallback(&f), "try statement");
+    let c = must_lower(&f);
+    assert!(
+        c.excs.len() >= 1,
+        "try-in-loop records its exc arc: {:?}",
+        c.excs.entries()
+    );
+    assert!(
+        c.excs.entries().iter().any(|e| e.stack_depth == 1),
+        "inner arc carries the loop's opdepth: {:?}",
+        c.excs.entries()
+    );
 }
 
 #[test]

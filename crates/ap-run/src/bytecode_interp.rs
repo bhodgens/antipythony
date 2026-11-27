@@ -231,6 +231,298 @@ fn raise_flow(class: &str, msg: impl Into<String>) -> Flow {
 }
 
 // ===========================================================================
+// fp-exceptions: the in-flight exception machinery (bytecode-mode mirror of
+// exec_try's handler protocol). ONE parked-exception slot per thread — the
+// CheckExcept/PopExc/Raise ops consult it; no cost on non-exception paths.
+// ===========================================================================
+
+thread_local! {
+    /// The parked exception between the unwind and the handler's
+    /// CheckExcept (None whenever no bytecode try is mid-catch). The
+    /// PRE-handler current_exception rides alongside (the handler body's
+    /// raises chain against it — exec_try's exact current_exception
+    /// save/restore protocol), plus the tb_frames snapshot base for the
+    /// handled-path truncate (exec_try's tb_snapshot discipline).
+    static BC_PARKED_EXC: RefCell<Option<(ExceptionValue, Option<ExceptionValue>, usize)>> =
+        const { RefCell::new(None) };
+}
+
+/// Park an arriving exception at the handler boundary (arc unwind).
+/// Mirrors exec_try's catch-entry tb work: the interpreter-wide tb_frames
+/// is first truncated back to THIS frame's entry base (`tb_base` —
+/// dropping the callee frame-exit pushes the raising unwind accumulated;
+/// exec_try's tb_snapshot discipline — callee frames die with the
+/// exception), then the CATCHING frame's entry is prepended (raise_line
+/// when the tb is empty — the W112 raise-line pin — else this frame's
+/// current line), deduped; the snapshot rides the park for the
+/// handled-path truncate (PopExc).
+fn exc_enter(interp: &Arc<Interpreter>, frame: &Arc<Frame>, exc: ExceptionValue, tb_base: usize) {
+    let prev = interp
+        .current_exception
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .clone()
+        .map(|a| (*a).clone());
+    // exec_try's tb_snapshot: the frame's entry base (callee pushes die).
+    {
+        let mut d = interp.tb_frames.lock().unwrap_or_else(|p| p.into_inner());
+        let at = tb_base.min(d.len());
+        let _ = d.split_off(at);
+    }
+    let tb_snapshot = tb_base;
+    BC_PARKED_EXC.with(|c| {
+        *c.borrow_mut() = Some((exc.clone(), prev, tb_snapshot));
+    });
+    *interp
+        .current_exception
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) = Some(Arc::new(exc.clone()));
+    // exec_try's catch-entry insert (W112 block): the catching frame's
+    // traceback entry, outermost-first.
+    let line = if exc.tb.is_empty() && exc.raise_line > 0 {
+        exc.raise_line.max(1)
+    } else {
+        frame.last_line.get().max(1)
+    };
+    let file = frame
+        .globals
+        .get(&Value::Str(PyString::new("__file__")))
+        .and_then(|fv| match fv {
+            Value::Str(s) => Some(s.as_str().to_string()),
+            _ => None,
+        })
+        .unwrap_or_else(|| interp.script_path.clone());
+    let already = exc
+        .tb
+        .first()
+        .is_some_and(|(q, l, f)| q == &frame.qualname && *l == line && f == &file);
+    if !already {
+        // exc is already parked/current — mutate the parked copy too.
+        let mut exc2 = exc;
+        exc2.tb
+            .insert(0, (frame.qualname.clone(), line, file.clone()));
+        interp
+            .tb_frames
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push_front((frame.qualname.clone(), line, file));
+        *interp
+            .current_exception
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(Arc::new(exc2.clone()));
+        BC_PARKED_EXC.with(|c| {
+            if let Some(slot) = &mut *c.borrow_mut() {
+                slot.0 = exc2;
+            }
+        });
+    }
+}
+
+/// CheckExcept (typed matcher): peek the parked exception, evaluate
+/// `matches` via the shared exc_matches route (the same MRO/tuple/bare
+/// semantics the walker's exec_try uses), pop the type expr, push the
+/// instance (or None filler) on match. Err(raise) = the type-expr
+/// evaluation raised (catch-time TypeError etc.).
+fn check_except(interp: &Arc<Interpreter>, ty: &Value) -> Result<Value, Flow> {
+    let parked = BC_PARKED_EXC.with(|c| c.borrow().as_ref().map(|(e, _, _)| e.clone()));
+    let Some(exc) = parked else {
+        return Err(raise_flow(
+            "SystemError",
+            "CheckExcept with no parked exception",
+        ));
+    };
+    let matches = crate::interp::exc_matches_pub(interp, ty, &exc)?;
+    if matches {
+        Ok(exception_instance_value(&exc))
+    } else {
+        Ok(Value::None) // filler: the dispatch arm discards it (no-match arc)
+    }
+}
+
+/// CheckExceptBare: always matches; pushes the instance.
+fn check_except_bare() -> Value {
+    let parked = BC_PARKED_EXC.with(|c| c.borrow().as_ref().map(|(e, _, _)| e.clone()));
+    match parked {
+        Some(exc) => exception_instance_value(&exc),
+        None => Value::None,
+    }
+}
+
+/// PopExc { unbind_slot }: pop the park (restoring the pre-try
+/// current_exception + truncating tb_frames to the snapshot — the handled
+/// path's raising frames die with the handled exception) and unbind the
+/// except-as name.
+fn pop_exc(
+    interp: &Arc<Interpreter>,
+    frame: &Frame,
+    unbind_slot: u16,
+    locals: &mut [Option<Value>],
+    code: &CodeObject,
+) {
+    let saved = BC_PARKED_EXC.with(|c| c.borrow_mut().take());
+    if let Some((_, prev, tb_snapshot)) = saved {
+        {
+            let mut d = interp.tb_frames.lock().unwrap_or_else(|p| p.into_inner());
+            let at = tb_snapshot.min(d.len());
+            let _ = d.split_off(at);
+        }
+        *interp
+            .current_exception
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = prev.map(Arc::new);
+    }
+    if unbind_slot != u16::MAX {
+        if let Some(name) = code.local_names.get(unbind_slot as usize) {
+            let _ = frame.delete_name(name);
+            if (unbind_slot as usize) < locals.len() {
+                locals[unbind_slot as usize] = None;
+            }
+        }
+    }
+}
+
+/// Raise { mode }: the tree-walker's Stmt::Raise arm semantics — bare
+/// re-raise (in-flight/current), value raise, or `raise X from Y`
+/// chaining. raise_line = the frame's synced last_line.
+fn raise_op(
+    interp: &Arc<Interpreter>,
+    frame: &Frame,
+    mode: u8,
+    exc_val: Option<Value>,
+    cause_val: Option<Value>,
+) -> Result<Flow, Flow> {
+    // Bare raise (mode 2): re-raise current/in-flight.
+    let Some(v) = exc_val else {
+        let inflight = interp
+            .current_exception
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+            .map(|a| (*a).clone());
+        let mut e = match inflight {
+            Some(prev) => prev,
+            None => {
+                return Err(raise_flow(
+                    "RuntimeError",
+                    "No active exception to re-raise",
+                ))
+            }
+        };
+        e.raise_line = frame.last_line.get();
+        return Ok(Flow::Raise(e));
+    };
+    let mut e = crate::interp::raise_from_value_pub(&v)?;
+    if mode == 1 {
+        if let Some(cv) = cause_val {
+            let cause = if matches!(cv, Value::None) {
+                None // raise X from None suppresses context (S-06-8)
+            } else {
+                Some(Box::new(crate::interp::raise_from_value_pub(&cv)?))
+            };
+            e.cause = cause;
+            // CPython pin: `from Y` does NOT clear __context__ — the
+            // implicit chain stays; __suppress_context__=True hides it
+            // from the render. from None chains too.
+            if e.context.is_none() {
+                if let Some(prev) = interp
+                    .current_exception
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .clone()
+                {
+                    let prev = (*prev).clone();
+                    if prev.class != "StopIteration" || !prev.args.is_empty() {
+                        e.context = Some(Box::new(prev));
+                    }
+                }
+            }
+            if let Some(Value::Obj(io)) = &e.instance {
+                let mut a = io.attrs.lock().unwrap_or_else(|p| p.into_inner());
+                if let Some(ctx) = &e.context {
+                    let _ = a.set(
+                        Value::Str(PyString::new("__context__")),
+                        crate::interp::exception_instance_pub(ctx),
+                    );
+                }
+                if let Some(cause) = &e.cause {
+                    let _ = a.set(
+                        Value::Str(PyString::new("__cause__")),
+                        crate::interp::exception_instance_pub(cause),
+                    );
+                }
+                let _ = a.set(
+                    Value::Str(PyString::new("__suppress_context__")),
+                    Value::Bool(true), // any explicit `from` suppresses
+                );
+            }
+            e.raise_line = frame.last_line.get();
+            return Ok(Flow::Raise(e));
+        }
+    }
+    // Implicit __context__ chaining AT RAISE TIME (mode 0/2) — the walker
+    // Raise arm's exact fp-exceptions block (single-sourced semantics).
+    if e.context.is_none() && e.cause.is_none() {
+        if let Some(prev) = interp
+            .current_exception
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+        {
+            let prev = (*prev).clone();
+            // Self-chain guard (re-raise must not chain itself — infinite
+            // render recursion); identical to the walker Raise arm.
+            let same_inst = e
+                .instance
+                .as_ref()
+                .zip(prev.instance.as_ref())
+                .map(|(a, b)| match (a, b) {
+                    (Value::Obj(x), Value::Obj(y)) => std::sync::Arc::ptr_eq(x, y),
+                    _ => false,
+                })
+                .unwrap_or(false);
+            let is_same = same_inst
+                || (e.instance.is_none()
+                    && prev.instance.is_none()
+                    && e.class == prev.class
+                    && e.raise_line == prev.raise_line
+                    && e.args.len() == prev.args.len());
+            if !is_same && (prev.class != "StopIteration" || !prev.args.is_empty()) {
+                e.context = Some(Box::new(prev));
+            }
+        }
+    }
+    if e.context.is_some() || e.cause.is_some() {
+        if let Some(Value::Obj(io)) = &e.instance {
+            let mut a = io.attrs.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(ctx) = &e.context {
+                let _ = a.set(
+                    Value::Str(PyString::new("__context__")),
+                    crate::interp::exception_instance_pub(ctx),
+                );
+            }
+            if let Some(cause) = &e.cause {
+                let _ = a.set(
+                    Value::Str(PyString::new("__cause__")),
+                    crate::interp::exception_instance_pub(cause),
+                );
+            }
+            let _ = a.set(
+                Value::Str(PyString::new("__suppress_context__")),
+                Value::Bool(e.cause.is_some()),
+            );
+        }
+    }
+    e.raise_line = frame.last_line.get();
+    Ok(Flow::Raise(e))
+}
+
+/// Materialize the handler-bound exception instance (exception_instance's
+/// route — the same Value the walker binds to `except E as e`).
+fn exception_instance_value(exc: &ExceptionValue) -> Value {
+    crate::interp::exception_instance_pub(exc)
+}
+
+// ===========================================================================
 // Smi fast paths (leaf 01-core/01 perf targets). The shared helpers'
 // generality (user-dunder walks, exc machinery, bool allocs) costs
 // ~200ns/step; the loop targets need ~20ns. These arms run ONLY when the
@@ -424,6 +716,14 @@ fn run_frame(
     let mut stack: Vec<Value> = Vec::with_capacity(8);
     let mut pc: usize = 0;
     let mut cur_line: u32 = c.dense_lines.first().copied().unwrap_or(1);
+    // fp-exceptions: the interpreter-wide tb_frames length at frame ENTRY —
+    // exc_enter truncates back to this before snapshotting (the callee
+    // frame-exit pushes of the raising unwind die with the exception).
+    let tb_base = interp
+        .tb_frames
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .len();
     // Registered even-id iterators this frame created (GetIter) — pruned at
     // frame exit (break/unwind AND exhaustion both drop their entries inside
     // pull_iter; this covers the BREAK/mid-stream exits, the G1 discipline).
@@ -446,9 +746,41 @@ fn run_frame(
             ($r:expr) => {
                 match $r {
                     Ok(v) => v,
-                    Err(f) => break 'dispatch Err((cur_line, f)),
+                    Err(f) => {
+                        // fp-exceptions: a RAISE in flight routes through
+                        // this frame's exception table (zero-cost until
+                        // raised). No arc -> propagate (frame Err exit).
+                        if let Flow::Raise(ref exc) = f {
+                            if let Some(entry) = code.excs.find_handler(pc as u32) {
+                                stack.truncate(entry.stack_depth as usize);
+                                exc_enter(interp, frame, exc.clone(), tb_base);
+                                pc = entry.handler as usize;
+                                continue 'dispatch;
+                            }
+                        }
+                        break 'dispatch Err((cur_line, f));
+                    }
                 }
             };
+        }
+        // fp-exceptions: route an INLINE-CONSTRUCTED raise through the
+        // exception table (same arc lookup hop! does) — LoadAttr's
+        // AttributeError, the unbound-load NameError family, GetIter's
+        // TypeError, the fast LoadAttrCall arms all construct their errors
+        // inline and must reach the handler like helper raises do.
+        macro_rules! raise_or_propagate {
+            ($f:expr) => {{
+                let f = $f;
+                if let Flow::Raise(ref exc) = f {
+                    if let Some(entry) = code.excs.find_handler(pc as u32) {
+                        stack.truncate(entry.stack_depth as usize);
+                        exc_enter(interp, frame, exc.clone(), tb_base);
+                        pc = entry.handler as usize;
+                        continue 'dispatch;
+                    }
+                }
+                break 'dispatch Err((cur_line, f));
+            }};
         }
         macro_rules! pop {
             () => {
@@ -530,14 +862,11 @@ fn run_frame(
                             .get(s)
                             .map(|n| n.as_str())
                             .unwrap_or("<slot>");
-                        break Err((
-                            cur_line,
-                            raise_flow(
-                                "UnboundLocalError",
-                                format!(
-                                    "cannot access local variable '{name}' where it is not \
-                                     associated with a value"
-                                ),
+                        raise_or_propagate!(raise_flow(
+                            "UnboundLocalError",
+                            format!(
+                                "cannot access local variable '{name}' where it is not \
+                                 associated with a value"
                             ),
                         ));
                     }
@@ -726,20 +1055,17 @@ fn run_frame(
                             }
                             _ => String::new(),
                         };
-                        break Err((
-                            cur_line,
-                            raise_flow(
-                                "AttributeError",
-                                format!(
-                                    "'{}' object has no attribute '{}'{}",
-                                    crate::classes::display_type_name(&obj),
-                                    name,
-                                    extra
-                                ),
+                        raise_or_propagate!(raise_flow(
+                            "AttributeError",
+                            format!(
+                                "'{}' object has no attribute '{}'{}",
+                                crate::classes::display_type_name(&obj),
+                                name,
+                                extra
                             ),
                         ));
                     }
-                    Err(f) => break Err((cur_line, f)),
+                    Err(f) => raise_or_propagate!(f),
                 }
                 pc += 1;
             }
@@ -1005,20 +1331,17 @@ fn run_frame(
                             }
                             _ => String::new(),
                         };
-                        break Err((
-                            cur_line,
-                            raise_flow(
-                                "AttributeError",
-                                format!(
-                                    "'{}' object has no attribute '{}'{}",
-                                    crate::classes::display_type_name(&recv),
-                                    name,
-                                    extra
-                                ),
+                        raise_or_propagate!(raise_flow(
+                            "AttributeError",
+                            format!(
+                                "'{}' object has no attribute '{}'{}",
+                                crate::classes::display_type_name(&recv),
+                                name,
+                                extra
                             ),
                         ));
                     }
-                    Err(f) => break Err((cur_line, f)),
+                    Err(f) => raise_or_propagate!(f),
                 };
                 let v = hop!(crate::interp::call_value_frame_pub(
                     interp,
@@ -1383,6 +1706,92 @@ fn run_frame(
             }
             Instr::ReturnNone => break Ok(Value::None),
 
+            // ---- exceptions (leaf fp-exceptions) ------------------------------
+            Instr::Raise { mode } => {
+                // mode 0: raise TOS. mode 1: raise TOS0 from TOS (cause on
+                // top). mode 2: bare raise (no operands — re-raise).
+                sync_frame_line(frame, cur_line);
+                let (exc_val, cause_val) = match mode {
+                    2 => (None, None),
+                    1 => {
+                        let c = pop!();
+                        let e = pop!();
+                        (Some(e), Some(c))
+                    }
+                    _ => {
+                        let e = pop!();
+                        (Some(e), None)
+                    }
+                };
+                let f = raise_op(interp, frame, mode, exc_val, cause_val)?;
+                if let Flow::Raise(ref exc) = f {
+                    if let Some(entry) = code.excs.find_handler(pc as u32) {
+                        stack.truncate(entry.stack_depth as usize);
+                        exc_enter(interp, frame, exc.clone(), tb_base);
+                        pc = entry.handler as usize;
+                        continue 'dispatch;
+                    }
+                }
+                break Err((cur_line, f));
+            }
+            Instr::CheckExcept(target) => {
+                // TOS = the handler's type expr. Parked exc -> match ->
+                // instance push (fall through) | no match -> target arc.
+                sync_frame_line(frame, cur_line);
+                let ty = pop!();
+                let bound = hop!(check_except(interp, &ty));
+                if matches!(bound, Value::None) {
+                    pc = target as usize;
+                } else {
+                    stack.push(bound);
+                    pc += 1;
+                }
+            }
+            Instr::CheckExceptBare => {
+                stack.push(check_except_bare());
+                pc += 1;
+            }
+            Instr::PopExc { unbind_slot } => {
+                pop_exc(interp, frame, unbind_slot, &mut locals, code);
+                pc += 1;
+            }
+            Instr::ResumeUnwind => {
+                // Re-propagate the parked in-flight exception (the
+                // lowerer's finally-unwind epilogue / no-match arc ends
+                // here). Nested-catch consumed the park -> current.
+                let parked = BC_PARKED_EXC.with(|c| c.borrow().as_ref().map(|(e, _, _)| e.clone()));
+                let exc = match parked {
+                    Some(e) => e,
+                    None => {
+                        let cur = interp
+                            .current_exception
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .clone();
+                        match cur {
+                            Some(e) => (*e).clone(),
+                            None => {
+                                break Err((
+                                    cur_line,
+                                    raise_flow(
+                                        "SystemError",
+                                        "ResumeUnwind with no in-flight exception",
+                                    ),
+                                ))
+                            }
+                        }
+                    }
+                };
+                sync_frame_line(frame, cur_line);
+                if let Some(entry) = code.excs.find_handler(pc as u32) {
+                    stack.truncate(entry.stack_depth as usize);
+                    exc_enter(interp, frame, exc, tb_base);
+                    pc = entry.handler as usize;
+                    continue 'dispatch;
+                }
+                break Err((cur_line, Flow::Raise(exc)));
+            }
+
             // ---- fallback marker (entry filters it; never dispatched) ----
             Instr::FallbackToTreeWalk => {
                 break Err((
@@ -1400,6 +1809,15 @@ fn run_frame(
     // header comment — the per-instruction store was removed; observers
     // reading BC_LINE between frames see the last executed line).
     BC_LINE.with(|l| l.set(cur_line));
+    // fp-exceptions: a park left outstanding at frame exit (the exception
+    // propagated OUT of a bytecode handler chain) — the matching tb_frames
+    // entries die with it (exec_try's unwind truncation discipline).
+    let parked_at_exit = BC_PARKED_EXC.with(|c| c.borrow_mut().take());
+    if let Some((_, _, tb_snapshot)) = parked_at_exit {
+        let mut d = interp.tb_frames.lock().unwrap_or_else(|p| p.into_inner());
+        let at = tb_snapshot.min(d.len());
+        let _ = d.split_off(at);
+    }
     // Frame exit: prune every iterator this frame registered (break /
     // return / unwind paths; exhaustion already pruned inside pull_iter).
     // Mirrors the tree-walker Stmt::For exit's table removal (G1).

@@ -4102,11 +4102,14 @@ pub fn call_sys_fn(interp: &Interpreter, name: &str, args: &[Value]) -> Option<B
                     });
                 // T2: prefer the REAL instance when the raise carried
                 // one (identity + user-class isinstance preserved).
-                let inst = ev.instance.clone().unwrap_or_else(|| {
-                    let i = ap_obj::PyObject::new(ap_obj::ObjKind::Exception, ev.class.clone());
-                    *i.args.lock().unwrap_or_else(|p| p.into_inner()) = ev.args.clone();
-                    Value::Obj(i)
-                });
+                // fp-exceptions: chain dunders (__context__/__cause__) —
+                // route through exception_instance_pub (the shared
+                // materializer) instead of the bare fabricate-here path
+                // so a handler raise's context chain is Python-visible.
+                let inst = ev
+                    .instance
+                    .clone()
+                    .unwrap_or_else(|| crate::interp::exception_instance_pub(&ev));
                 // W112: record the in-flight tb entries onto the
                 // materialized instance (__ap_tb__). from_call's
                 // `except BaseException:` has no `as` name, so

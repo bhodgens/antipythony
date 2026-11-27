@@ -1,5 +1,6 @@
 //! The assembled unit of bytecode: what leaf 02's frame consumes.
 
+use crate::exctable::ExcTable;
 use crate::instr::Instr;
 use crate::linetable::LineTable;
 use crate::pool::ConstPool;
@@ -23,6 +24,10 @@ pub struct CodeObject {
     pub names: Vec<String>,
     pub lines: LineTable,
     pub sites: SiteTable,
+    /// Zero-cost exception table (leaf fp-exceptions): (start, end,
+    /// handler, stack_depth) arcs consulted ONLY when an exception is
+    /// in flight. Empty for functions without try.
+    pub excs: ExcTable,
 }
 
 impl CodeObject {
@@ -86,6 +91,6 @@ impl CodeObject {
                 }
             }
         }
-        Ok(())
+        self.excs.validate(n)
     }
 }

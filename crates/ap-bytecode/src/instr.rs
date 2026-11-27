@@ -240,6 +240,38 @@ pub enum Instr {
     /// (unsupported shape at lowering time). Never executed by the
     /// dispatch loop — entry (leaf 02) routes on it.
     FallbackToTreeWalk,
+    /// `raise` (leaf fp-exceptions). `mode`: 0 = raise TOS; 1 = raise TOS
+    /// from TOS0 (pops cause then exception); 2 = bare raise (no
+    /// operands — re-raise the in-flight exception). Semantics are the
+    /// tree-walker's Stmt::Raise arm (raise_from_value / inflight
+    /// re-raise / __cause__ chaining) via the shared interp helpers —
+    /// raise_line is frame.last_line, which the loop syncs
+    /// per-instruction.
+    Raise { mode: u8 },
+    /// Handler-scoped latch cleanup (leaf fp-exceptions): pops the
+    /// runtime's saved-exception stack (restoring pre-try
+    /// current_exception — the handler body raised against the caught
+    /// exception for __context__ chaining) and, when `unbind_slot` is a
+    /// real slot, unbinds the `except E as n` name (S-02-30: the name
+    /// dies with the handler).
+    PopExc { unbind_slot: u16 },
+    /// Marks the END of a finally epilogue that runs while an exception
+    /// (or return/break) is IN FLIGHT: propagates the in-flight signal
+    /// the unwind machinery parked. Never executed on a normal path
+    /// (duplicated epilogues: the normal path jumps over it).
+    ResumeUnwind,
+    /// Exception-in-flight matcher (leaf fp-exceptions): pops the
+    /// handler's type expr (pushed by the lowerer), consults the
+    /// in-flight exception. Match = PEEK semantics for the handler chain:
+    /// pushes the exception INSTANCE (or None filler) and falls through;
+    /// no match = jumps to `target` (the next matcher / no-match arc)
+    /// keeping the exception in flight and leaving the type expr popped.
+    /// The in-flight exception itself is NEVER popped by matching —
+    /// exactly-one-consumption happens at the handler's PopExc.
+    CheckExcept(u32),
+    /// Bare `except:` matcher: always matches; pushes the instance (or
+    /// None filler) and falls through.
+    CheckExceptBare,
 }
 
 impl Instr {
@@ -254,6 +286,7 @@ impl Instr {
                 | Self::JumpIfFalseOrPop(_)
                 | Self::JumpIfTrueOrPop(_)
                 | Self::ForNext(_)
+                | Self::CheckExcept(_)
         )
     }
 
@@ -265,7 +298,8 @@ impl Instr {
             | Self::JumpIfTrue(t)
             | Self::JumpIfFalseOrPop(t)
             | Self::JumpIfTrueOrPop(t)
-            | Self::ForNext(t) => Some(t),
+            | Self::ForNext(t)
+            | Self::CheckExcept(t) => Some(t),
             _ => None,
         }
     }
@@ -326,13 +360,18 @@ impl Instr {
             Self::StoreAttr { .. } => 32,
             Self::CallFunctionKw { .. } => 33,
             Self::FallbackToTreeWalk => 34,
+            Self::Raise { .. } => 35,
+            Self::PopExc { .. } => 36,
+            Self::ResumeUnwind => 37,
+            Self::CheckExcept(_) => 38,
+            Self::CheckExceptBare => 39,
         }
     }
 }
 
 /// One name per opcode, discriminant order (kept in sync with
 /// `Instr::opcode_index`; `decode::disassemble` and tests rely on it).
-pub const OPCODE_NAMES: [&str; 35] = [
+pub const OPCODE_NAMES: [&str; 40] = [
     "LoadConst",
     "LoadFast",
     "LoadGlobal",
@@ -368,4 +407,9 @@ pub const OPCODE_NAMES: [&str; 35] = [
     "StoreAttr",
     "CallFunctionKw",
     "FallbackToTreeWalk",
+    "Raise",
+    "PopExc",
+    "ResumeUnwind",
+    "CheckExcept",
+    "CheckExceptBare",
 ];
