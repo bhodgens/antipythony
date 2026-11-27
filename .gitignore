@@ -7,3 +7,4 @@ __pycache__/
 # robustness-ci 01.05: machine-regenerated timing artifact, trend-only, never a gate
 tests/t08_tier1/bench_report.json
 tests/bench/primitive/pfz_data.bin
+ppcrc_data.bin

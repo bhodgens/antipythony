@@ -31,6 +31,16 @@ impl CodeObject {
         self.instrs.len()
     }
 
+    /// The visible slot of a local NAME (params prefill by name for the
+    /// defaults/vararg/kwarg shapes — hidden comp slots are unreachable by
+    /// name here because they are not in local_names).
+    pub fn visible_slot_of(&self, name: &str) -> Option<u16> {
+        self.local_names
+            .iter()
+            .position(|n| n == name)
+            .map(|i| i as u16)
+    }
+
     /// Validate structural invariants that lowering must preserve:
     /// - every jump target is in bounds (back-edges ARE emitted since
     ///   leaf 01-core/01: loop back-edges Jump to the loop head),

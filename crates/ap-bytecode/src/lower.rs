@@ -80,6 +80,21 @@ struct Lowerer {
     /// Break/continue routing (block-target tracking). One frame per
     /// enclosing loop: patches applied when the loop's exit is fixed up.
     loop_stack: Vec<LoopFrame>,
+    /// Comprehension-scope emulation (leaf 02-calls): per-clause target
+    /// bindings live OUTSIDE the function's compile-time slot table —
+    /// CPython scopes them to the comprehension's implicit function. Each
+    /// entry maps name -> hidden slot; `slot_of` consults the stack TOP
+    /// DOWN before the plain table, so a comprehension's `for x in ...`
+    /// never leaks `x` into the enclosing frame (S-02-2). Hidden slots
+    /// allocate past `n_locals` visible slots... no: they ARE locals vec
+    /// entries (the dispatch loop's locals vec is slot-indexed), but they
+    /// are EXCLUDED from local_names/frame sync (see hidden_slots below).
+    comp_scopes: Vec<HashMap<String, u16>>,
+    /// Hidden slot count (comprehension targets live at
+    /// n_locals..n_locals+hidden). sync_slots_into_frame iterates
+    /// local_names (visible only), so hidden slots never sync back to the
+    /// frame — the comprehension's scope stays private.
+    hidden_slots: u16,
 }
 
 /// One enclosing loop's pending break/continue jump sites (instruction
@@ -111,6 +126,8 @@ impl Lowerer {
             n_locals: 0,
             cur_line: 0,
             loop_stack: Vec::new(),
+            comp_scopes: Vec::new(),
+            hidden_slots: 0,
         }
     }
 
@@ -139,6 +156,15 @@ impl Lowerer {
     }
 
     fn slot_of(&mut self, name: &str) -> Option<u16> {
+        // Comprehension scopes shadow: innermost first (the implicit
+        // function scope sits INSIDE the enclosing function's scope for
+        // reads — a comprehension body referencing an enclosing local
+        // falls through to the visible slot).
+        for scope in self.comp_scopes.iter().rev() {
+            if let Some(&s) = scope.get(name) {
+                return Some(s);
+            }
+        }
         self.slots.get(name).copied()
     }
 
@@ -150,6 +176,36 @@ impl Lowerer {
         self.n_locals += 1;
         self.slots.insert(name.to_string(), s);
         s
+    }
+
+    /// Allocate a HIDDEN slot (comprehension clause target / accumulator).
+    /// Sits past every visible slot; excluded from local_names (frame sync
+    /// iterates local_names, so hidden slots never leak into the enclosing
+    /// frame's namespace — the comprehension's implicit function scope).
+    fn alloc_hidden_slot(&mut self, name: &str) -> u16 {
+        let s = self.n_locals as u16 + self.hidden_slots;
+        self.hidden_slots += 1;
+        s
+    }
+
+    /// Resolve (allocating on first store) the hidden slot of a
+    /// comp-scope NAME target in the innermost scope. Non-name targets are
+    /// a loud fallback this leaf.
+    fn comp_target_slot(&mut self, target: &Expr) -> Result<u16, Unsupported> {
+        let Expr::Name(name) = target else {
+            return Err(Unsupported("comprehension target (non-name)"));
+        };
+        if let Some(scope) = self.comp_scopes.last() {
+            if let Some(&s) = scope.get(name) {
+                return Ok(s);
+            }
+        }
+        let s = self.alloc_hidden_slot(name);
+        self.comp_scopes
+            .last_mut()
+            .expect("comp scope pushed")
+            .insert(name.clone(), s);
+        Ok(s)
     }
 
     /// Emit a jump with a placeholder target; returns the instruction idx
@@ -189,21 +245,15 @@ impl Lowerer {
         if fn_def.is_async {
             return Err(Unsupported("async def"));
         }
-        // VarArg/KwArg/KwOnly params need call-binding shapes the dispatch
-        // loop does not have yet (01-core 02 owns them).
-        for p in &fn_def.params {
-            match p.kind {
-                ap_ir::ParamKind::PosOnly | ap_ir::ParamKind::PosOrKw => {}
-                _ => return Err(Unsupported("non-positional param")),
-            }
-            // Defaults evaluated at def time are a def-time effect; the
-            // frame pre-fills slots. Lowering the default EXPRESSION here
-            // would double-execute at call time in leaf 02's frame — out
-            // of scope until 02-frame-and-entry wires default prefill.
-            if p.default.is_some() {
-                return Err(Unsupported("param default"));
-            }
-        }
+        // VarArg/KwArg/KwOnly params bind inside the call boundary (the SAME
+        // bind_args machinery the tree-walker uses fills the frame's locals
+        // map by NAME — defaults via eval_default, vararg as a tuple, kwarg
+        // as a dict, kw-only from kwargs — and run_frame's prefill reads
+        // every param slot by name afterwards). Leaf 02-calls lifts the
+        // old refusals: params of ALL kinds + defaults lower fine. *args/
+        // **kwargs CALL-SITE shapes (runtime unpack) stay lowerer-rejected
+        // at the call arm — exotic, loud, per-function.
+        // (No per-param checks remain: prefill is name-keyed and total.)
 
         // Pre-assign parameter slots in source order.
         for p in &fn_def.params {
@@ -230,7 +280,10 @@ impl Lowerer {
         Ok(CodeObject {
             name: fn_def.name.clone(),
             def_line: fn_def.def_line,
-            n_locals: self.n_locals,
+            // Visible + hidden (comprehension-scope) slots; local_names
+            // carries VISIBLE names only, so frame sync never sees the
+            // comprehension's private scope.
+            n_locals: self.n_locals + self.hidden_slots as usize,
             local_names: self.local_names_sorted(),
             instrs: self.instrs,
             consts: self.consts,
@@ -475,7 +528,17 @@ impl Lowerer {
                 self.emit_at_line(Instr::StoreSubscript, self.cur_line);
                 Ok(())
             }
-            Target::Attribute(..) => Err(Unsupported("attribute store")),
+            Target::Attribute(obj, name) => {
+                // Leaf 02-calls: `obj.attr = v` lowers to StoreAttr — the
+                // SAME classes::attr_set_protocol route the tree-walker's
+                // Target::Attribute arm takes (user __setattr__ included).
+                // Stack: value (TOS1) obj (TOS0) — Assign pushed the value
+                // first; the interpreter pops obj then value.
+                self.lower_expr(obj)?;
+                let idx = self.intern_name(name);
+                self.emit_at_line(Instr::StoreAttr { idx }, self.cur_line);
+                Ok(())
+            }
             Target::Tuple(..) => Err(Unsupported("tuple unpack assign")),
             Target::Starred(_) => Err(Unsupported("starred assign")),
         }
@@ -490,7 +553,16 @@ impl Lowerer {
             Target::Subscript(obj, key) => {
                 self.lower_expr(&Expr::Subscript(obj.clone(), key.clone(), self.cur_line))
             }
-            Target::Attribute(..) => Err(Unsupported("attribute aug-target")),
+            Target::Attribute(obj, name) => {
+                // Aug-target read: plain LoadAttr (same route as Expr::Attribute).
+                self.lower_expr(obj)?;
+                let idx = self.intern_name(name);
+                let site = self.sites.alloc(SiteKind::AttrLoad, 0);
+                let ins_idx = self.emit(Instr::LoadAttr { idx, site });
+                self.sites.retarget(ins_idx, site);
+                self.lines.record(ins_idx, self.cur_line);
+                Ok(())
+            }
             Target::Tuple(..) => Err(Unsupported("tuple aug-target")),
             Target::Starred(_) => Err(Unsupported("starred aug-target")),
         }
@@ -675,13 +747,39 @@ impl Lowerer {
                 self.emit_at_line(Instr::BuildTuple(count), self.cur_line);
                 Ok(())
             }
-            Expr::Set(..) => Err(Unsupported("set display")),
-            Expr::Dict(..) => Err(Unsupported("dict display")),
+            Expr::Set(items) => {
+                for it in items {
+                    self.lower_expr(it)?;
+                }
+                let count =
+                    u16::try_from(items.len()).map_err(|_| Unsupported("set display too large"))?;
+                self.emit_at_line(Instr::BuildSet(count), self.cur_line);
+                Ok(())
+            }
+            Expr::Dict(items) => {
+                // Key first, value second (insertion order == push order;
+                // BuildDict pairs chunks of 2 in push order). A ** expansion
+                // item (DictExpand) stays unsupported.
+                for i in items {
+                    self.lower_expr(&i.key)?;
+                    self.lower_expr(&i.value)?;
+                }
+                let count =
+                    u16::try_from(items.len()).map_err(|_| Unsupported("dict display too large"))?;
+                self.emit_at_line(Instr::BuildDict(count), self.cur_line);
+                Ok(())
+            }
             Expr::DictExpand(_) => Err(Unsupported("dict ** expansion")),
             Expr::Lambda(..) => Err(Unsupported("lambda")),
-            Expr::ListComp(..) => Err(Unsupported("list comprehension")),
-            Expr::SetComp(..) => Err(Unsupported("set comprehension")),
-            Expr::DictComp(..) => Err(Unsupported("dict comprehension")),
+            Expr::ListComp(elt, clauses) => {
+                self.lower_comprehension(CompShape::List, elt, None, clauses)
+            }
+            Expr::SetComp(elt, clauses) => {
+                self.lower_comprehension(CompShape::Set, elt, None, clauses)
+            }
+            Expr::DictComp(k, v, clauses) => {
+                self.lower_comprehension(CompShape::Dict, k, Some(v), clauses)
+            }
             Expr::Generator(..) => Err(Unsupported("generator expression")),
             Expr::Yield(_) => Err(Unsupported("yield")),
             Expr::YieldFrom(_) => Err(Unsupported("yield from")),
@@ -694,28 +792,52 @@ impl Lowerer {
     }
 
     fn lower_call(&mut self, callee: &Expr, args: &[Arg], line: usize) -> Result<(), Unsupported> {
-        // Positional-only calls in the start set; kwargs / *args / **kw
-        // shapes land with 01-core 02.
+        // Positional + KEYWORD calls lower (leaf 02-calls): kwargs marshal
+        // through CallFunctionKw (a name-table slice) into call_value's
+        // kwargs slice — the tree-walker's exact binding machinery
+        // (defaults / kw-only / **kwargs binding live in the call
+        // boundary). *args/**kwargs CALL-SITE shapes (runtime unpack)
+        // stay unsupported this leaf — loud per-function fallback.
         let mut pos_args = 0usize;
+        let mut kw_names: Vec<&str> = Vec::new();
+        let mut kw_exprs: Vec<&Expr> = Vec::new();
         for a in args {
             match a {
                 Arg::Pos(_) => pos_args += 1,
-                Arg::Kw(..) => return Err(Unsupported("keyword call arg")),
+                Arg::Kw(name, e) => {
+                    kw_names.push(name);
+                    kw_exprs.push(e);
+                }
                 Arg::Star(_) => return Err(Unsupported("*args call")),
                 Arg::KwStar(_) => return Err(Unsupported("**kwargs call")),
             }
         }
+        let argc = u16::try_from(pos_args).map_err(|_| Unsupported("call too many args"))?;
+        let n_kw =
+            u16::try_from(kw_names.len()).map_err(|_| Unsupported("call too many kwargs"))?;
         // FUSED METHOD CALL (leaf 01-core/01): `obj.name(args...)` — the
         // build-loop `out.append(x)` shape. Lowering LoadAttr then
         // CallFunction mints a fresh BoundMethod per iteration (~1.5us
         // alloc); the fused opcode routes receiver+name+args straight to
         // the method dispatcher (mint only as the fallback inside the
-        // dispatcher). The vanilla two-opcode shape stays for everything
-        // else (bare attr reads, nested attribute bases stay supported:
-        // the base expr lowers normally under the receiver).
-        let argc = u16::try_from(pos_args).map_err(|_| Unsupported("call too many args"))?;
-        if let Expr::Attribute(base, attr, _) = callee {
-            self.lower_expr(base)?;
+        // dispatcher). Kwarg'd method calls (rare) drop to the generic
+        // CallFunctionKw arm below — the fused opcode carries no kw table.
+        if n_kw == 0 {
+            if let Expr::Attribute(base, attr, _) = callee {
+                self.lower_expr(base)?;
+                for a in args {
+                    if let Arg::Pos(e) = a {
+                        self.lower_expr(e)?;
+                    }
+                }
+                if line >= 1 {
+                    self.cur_line = line;
+                }
+                let idx = self.intern_name(attr);
+                self.emit_at_line(Instr::LoadAttrCall { idx, argc }, self.cur_line);
+                return Ok(());
+            }
+            self.lower_expr(callee)?;
             for a in args {
                 if let Arg::Pos(e) = a {
                     self.lower_expr(e)?;
@@ -724,25 +846,204 @@ impl Lowerer {
             if line >= 1 {
                 self.cur_line = line;
             }
-            let idx = self.intern_name(attr);
-            self.emit_at_line(Instr::LoadAttrCall { idx, argc }, self.cur_line);
+            let site = self.sites.alloc(SiteKind::Call, 0);
+            let ins_idx = self.emit(Instr::CallFunction { argc, site });
+            self.sites.retarget(ins_idx, site);
+            self.lines.record(ins_idx, line.max(1));
             return Ok(());
         }
+        // Kwarg'd call: callee, positionals, then kwarg VALUES in kw-name
+        // order (names interned FIRST so the table slice is contiguous,
+        // then the expressions lower — value order == name order).
         self.lower_expr(callee)?;
         for a in args {
             if let Arg::Pos(e) = a {
                 self.lower_expr(e)?;
             }
         }
+        // Reserve a CONTIGUOUS name-table slice [kw_first, kw_first+n_kw).
+        // intern_name's dedup could return an EARLIER index when a kw name
+        // was already interned (an attr/global read above) — that would
+        // desync the value/name pairing at dispatch. Always push a FRESH
+        // entry here: a duplicate table entry is harmless (nothing looks
+        // names up by content; only emitted indices are read back).
+        let kw_first = self.names.len() as u32;
+        for name in &kw_names {
+            self.names.push((*name).to_string());
+        }
+        for e in &kw_exprs {
+            self.lower_expr(e)?;
+        }
         if line >= 1 {
             self.cur_line = line;
         }
         let site = self.sites.alloc(SiteKind::Call, 0);
-        let ins_idx = self.emit(Instr::CallFunction { argc, site });
+        let ins_idx = self.emit(Instr::CallFunctionKw {
+            argc,
+            kw_first,
+            n_kw,
+            site,
+        });
         self.sites.retarget(ins_idx, site);
         self.lines.record(ins_idx, line.max(1));
         Ok(())
     }
+
+    // --- comprehensions (leaf 02-calls) -------------------------------------
+
+    /// Lower `[elt for t in it if c...]` / set / dict shapes to an INLINE
+    /// loop — NO separate function frame. The comprehension's implicit
+    /// function scope is emulated with a slot namespace pushed onto
+    /// comp_scopes: clause targets (and a fresh accumulator) live in hidden
+    /// slots that slot_of shadows and sync_slots_into_frame never exports.
+    ///
+    /// CPython scope semantics preserved:
+    /// - the OUTERMOST clause's iterable evaluates in the ENCLOSING scope
+    ///   (lowered before the scope push),
+    /// - inner clause iterables evaluate INSIDE the comprehension scope
+    ///   (they may reference outer clause targets),
+    /// - clause targets never leak into the enclosing frame,
+    /// - walrus inside a comp binds in the enclosing scope — NOT supported
+    ///   here (Expr::Named stays a loud fallback, S-02-2 exact).
+    ///
+    /// GeneratorExp stays tree-walked (fiber machinery, master.md).
+    fn lower_comprehension(
+        &mut self,
+        shape: CompShape,
+        elt: &Expr,
+        elt2: Option<&Box<Expr>>,
+        clauses: &[ap_ir::expr::CompClause],
+    ) -> Result<(), Unsupported> {
+        if clauses.is_empty() {
+            return Err(Unsupported("comprehension with no clauses"));
+        }
+        // Fresh accumulator — a NEW list/set/dict in a HIDDEN slot (the
+        // enclosing frame's same-named local is never touched).
+        let acc_slot = self.alloc_hidden_slot("<comp_acc>");
+        // OUTERMOST iterable: ENCLOSING scope (CPython evaluates it in the
+        // caller's frame before the implicit fn runs).
+        self.lower_expr(&clauses[0].iter)?;
+        self.emit_at_line(Instr::GetIter, self.cur_line);
+        match shape {
+            CompShape::List => self.emit_at_line(Instr::BuildList(0), self.cur_line),
+            CompShape::Set => self.emit_at_line(Instr::BuildSet(0), self.cur_line),
+            CompShape::Dict => self.emit_at_line(Instr::BuildDict(0), self.cur_line),
+        }
+        self.emit_at_line(Instr::StoreFast(acc_slot), self.cur_line);
+
+        // The implicit function scope: everything from the first ForNext on
+        // (inner iterables, targets, filters, element) evaluates inside it.
+        // Clause targets allocate as HIDDEN slots through comp_target_slot;
+        // sync_slots_into_frame exports visible local_names only, so the
+        // comp's scope never leaks into the enclosing frame (S-02-2).
+        self.comp_scopes.push(HashMap::new());
+
+        // Per-clause ForNext instruction indices — the clause's continue
+        // point (filter-false + back-edge target) and its exhaustion patch
+        // site. Stack per clause: [.., it0, it1, ..] — handles are PEEKED
+        // by ForNext and popped on exhaustion, so the inner exhaustion arc
+        // jumping to the outer ForNext leaves the OUTER handle on top.
+        let mut clause_fornexts: Vec<u32> = Vec::new();
+        for (ci, clause) in clauses.iter().enumerate() {
+            if ci > 0 {
+                // Inner iterable: comp-scope evaluation (may read outer
+                // clause targets — the scope is already pushed).
+                self.lower_expr(&clause.iter)?;
+                self.emit_at_line(Instr::GetIter, self.cur_line);
+            }
+            let fn_idx = self.emit_jump(Instr::ForNext(u32::MAX));
+            clause_fornexts.push(fn_idx);
+            let slot = self.comp_target_slot(&clause.target)?;
+            self.emit_at_line(Instr::StoreFast(slot), self.cur_line);
+            // Filters: false -> next iteration of THIS clause (its ForNext).
+            for f in &clause.ifs {
+                self.lower_expr(f)?;
+                self.emit_jump(Instr::JumpIfFalse(fn_idx));
+            }
+        }
+
+        // Body: element expression(s), comp-scope evaluated.
+        // List/set shapes: LoadFast(acc) FIRST so the fused LoadAttrCall
+        // sees receiver=acc under the arg (stack [acc, elt]); the elt
+        // lowers AFTER the receiver push. Dict comps lower key/value into
+        // temp slots, then rebuild [acc, key, value] for StoreSubscript.
+        match shape {
+            CompShape::List => {
+                let append_idx = self.intern_name("append");
+                self.emit_at_line(Instr::LoadFast(acc_slot), self.cur_line);
+                self.lower_expr(elt)?;
+                // acc.append(elt); PopTop — append's None result discards
+                // (the fused opcode never mints the BoundMethod).
+                self.emit_at_line(
+                    Instr::LoadAttrCall {
+                        idx: append_idx,
+                        argc: 1,
+                    },
+                    self.cur_line,
+                );
+                self.emit_at_line(Instr::PopTop, self.cur_line);
+            }
+            CompShape::Set => {
+                let add_idx = self.intern_name("add");
+                self.emit_at_line(Instr::LoadFast(acc_slot), self.cur_line);
+                self.lower_expr(elt)?;
+                self.emit_at_line(
+                    Instr::LoadAttrCall {
+                        idx: add_idx,
+                        argc: 1,
+                    },
+                    self.cur_line,
+                );
+                self.emit_at_line(Instr::PopTop, self.cur_line);
+            }
+            CompShape::Dict => {
+                self.lower_expr(elt)?; // key
+                if let Some(v) = elt2 {
+                    self.lower_expr(v)?; // value
+                }
+                // Stack [.., key, value]; no rotate opcode this leaf — park
+                // key/value in temp slots, rebuild [acc, key, value].
+                let k_slot = self.alloc_hidden_slot("<comp_k>");
+                let v_slot = self.alloc_hidden_slot("<comp_v>");
+                self.emit_at_line(Instr::StoreFast(v_slot), self.cur_line);
+                self.emit_at_line(Instr::StoreFast(k_slot), self.cur_line);
+                // StoreSubscript stack discipline (lower_store_target's
+                // layout): value TOS2, obj TOS1, key TOS0 — so emit
+                // value, acc, key.
+                self.emit_at_line(Instr::LoadFast(v_slot), self.cur_line);
+                self.emit_at_line(Instr::LoadFast(acc_slot), self.cur_line);
+                self.emit_at_line(Instr::LoadFast(k_slot), self.cur_line);
+                self.emit_at_line(Instr::StoreSubscript, self.cur_line);
+            }
+        }
+        // Back edge to the innermost clause's ForNext.
+        let innermost = *clause_fornexts.last().expect("clauses non-empty");
+        self.emit_jump(Instr::Jump(innermost));
+
+        // Exit arcs: inner-clause exhaustion resumes the OUTER loop (its
+        // handle is exposed on top after the inner pops); clause 0's
+        // exhaustion exits the whole comprehension.
+        let exit_here = self.instrs.len() as u32;
+        for ci in 1..clauses.len() {
+            self.patch_jump(clause_fornexts[ci], clause_fornexts[ci - 1]);
+        }
+        self.patch_jump(clause_fornexts[0], exit_here);
+
+        // Leave the implicit scope (targets stay hidden — sync exports
+        // visible local_names only).
+        self.comp_scopes.pop().expect("comp scope pushed");
+
+        // The comprehension's value.
+        self.emit_at_line(Instr::LoadFast(acc_slot), self.cur_line);
+        Ok(())
+    }
+}
+
+/// Comprehension result shape (accumulator protocol per shape).
+enum CompShape {
+    List,
+    Set,
+    Dict,
 }
 
 /// Collect every name ASSIGNED in the statement tree (StoreFast scan).

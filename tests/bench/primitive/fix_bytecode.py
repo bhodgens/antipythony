@@ -758,6 +758,216 @@ print(while_with_break_else())
 print(deep_nesting())
 '''
 
+PROBE_METHODCALLS = r'''# Leaf fp-calls: method-call surfaces — dict/str/bytes/int/list method
+# families, bound-method hoisting (first-class d.get), nested calls, attr
+# chains, subscript chains. Bytecode mode must answer through the fused
+# LoadAttrCall fast routes byte-identically.
+def dict_methods():
+    d = {"a": 1, "b": 2}
+    out = []
+    out.append(d.get("a"))
+    out.append(d.get("zz", 99))
+    out.append(d.pop("b"))
+    out.append(d.setdefault("c", 3))
+    out.append(sorted(d.items()))
+    out.append(len(d.keys()))
+    out.append(d.copy() == {"a": 1, "c": 3})
+    return out
+
+def str_methods():
+    s = "The Quick Brown Fox"
+    out = []
+    out.append(s.upper())
+    out.append(s.lower())
+    out.append(s.startswith("The"))
+    out.append(s.endswith("Fox"))
+    out.append(s.find("Brown"))
+    out.append(s.rfind("o"))
+    out.append(s.count("o"))
+    out.append(s.replace("o", "0"))
+    out.append(s.split(" "))
+    out.append(s.rsplit("o", 1))
+    out.append("|".join(["a", "b", "c"]))
+    out.append(s.strip("T"))
+    out.append(s.lstrip("The "))
+    out.append(s.rstrip("Fox"))
+    out.append(s.title())
+    out.append(s.capitalize())
+    out.append(s.casefold() == s.lower())
+    out.append(s.center(25, "*"))
+    out.append("xx".ljust(5, "-"))
+    out.append("xx".rjust(5, "-"))
+    out.append("42".zfill(5))
+    out.append(s.partition("Quick"))
+    out.append(s.splitlines())
+    out.append("ab".removeprefix("a"))
+    out.append("ab".removesuffix("b"))
+    out.append(s.isalpha())
+    out.append("abc123".isalnum())
+    out.append("123".isdigit())
+    out.append("   ".isspace())
+    out.append("ABC".isupper())
+    out.append("abc".islower())
+    return out
+
+def bytes_methods():
+    b = b"Hello,World"
+    out = []
+    out.append(b.split(b","))
+    out.append(b.replace(b"o", b"0"))
+    out.append(b.find(b"World"))
+    out.append(b.count(b"l"))
+    out.append(b.startswith(b"He"))
+    out.append(b.upper())
+    out.append(b.hex())
+    out.append(bytes.fromhex("414243"))
+    out.append(b.strip(b"d"))
+    return out
+
+def int_methods():
+    n = 255
+    out = []
+    out.append(n.bit_length())
+    out.append(n.to_bytes(2, "little"))
+    out.append((-1).__class__(n))
+    out.append(int.from_bytes(b"\x01\x00", "little"))
+    return out
+
+def hoisted_bound():
+    # First-class bound method: hoisted OUT of the loop (one mint), called
+    # repeatedly — the CallFunction BoundMethod route.
+    out = []
+    ap = out.append
+    for i in range(4):
+        ap(i * 2)
+    return out
+
+def nested_calls():
+    def add(a, b):
+        return a + b
+    return add(add(1, 2), add(3, add(4, 5)))
+
+def attr_and_subscript_chains():
+    grid = {"rows": [[1, 2], [3, 4]]}
+    m = {"inner": {"deep": 7}}
+    s = "abcdef"
+    out = []
+    out.append(grid["rows"][1][0])
+    out.append(m["inner"]["deep"])
+    out.append(s[1:4].upper()[0])
+    out.append([1, [2, [3, 4]]][1][1][0])
+    return out
+
+def defaults_and_kwargs():
+    def f(a, b=10, *rest, **kw):
+        return (a, b, rest, sorted(kw.items()))
+    return [f(1), f(1, 2), f(1, 2, 3, 4), f(1, k=9), f(1, b=5, z=1)]
+
+for v in dict_methods():
+    print(v)
+for v in str_methods():
+    print(v)
+for v in bytes_methods():
+    print(v)
+for v in int_methods():
+    print(v)
+print(hoisted_bound())
+print(nested_calls())
+for v in attr_and_subscript_chains():
+    print(v)
+for v in defaults_and_kwargs():
+    print(v)
+'''
+
+PROBE_COMPS = r'''# Leaf fp-calls: comprehension shapes — list/set/dict comps with filters,
+# nested clauses, scope non-leak (clause target does NOT clobber an
+# enclosing local), comp over comp results. genexpr stays tree-walked
+# (covered by the fallback probe's spirit: whole-file three-way).
+def list_comp_shapes():
+    xs = [1, 2, 3, 4, 5]
+    a = [x * 2 for x in xs]
+    b = [x for x in xs if x > 2]
+    c = [x for x in xs if x > 1 if x < 5]
+    d = [(y, z) for y in [1, 2] for z in [10, 20]]
+    e = [[x, x + 1] for x in xs]
+    return (a, b, c, d, e)
+
+def set_comp_shapes():
+    xs = [1, 2, 2, 3, 3]
+    a = {x for x in xs}
+    b = {x % 3 for x in xs if x > 1}
+    return (sorted(a), sorted(b))
+
+def dict_comp_shapes():
+    xs = ["a", "b", "c"]
+    a = {k: len(k) for k in xs}
+    b = {i: ch * i for i, ch in enumerate(xs) if i > 0}
+    return (a, b)
+
+def comp_scope_no_leak():
+    x = "enclosing"
+    r = [x for x in [1, 2, 3]]
+    # CPython: the comprehension's x does NOT clobber the enclosing x.
+    return (r, x)
+
+def comp_of_comp():
+    grids = [[1, 2], [3, 4]]
+    flat = [v for row in [g for g in grids] for v in row]
+    return flat
+
+def comp_method_bodies():
+    words = ["  Hi ", "Yo"]
+    cleaned = [w.strip().lower() for w in words]
+    lens = {w: len(w) for w in cleaned}
+    return (cleaned, sorted(lens.items()))
+
+for v in list_comp_shapes():
+    print(v)
+for v in set_comp_shapes():
+    print(v)
+for v in dict_comp_shapes():
+    print(v)
+print(comp_scope_no_leak())
+print(comp_of_comp())
+print(comp_method_bodies())
+'''
+
+PROBE_ATTRSTORE = r'''# Leaf fp-calls: StoreAttr/LoadAttr on user instances + aug-through-attr +
+# subscript stores on attr bases + defaults re-binding. __init__ bodies are
+# nested-class shapes (fall back) — use module-level classes + plain fns.
+class Box:
+    def __init__(self):
+        self.v = 0
+        self.name = "b"
+
+def attr_roundtrip():
+    b = Box()
+    b.v = 41
+    b.name = "renamed"
+    b.v = b.v + 1
+    return (b.v, b.name)
+
+def aug_through_attr():
+    b = Box()
+    b.v = 10
+    b.v += 5
+    b.v *= 2
+    return b.v
+
+def subscript_store_chains():
+    m = dict()
+    m["a"] = {}
+    m["a"]["b"] = [1]
+    m["a"]["b"][0] = 99
+    lst = [0, 0]
+    lst[0] = lst[1] = None
+    return (m["a"]["b"], lst[0] is None and lst[1] is None)
+
+print(attr_roundtrip())
+print(aug_through_attr())
+print(subscript_store_chains())
+'''
+
 PROBES = [
     ("arith", PROBE_ARITH),
     ("strings", PROBE_STRINGS),
@@ -768,6 +978,9 @@ PROBES = [
     ("unbound", PROBE_UNBOUND),
     ("fallback", PROBE_FALLBACK),
     ("loops", PROBE_LOOPS),
+    ("methodcalls", PROBE_METHODCALLS),
+    ("comps", PROBE_COMPS),
+    ("attrstore", PROBE_ATTRSTORE),
 ]
 
 
