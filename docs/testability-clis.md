@@ -31,9 +31,10 @@ Arguments:
   <FILE>  Python source file to execute
 
 Options:
-      --tier <MODE>  Execution tier mode: `0` (tree-walker) or `adaptive` (02.05a JIT seam)
-  -h, --help         Print help
-  -V, --version      Print version
+      --tier <MODE>       Execution tier mode: `0` (tree-walker), `bytecode`, or `adaptive` (02.05a JIT seam). `jit` is an accepted alias for `adaptive`
+      --tier-seam <SPEC>  Explicit per-function tier overrides for the fp-rollout 03 seam. Comma-separated `tier:name` entries, e.g. `bytecode:outer,adaptive:mid,bytecode:inner`. Must be paired with `--tier bytecode` to exercise the mixed chain; default OFF
+  -h, --help              Print help
+  -V, --version           Print version
 ```
 
 ## `ap-obj-eval` (crate `ap-cli`)
