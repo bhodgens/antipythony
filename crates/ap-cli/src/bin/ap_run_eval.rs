@@ -24,9 +24,17 @@ use std::io::Write;
 #[derive(Parser)]
 #[command(name = "ap-run-eval", version)]
 struct Args {
-    /// Execution tier mode: `0` (tree-walker) or `adaptive` (02.05a JIT seam).
+    /// Execution tier mode: `0` (tree-walker), `bytecode`, or `adaptive`
+    /// (02.05a JIT seam). `jit` is an accepted alias for `adaptive`.
     #[arg(long, value_name = "MODE")]
     tier: Option<String>,
+
+    /// Explicit per-function tier overrides for the fp-rollout 03 seam.
+    /// Comma-separated `tier:name` entries, e.g.
+    /// `bytecode:outer,adaptive:mid,bytecode:inner`. Must be paired with
+    /// `--tier bytecode` to exercise the mixed chain; default OFF.
+    #[arg(long, value_name = "SPEC")]
+    tier_seam: Option<String>,
 
     /// Python source file to execute.
     file: String,
@@ -36,7 +44,11 @@ fn main() {
     // 2026-11-06 OOM mitigation: in-process RSS self-guard (see
     // ap_run::rss_guard). AP_MAX_RSS_GB overrides; default = 25% of RAM.
     ap_run::rss_guard::start();
-    let Args { tier, file: path } = Args::parse();
+    let Args {
+        tier,
+        tier_seam,
+        file: path,
+    } = Args::parse();
 
     if let Some(mode) = &tier {
         if mode != "0" && mode != "adaptive" && mode != "jit" && mode != "bytecode" {
@@ -82,6 +94,13 @@ fn main() {
                 Some("adaptive") | Some("jit") => ap_run::tier_flag::set("adaptive"),
                 Some("bytecode") => ap_run::tier_flag::set("bytecode"),
                 _ => {}
+            }
+            // fp-rollout 03: the explicit per-function override spec is
+            // consumed by install_tier_seam_for_registry inside run_module.
+            // Set it on the INTERPRETER thread (same env-on-thread that
+            // ap_run_probe uses) so no main-thread/global side effects.
+            if let Some(spec) = &tier_seam {
+                std::env::set_var("APX_TIER_SEAM_OVERRIDE", spec);
             }
             let mut out = std::io::stdout();
             let mut err = std::io::stderr();

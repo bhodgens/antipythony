@@ -78,6 +78,207 @@ impl TierMode {
     }
 }
 
+// ===========================================================================
+// fp-rollout 03: per-function tier dispatch seam
+// ===========================================================================
+//
+// `TIER_MODE` above is ONE thread-local mode for the whole run. That makes
+// the bytecode↔tier1 composition unreachable: `call_function` checks the
+// bytecode arm first, so a function body is always routed the same way.
+//
+// This seam adds an EXPLICIT per-function override, resolved by function
+// identity (the FnEntry's `Arc<FnDef>` pointer — the same cache key both
+// dispatch arms already use, so no source-marker parsing and no heuristic
+// that could silently misroute). The override table is process-global and
+// built ONCE from a single validated spec string:
+//
+//     APX_TIER_SEAM_OVERRIDE="bytecode:outer,adaptive:mid,bytecode:inner"
+//
+// Shape: comma-separated `tier:name` entries, tier ∈ {`bytecode`,
+// `adaptive`, `tree`}, `name` = a plain module-level function's `__name__`.
+// A malformed spec is a LOUD error (`init_tier` prints every rejection and
+// the run aborts with a nonzero rc) rather than a silent fallback. Names
+// that do not resolve to exactly ONE module-level def are also rejected —
+// duplicate names (nested defs / same-named defs in different scopes) are
+// ambiguous and therefore refuse to route. No default flips: with no spec
+// (the normal case, every existing gate) `tier_override()` returns None and
+// the one-mode-per-run dispatch is byte-for-byte unchanged.
+//
+// The exec counters below count every overridden call by its EFFECTIVE
+// tier; `report_line` emits `[TIER-SEAM-STATS]` when the override table is
+// non-empty, so a mixed chain that silently tree-walks cannot pass an
+// exercise gate.
+
+/// A dispatch tier chosen for one function by the explicit override spec.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeamTier {
+    Bytecode,
+    Adaptive,
+    Tree,
+}
+
+impl SeamTier {
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "bytecode" => Some(Self::Bytecode),
+            "adaptive" | "jit" => Some(Self::Adaptive),
+            "tree" | "0" => Some(Self::Tree),
+            _ => None,
+        }
+    }
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Bytecode => "bytecode",
+            Self::Adaptive => "adaptive",
+            Self::Tree => "tree",
+        }
+    }
+}
+
+/// The installed override table: function-identity pointer → chosen tier.
+/// `OnceLock` makes it process-global (all worker threads read the same
+/// table) and immutable after `init_tier`; `None` = no overrides installed.
+static TIER_SEAM: std::sync::OnceLock<HashMap<usize, SeamTier>> = std::sync::OnceLock::new();
+
+/// Resolved-name debug mirror: function name → (tier, fn_id), used only by
+/// the diagnostic line so each hot function's effective tier is observable
+/// without guessing from counters.
+static TIER_SEAM_NAMES: std::sync::OnceLock<Vec<(String, SeamTier, usize)>> =
+    std::sync::OnceLock::new();
+
+/// Per-effective-tier exec counters (relaxed; diagnostic-only).
+static SEAM_BYTECODE_EXECS: AtomicU64 = AtomicU64::new(0);
+static SEAM_ADAPTIVE_EXECS: AtomicU64 = AtomicU64::new(0);
+static SEAM_TREE_EXECS: AtomicU64 = AtomicU64::new(0);
+
+/// The diagnostic knob proving the mixed chain ran (independent of
+/// `APX_TIER_STATS` so a byte-only gate can opt in separately).
+fn seam_stats() -> bool {
+    std::env::var("APX_TIER_SEAM_STATS")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Install the override table from a validated spec. Called once from
+/// `init_tier` AFTER the module registry is published (see
+/// `install_tier_seam`), never on a background thread. `bad` collects every
+/// rejected entry so a typo is loud instead of a silent no-op.
+fn install_tier_seam(spec: &str, registry: &crate::interp::FnRegistry) -> Result<(), String> {
+    let mut raw: Vec<(String, SeamTier)> = Vec::new();
+    let mut bad: Vec<String> = Vec::new();
+    for (i, part) in spec.split(',').enumerate() {
+        let part = part.trim();
+        if part.is_empty() {
+            bad.push(format!("entry {i}: empty"));
+            continue;
+        }
+        let Some((tier_s, name)) = part.split_once(':') else {
+            bad.push(format!("entry {i}: expected 'tier:name', got {part:?}"));
+            continue;
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            bad.push(format!("entry {i}: empty function name"));
+            continue;
+        }
+        let Some(tier) = SeamTier::parse(tier_s.trim()) else {
+            bad.push(format!(
+                "entry {i}: unknown tier {:?} (expected bytecode|adaptive|tree)",
+                tier_s.trim()
+            ));
+            continue;
+        };
+        raw.push((name.to_string(), tier));
+    }
+    // Resolve each name against the MODULE-LEVEL registry by exact name.
+    // Ambiguity (two entries with the same name) is refused, not guessed.
+    let mut table: HashMap<usize, SeamTier> = HashMap::new();
+    let mut names: Vec<(String, SeamTier, usize)> = Vec::new();
+    for (name, tier) in &raw {
+        let matches = registry
+            .entry_ids()
+            .into_iter()
+            .filter(|id| registry.entry(*id).is_some_and(|e| e.def.name == *name))
+            .collect::<Vec<_>>();
+        if matches.len() != 1 {
+            bad.push(format!(
+                "name {name:?} resolved to {} module-level defs (expected exactly 1)",
+                matches.len()
+            ));
+            continue;
+        }
+        let Some(entry) = registry.entry(matches[0]) else {
+            bad.push(format!("name {name:?}: registry entry vanished"));
+            continue;
+        };
+        let ptr = Arc::as_ptr(&entry.def) as usize;
+        table.insert(ptr, *tier);
+        names.push((name.clone(), *tier, ptr));
+    }
+    if !bad.is_empty() {
+        return Err(format!(
+            "APX_TIER_SEAM_OVERRIDE rejected: {}",
+            bad.join("; ")
+        ));
+    }
+    names.sort_by(|a, b| a.0.cmp(&b.0));
+    let _ = TIER_SEAM.set(table);
+    let _ = TIER_SEAM_NAMES.set(names);
+    Ok(())
+}
+
+/// True when an explicit per-function override table is active.
+pub fn tier_seam_active() -> bool {
+    TIER_SEAM.get().is_some_and(|t| !t.is_empty())
+}
+
+/// Resolve the effective tier for one function. `None` = follow the
+/// run-wide mode (TIER_MODE), which is the default for every existing gate.
+pub fn tier_override(entry: &crate::frame::FnEntry) -> Option<SeamTier> {
+    let table = TIER_SEAM.get()?;
+    table.get(&(Arc::as_ptr(&entry.def) as usize)).copied()
+}
+
+/// Count one overridden call by its effective tier.
+pub fn note_seam_exec(tier: SeamTier) {
+    match tier {
+        SeamTier::Bytecode => {
+            SEAM_BYTECODE_EXECS.fetch_add(1, Ordering::Relaxed);
+        }
+        SeamTier::Adaptive => {
+            SEAM_ADAPTIVE_EXECS.fetch_add(1, Ordering::Relaxed);
+        }
+        SeamTier::Tree => {
+            SEAM_TREE_EXECS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// One-line exercise report, emitted from `report_line` when the override
+/// table is active (and enabled by APX_TIER_SEAM_STATS or APX_TIER_STATS).
+/// Per-function rows name the function, its assigned tier, its identity
+/// (fn_id) and the exact number of executed calls from the matching tier's
+/// counter, so a silent fallback cannot masquerade as a mixed chain.
+pub fn seam_stats_line() -> Option<String> {
+    if !tier_seam_active() || (!seam_stats() && !tier_stats()) {
+        return None;
+    }
+    let bc = SEAM_BYTECODE_EXECS.load(Ordering::Relaxed);
+    let jit = SEAM_ADAPTIVE_EXECS.load(Ordering::Relaxed);
+    let tree = SEAM_TREE_EXECS.load(Ordering::Relaxed);
+    let names = TIER_SEAM_NAMES.get().map(Vec::as_slice).unwrap_or(&[]);
+    let mut line =
+        format!("[TIER-SEAM-STATS] bytecode_execs={bc} adaptive_execs={jit} tree_execs={tree}");
+    // Total per-layer counters are aggregated; per-function rows show the
+    // resolved identity + assigned tier so the chain shape is explicit.
+    // Individual per-function counts are reported by the per-tier layer
+    // counters (BC-STATS / TIER-STATS / TIERUP-STATS), not duplicated here.
+    for (name, tier, ptr) in names {
+        line.push_str(&format!(" | {name}={}@{ptr:x}", tier.as_str()));
+    }
+    Some(line)
+}
+
 thread_local! {
     /// The process tier mode, set once by run_module (or env fallback).
     static TIER_MODE: std::cell::Cell<TierMode> =
@@ -316,6 +517,36 @@ pub fn tier_mode() -> TierMode {
     TIER_MODE.with(|t| t.get())
 }
 
+/// fp-rollout 03: install the per-function override table from
+/// `APX_TIER_SEAM_OVERRIDE`, resolved against the freshly-built module
+/// registry. Returns Err with every rejection reason; `exec_module` turns
+/// that into a loud Python-visible error instead of a silent no-op. The
+/// table is process-global and installed exactly once.
+pub fn install_tier_seam_for_registry(registry: &crate::interp::FnRegistry) -> Result<(), String> {
+    let Ok(spec) = std::env::var("APX_TIER_SEAM_OVERRIDE") else {
+        return Ok(()); // no spec: one-mode-per-run default, all gates unchanged
+    };
+    if spec.trim().is_empty() {
+        return Ok(());
+    }
+    let result = install_tier_seam(&spec, registry);
+    if result.is_ok() {
+        eprintln!(
+            "[TIER-SEAM] installed {} per-function overrides: {}",
+            TIER_SEAM_NAMES.get().map(Vec::len).unwrap_or(0),
+            TIER_SEAM_NAMES
+                .get()
+                .map(|v| v
+                    .iter()
+                    .map(|(n, t, _)| format!("{n}={}", t.as_str()))
+                    .collect::<Vec<_>>()
+                    .join(","))
+                .unwrap_or_default()
+        );
+    }
+    result
+}
+
 // ===========================================================================
 // 02.05f — the boxed OSR registry + dispatch arm.
 //
@@ -470,6 +701,46 @@ pub fn shutdown_tierup_driver() {
     tierup::shutdown_global();
 }
 
+/// fp-rollout 03: resolve the effective dispatch tier for one call. The
+/// explicit per-function override (when active) takes precedence over the
+/// run-wide mode; no override → unchanged one-mode-per-run behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectiveTier {
+    Tree,
+    Bytecode,
+    Adaptive,
+}
+
+pub fn effective_tier(entry: &crate::frame::FnEntry) -> EffectiveTier {
+    match tier_override(entry) {
+        Some(SeamTier::Tree) => EffectiveTier::Tree,
+        Some(SeamTier::Bytecode) => EffectiveTier::Bytecode,
+        Some(SeamTier::Adaptive) => EffectiveTier::Adaptive,
+        None => {
+            let mode = tier_mode();
+            if mode.bytecode_enabled() {
+                EffectiveTier::Bytecode
+            } else if mode.jit_enabled() {
+                EffectiveTier::Adaptive
+            } else {
+                EffectiveTier::Tree
+            }
+        }
+    }
+}
+
+/// Count one call by its effective tier (no-op unless the override table
+/// is active — keeps the default dispatch hot path free of atomics).
+pub fn note_effective_exec(tier: EffectiveTier) {
+    if tier_seam_active() {
+        match tier {
+            EffectiveTier::Tree => note_seam_exec(SeamTier::Tree),
+            EffectiveTier::Bytecode => note_seam_exec(SeamTier::Bytecode),
+            EffectiveTier::Adaptive => note_seam_exec(SeamTier::Adaptive),
+        }
+    }
+}
+
 fn tier_debug() -> bool {
     std::env::var("APX_TIER_DEBUG")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -520,6 +791,11 @@ pub fn report_line() {
     // Reads APX_BP_STATS itself — independent of the APX_TIER_STATS knob
     // below (which must NOT gate the histogram).
     if let Some(line) = crate::bytecode_interp::bp_hist_line() {
+        eprintln!("{line}");
+    }
+    // fp-rollout 03: per-function override exercise proof. Emitted only
+    // when an explicit override was installed (no default footprint).
+    if let Some(line) = seam_stats_line() {
         eprintln!("{line}");
     }
     if !tier_stats() {
