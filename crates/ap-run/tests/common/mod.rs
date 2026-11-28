@@ -153,6 +153,8 @@ impl HeavyGateLock {
         // Blocking flock: the second gate script waits here, it does not
         // fail. libc is a direct dependency of ap-run (os.utime arm), so it
         // is already in this test crate's dependency closure.
+        // SAFETY: flock(2) on our own opened fd with LOCK_EX is total; the
+        // kernel owns all lock state and the fd is valid for this process.
         let rc = unsafe { libc::flock(file.as_fd().as_raw_fd(), libc::LOCK_EX) };
         assert_eq!(rc, 0, "flock on heavy-gate lock failed");
         Self { file }
@@ -161,6 +163,8 @@ impl HeavyGateLock {
 
 impl Drop for HeavyGateLock {
     fn drop(&mut self) {
+        // SAFETY: flock(2) LOCK_UN on an fd we still own; releasing an
+        // already-released lock is a no-op (result ignored).
         let _ = unsafe { libc::flock(self.file.as_fd().as_raw_fd(), libc::LOCK_UN) };
         // Deliberately do NOT unlink: an unlink-after-release race lets the
         // waiting process's flock be held against a file no future acquirer
@@ -298,6 +302,9 @@ fn ap_run_probe_bin() -> std::path::PathBuf {
 fn memory_pressure_ok() -> bool {
     let mut level: libc::c_int = 0;
     let mut size = std::mem::size_of::<libc::c_int>();
+    // SAFETY: sysctlbyname with a static NUL-terminated name; old/newp pair
+    // is a live c_int + its exact size (kernel clamps size on short writes);
+    // the write side is NULL/0 (read-only query).
     let rc = unsafe {
         libc::sysctlbyname(
             c"kern.memorystatus_vm_pressure_level".as_ptr() as *const libc::c_char,
@@ -480,6 +487,11 @@ pub fn run_aprun_eval_with_env(src: &str, extra_env: &[(&str, &str)]) -> (Vec<u8
 /// watchdog counts consecutive failures and kills the probe (fail closed).
 #[cfg(target_os = "macos")]
 fn footprint_bytes_of(pid: u32) -> Option<u64> {
+    // SAFETY: proc_pid_rusage writes at most size_of(rusage_info_v0) bytes
+    // into `info` (a live, correctly-typed local cast to the opaque
+    // rusage_info_t*); RUSAGE_INFO_V0 is the version matching the struct;
+    // a dead/foreign pid just returns an error code. zeroed() on the plain
+    // C POD struct is a valid initial value.
     unsafe {
         let mut info: libc::rusage_info_v0 = std::mem::zeroed();
         let rc = libc::proc_pid_rusage(

@@ -77,7 +77,13 @@ fn gate_wait_secs() -> Option<u64> {
 /// guard: a reused PID has a different start time.
 #[cfg(target_os = "macos")]
 pub fn process_start_time_secs(pid: u32) -> Option<u64> {
+    // SAFETY: zeroed proc_bsdinfo is a valid all-zero representation of the
+    // plain C struct; proc_pidinfo fully overwrites it when it returns
+    // success (checked against size_of below) and only reads the pid int.
     let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    // SAFETY: raw-pointer arg points at `info` (live, correctly typed,
+    // writable for the call's duration — single-threaded use here); length
+    // is exactly size_of::<proc_bsdinfo>(); libc validates the pid.
     let n = unsafe {
         libc::proc_pidinfo(
             pid as libc::c_int,
@@ -134,6 +140,8 @@ fn holder_liveness(pid: u32, recorded_start: u64) -> HolderLiveness {
             // Uninspectable: fall back to signal-0 probing. On EPERM (a
             // foreign-uid process with the same pid) treat as Gone — the
             // takeover attempt is still protected by LOCK_NB.
+            // SAFETY: kill(pid, 0) performs only existence/permission
+            // checks — no memory is touched; a bogus pid is a harmless ESRCH.
             let rc = unsafe { libc::kill(pid as libc::c_int, 0) };
             if rc == 0 {
                 HolderLiveness::Reused
@@ -190,6 +198,8 @@ fn write_holder_record(file: &mut std::fs::File) {
 fn try_flock_ex(file: &std::fs::File) -> bool {
     use std::os::fd::AsFd as _;
     use std::os::fd::AsRawFd as _;
+    // SAFETY: flock(2) LOCK_EX|LOCK_NB on our own opened fd — kernel-side
+    // only, the fd is valid for this process's lifetime here.
     let rc = unsafe { libc::flock(file.as_fd().as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
     rc == 0
 }
