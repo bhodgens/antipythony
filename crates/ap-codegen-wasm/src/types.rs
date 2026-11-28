@@ -1067,6 +1067,8 @@ pub const FT_STOP_ITER: u32 = 109;
 /// leaf wasm-strplus: (i64 n, $str s) -> $str — str repetition (`'s' * n`;
 /// appended after FT_STOP_ITER; ids never move).
 pub const FT_S_REPEAT: u32 = 110;
+/// 111 (leaf wasm-w2w3): attr_get chain + AttributeError raise on miss.
+pub const FT_ATTR_GET_EXC: u32 = 111;
 
 pub fn append_class_exc_fts(types: &mut wasm_encoder::TypeSection) {
     let o = || pyobj_ref();
@@ -1183,6 +1185,9 @@ pub fn append_class_exc_fts(types: &mut wasm_encoder::TypeSection) {
     types.ty().function([o(), i32v()], [o()]);
     // 110 FT_S_REPEAT (leaf wasm-strplus): (i64 n, $str s) -> $str
     types.ty().function([i64v(), sg()], [sg()]);
+    // 111 FT_ATTR_GET_EXC (leaf wasm-w2w3): (o obj, str name) -> o — the
+    //     attr_get chain + CPython AttributeError raise on miss
+    types.ty().function([o(), sg()], [o()]);
 }
 
 /// The `$tag_pyexc` wasm tag index (declared once, payload FT_TAG).

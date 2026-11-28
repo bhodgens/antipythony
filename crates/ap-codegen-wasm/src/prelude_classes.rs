@@ -2026,6 +2026,111 @@ fn attr_get(
 }
 
 // ---------------------------------------------------------------------------
+// attr_get_or_raise (FN_ATTR_GET_EXC, leaf wasm-w2w3 / W3): (o obj, str name)
+// -> o — the FULL attr_get chain, then a null verdict: hit -> return the
+// value; miss -> raise AttributeError("<type name>' object has no attribute
+// '<name>'") with the CPython message assembled via STR_CAT chains, tb
+// snapshot filled, thrown through $tag_pyexc. The old D12d guard only
+// covered the method-CALL path and answered the SHORT message; every bare
+// attribute READ (Expr::Attribute) returned null and Stmt::ExprStmt dropped
+// it — rc=0, zero output, zero traceback (audit W3: the silent swallow).
+// Locals: 2..4=oref pad/hit (3=hit) 5..7=str (5=acc 6=tmp) 8=exc scratch
+// ---------------------------------------------------------------------------
+pub(crate) fn attr_get_or_raise(
+    funcs: &mut wasm_encoder::FunctionSection,
+    code: &mut wasm_encoder::CodeSection,
+    strings: &mut StrTab,
+    g: &FrameGlobals,
+) {
+    let (q_off, q_len) = strings.push("'");
+    let (suffix_off, suffix_len) = strings.push("' object has no attribute '");
+    let (close_off, close_len) = strings.push("'");
+    add(
+        funcs,
+        code,
+        FT_ATTR_GET_EXC,
+        &[
+            (1, oref()),    // 2 = pad
+            (2, oref()),    // 3 = hit, 4 = pad
+            (3, str_ref()), // 5 = msg acc, 6/7 = pad str slots
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_EXCEPTION),
+                }),
+            ), // 8 = exc scratch
+        ],
+        |f| {
+            // hit = attr_get(obj, name) — the full chain rides FN_ATTR_GET
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::Call(fx::FN_ATTR_GET));
+            f.instruction(&Instruction::LocalSet(3));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            // ---- miss: AttributeError("'" + type_name(obj) + "' object has
+            // no attribute '" + name + "'") — CPython byte-exact
+            // msg = "'"
+            lit_str(f, q_off, q_len);
+            f.instruction(&Instruction::LocalSet(5));
+            // + type_name(obj)
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::Call(fx::FN_TYPE_NAME));
+            f.instruction(&Instruction::LocalSet(6));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::LocalGet(6));
+            f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+            f.instruction(&Instruction::LocalSet(5));
+            // + "' object has no attribute '"
+            // + "' object has no attribute '"
+            lit_str(f, suffix_off, suffix_len);
+            f.instruction(&Instruction::LocalSet(7));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::LocalGet(7));
+            f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+            f.instruction(&Instruction::LocalSet(5));
+            // + name
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+            f.instruction(&Instruction::LocalSet(5));
+            // + "'"
+            lit_str(f, close_off, close_len);
+            f.instruction(&Instruction::LocalSet(6));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::LocalGet(6));
+            f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+            f.instruction(&Instruction::LocalSet(5));
+            // exc = exc_new(AttributeError, (msg,)); tb + throw
+            f.instruction(&Instruction::GlobalGet(
+                crate::types::exc_type_global("AttributeError").unwrap_or(0),
+            ));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::ArrayNewFixed {
+                array_type_index: T_OBJ_ARR_RO,
+                array_size: 1,
+            });
+            f.instruction(&Instruction::Call(fx::FN_EXC_NEW));
+            f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
+            f.instruction(&Instruction::LocalSet(8));
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::GlobalGet(g.frame_head));
+            f.instruction(&Instruction::StructSet {
+                struct_type_index: T_EXCEPTION,
+                field_index: F_EXC_TB,
+            });
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::Throw(TAG_PYEXC));
+            f.instruction(&Instruction::End);
+            // ---- hit
+            f.instruction(&Instruction::LocalGet(3));
+        },
+    );
+}
+
+// ---------------------------------------------------------------------------
 // attr_set (FN_ATTR_SET): (o obj, str name, o v) -> () — instance attrs dict
 // write; on a CLASS object ($type) writes the class namespace dict.
 // Locals: 3=obj 4=name 5=v 6=d 7=t

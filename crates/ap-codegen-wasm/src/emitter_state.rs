@@ -116,12 +116,18 @@ pub const FN_BOUND_OBJ: u32 = 75; // (o receiver) -> o  self for the call (null 
                                   // leaf wasm-strplus: str repetition driver, appended after py_call — dense,
                                   // never renumbered. FN_FIRST_USER moves 75 -> 76 for it.
 pub const FN_STR_REPEAT: u32 = 76; // (i64 count, str) -> str  's' * n
+                                   // leaf wasm-w2w3 (W3): attr read with the CPython AttributeError raise on
+                                   // miss, appended after FN_STR_REPEAT — dense, never renumbered. FN_FIRST_USER
+                                   // moves 77 -> 78 for it.
+pub const FN_ATTR_GET_EXC: u32 = 77; // (o obj, str name) -> o  attr_get + raise
 /// First wasm function index of the EMITTED user functions (Item::FnDef /
 /// Stmt::LocalDef), which follow the prelude densely. `_start` is
 /// computed at emit time as FN_FIRST_USER + n_user_fns.
 /// leaf wasm-strplus: str_repeat appended AFTER emit_super_mro (lower.rs) —
 /// emit order IS index assignment: 76 = the next slot after FN_BOUND_OBJ(75).
 /// FN_FIRST_USER moves 76 -> 77 for it.
+/// leaf wasm-w2w3: attr_get_or_raise appended in emit_all AFTER tb_render —
+/// FN_FIRST_USER moves 77 -> 78 for it (attr_get_or_raise is 77).
 /// NOTE: main's FN_APPEND_F64(76)/FN_FLOAT_TO_STR(77)/FN_WIDEN_128(78)
 /// constants are PHANTOM — those three helpers are emitted inside emit()
 /// at indices ~35-37 (emit runs first), so their const values are wrong on
@@ -129,7 +135,7 @@ pub const FN_STR_REPEAT: u32 = 76; // (i64 count, str) -> str  's' * n
 /// renumbering this leaf; calls never reached it because no wasm corpus
 /// case printed a float. The constants need renumbering to the real
 /// emit-order slots in a follow-up leaf.
-pub const FN_FIRST_USER: u32 = 77;
+pub const FN_FIRST_USER: u32 = 78;
 
 /// rt_init is index 3 (03.03 layout: 0 fd_write, 1 abort_msg, 2 proc_exit,
 /// 3 rt_init — proc_exit joined the imports for the uncaught-traceback

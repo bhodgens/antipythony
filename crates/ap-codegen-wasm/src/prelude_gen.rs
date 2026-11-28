@@ -515,9 +515,11 @@ pub(crate) fn iter_next(
 
 // ---------------------------------------------------------------------------
 // iter_contains (FN_ITER_CONTAINS / FT_ITER_CONTAINS): (o iterable, o item)
-// -> i32 — linear eq() scan over $list/$tuple items (the `in` surface for
-// the corpus slice; dict/set ride FN_DICT_HAS separately, str substring
-// rides the str_eq prefix arm — both deferred to their leaves).
+// -> i32 — `in` dispatch: a $str/$str pair is the CPython SUBSTRING test
+// (leaf wasm-w2w3: the old body RefTest'd $tuple/$list only, so any str
+// container RefCast to $tuple TRAPPED — probe pa: 'a' in 'abc' trap at
+// fn 65); everything else keeps the linear eq() scan over $list/$tuple
+// items. dict/set ride FN_DICT_HAS separately (not routed here).
 // Locals: 0=it 1=item 2=i 3=n 4=items(RO arr) 5=cur 6=found
 // ---------------------------------------------------------------------------
 pub(crate) fn iter_contains(
@@ -547,9 +549,233 @@ pub(crate) fn iter_contains(
                     heap_type: hc(T_OBJ_ARR),
                 }),
             ), // local 7 = items MUT-arr ($list.items type — lesson 9:
-                               // a mut array ref cannot ride the RO local)
+            // a mut array ref cannot ride the RO local)
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_STR),
+                }),
+            ), // local 8 = haystack ($str; null = container is not a $str)
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_STR),
+                }),
+            ), // local 9 = needle ($str; null = item is not a $str)
+            (1, ValType::I32), // local 10 = window start
+            (1, ValType::I32), // local 11 = walk cursor
+            (1, ValType::I32), // local 12 = substring verdict (0 miss / 1 hit)
         ],
         |f| {
+            // ---- leaf wasm-w2w3: str-in-str substring arm ----
+            // CPython: item in str -> substring test. Both operands must be
+            // $str (haystack AND needle — `'a' in ['a','b']` is the list
+            // eq scan, `'a' in ('a',)` the tuple one; those fall through).
+            // kind 0 (latin1 byte) strings only: nothing in the emitter
+            // builds $str16/$str32 yet (types.rs declares the subtypes for
+            // G-4; no StructNew(T_STR16/T_STR32) emission site exists), so
+            // RefCastNullable($str) + the base byte arrays cover the real
+            // surface. A multi-byte operand pair would need the data16/
+            // data32 arms — recorded, not built.
+            //
+            // CPython semantics: '' in s -> True; x in '' -> False (only ''
+            // matches); the naive walk terminates at n_hay - n_needle.
+            // Locals 8/9 are NULLABLE $str stashes (NOT bare casts — a
+            // non-str container must reach the list/tuple path unharmed; a
+            // cast here would trap on exactly the shapes W2 fixed).
+            // ENGINE FACT (learned the hard way, probe pa): Br depth is
+            // counted from INSIDE the If — a `Br(2)` inside an If(Empty)
+            // targets the enclosing Block at depth 1 only when one Block
+            // sits between; the honest multi-level exit is a VERDICT LOCAL
+            // (12) + a plain fall-through, no cross-level Br at all.
+            // haystack stash — REFTEST-GUARDED: RefCastNullable TRAPS on a
+            // non-null wrong type (pin2 probe: the [1,2] list container hit
+            // exactly that at the first instruction), so the test arm does
+            // the cast and the else arm stashes null.
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::RefTestNullable(hc(T_STR)));
+            f.instruction(&Instruction::If(BlockType::Result(str_ref_val())));
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::RefNull(hc(T_STR)));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalSet(8));
+            // needle stash (null when the item is not a $str) — same guard
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::RefTestNullable(hc(T_STR)));
+            f.instruction(&Instruction::If(BlockType::Result(str_ref_val())));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::RefNull(hc(T_STR)));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalSet(9));
+            // verdict = 1 (substring) only when BOTH stashes are non-null;
+            // 0 means "not a str/str pair -> the list/tuple scan below".
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalSet(12));
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            // haystack not a $str: verdict stays 0 -> fall to the scan
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            // $str container but non-$str item: CPython scans with __eq__ —
+            // the eq() scan below covers it; verdict stays 0.
+            f.instruction(&Instruction::Else);
+            // ---- real str/str substring test -> verdict 1 on match ----
+            // needle longer than haystack -> no match (verdict stays 0;
+            // covers 'x' in '')
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+            f.instruction(&Instruction::StructGet {
+                struct_type_index: T_STR,
+                field_index: F_STR_LEN,
+            });
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+            f.instruction(&Instruction::StructGet {
+                struct_type_index: T_STR,
+                field_index: F_STR_LEN,
+            });
+            f.instruction(&Instruction::I32GtU);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::Else);
+            // needle == "" -> '' in s is True (set the verdict directly;
+            // the window bound n_hay - 0 would otherwise run one window
+            // too many and the cursor test >= 0 fires inside it anyway —
+            // the direct arm is clearer and branch-exact).
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+            f.instruction(&Instruction::StructGet {
+                struct_type_index: T_STR,
+                field_index: F_STR_LEN,
+            });
+            f.instruction(&Instruction::I32Eqz);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::LocalSet(12));
+            f.instruction(&Instruction::Else);
+            // windows: start = 0 ..= n_hay - n_needle (inclusive)
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalSet(10)); // start = 0
+            f.instruction(&Instruction::Block(BlockType::Empty));
+            f.instruction(&Instruction::Loop(BlockType::Empty));
+            // start > n_hay - n_needle -> every window failed -> done (0)
+            f.instruction(&Instruction::LocalGet(10));
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+            f.instruction(&Instruction::StructGet {
+                struct_type_index: T_STR,
+                field_index: F_STR_LEN,
+            });
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+            f.instruction(&Instruction::StructGet {
+                struct_type_index: T_STR,
+                field_index: F_STR_LEN,
+            });
+            f.instruction(&Instruction::I32Sub);
+            f.instruction(&Instruction::I32GtU);
+            f.instruction(&Instruction::BrIf(1)); // -> outer Block end
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalSet(11)); // cursor = 0
+            f.instruction(&Instruction::Block(BlockType::Empty));
+            f.instruction(&Instruction::Loop(BlockType::Empty));
+            // cursor >= needle len -> full match -> verdict 1, break out
+            f.instruction(&Instruction::LocalGet(11));
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+            f.instruction(&Instruction::StructGet {
+                struct_type_index: T_STR,
+                field_index: F_STR_LEN,
+            });
+            f.instruction(&Instruction::I32GeU);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::LocalSet(12));
+            f.instruction(&Instruction::Br(2)); // break: inner Loop+Block
+            f.instruction(&Instruction::End);
+            // hay[start+cursor] != needle[cursor] -> next window
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+            f.instruction(&Instruction::StructGet {
+                struct_type_index: T_STR,
+                field_index: F_STR_DATA,
+            });
+            f.instruction(&Instruction::LocalGet(10));
+            f.instruction(&Instruction::LocalGet(11));
+            f.instruction(&Instruction::I32Add);
+            f.instruction(&Instruction::ArrayGetU(T_BYTE_ARR));
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+            f.instruction(&Instruction::StructGet {
+                struct_type_index: T_STR,
+                field_index: F_STR_DATA,
+            });
+            f.instruction(&Instruction::LocalGet(11));
+            f.instruction(&Instruction::ArrayGetU(T_BYTE_ARR));
+            f.instruction(&Instruction::I32Ne);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::Br(2)); // break to the windows Loop
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(11));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Add);
+            f.instruction(&Instruction::LocalSet(11));
+            f.instruction(&Instruction::Br(0));
+            f.instruction(&Instruction::End); // inner Loop
+            f.instruction(&Instruction::End); // inner Block
+            f.instruction(&Instruction::LocalGet(12));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::Br(2)); // matched: exit windows Loop+Block
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(10));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Add);
+            f.instruction(&Instruction::LocalSet(10));
+            f.instruction(&Instruction::Br(0));
+            f.instruction(&Instruction::End); // windows Loop
+            f.instruction(&Instruction::End); // windows Block
+            f.instruction(&Instruction::End); // needle-empty If
+            f.instruction(&Instruction::End); // needle-longer If
+            f.instruction(&Instruction::End); // needle-null If
+            f.instruction(&Instruction::End); // haystack-null If
+                                              // $str container (haystash non-null)? -> the verdict IS the
+                                              // answer either way: 1 = substring hit, 0 = miss (CPython `not
+                                              // in` negates at the use site). Falling into the list/tuple
+                                              // scan would RefCast the $str to $tuple and TRAP — the exact
+                                              // W2 shape (probes pa/pi hit it on the 'z' not in 'abc' link).
+                                              // Both arms of this If leave exactly ONE i32 (the fn result;
+                                              // 03.02c: If arms must agree with the block result type).
+                                              // is a $str container? -> the verdict IS the answer (1 hit /
+                                              // 0 miss; `not in` negates at the use site). Then-arm RETURNS;
+                                              // fall-through = the $list/$tuple eq() scan (unchanged shape).
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::I32Eqz);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(12));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // $dict container? -> FN_DICT_HAS (str-keyed membership; the
+            // CF021 dict row — a dict here used to RefCast to $tuple and
+            // trap, pre-existing on main).
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::RefTestNullable(hc(T_DICT)));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::Call(fx::FN_DICT_HAS));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // ---- $list/$tuple scan (not a $str container) ----
+
             // items + n from $list or $tuple (If/Else probe — the Block+Br
             // shape branches out of the nesting level: wasmtime-47 rejects
             // br-to-fn-label stack shapes; ENGINE FACT 03.02b notes).
@@ -995,4 +1221,12 @@ pub fn emit_gen_drains(
     crate::prelude_gen_drain::sum_drain(funcs, code);
     // 03.04g: dict-from-pairs (FN_DICT_DRAIN=73) — FN_FIRST_USER moves 73->74.
     crate::prelude_gen_drain::dict_drain(funcs, code);
+}
+
+/// nullable `(ref null $str)` ValType (iter_contains substring stash arms).
+fn str_ref_val() -> ValType {
+    ValType::Ref(wasm_encoder::RefType {
+        nullable: true,
+        heap_type: hc(T_STR),
+    })
 }

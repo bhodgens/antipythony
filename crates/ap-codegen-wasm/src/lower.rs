@@ -1552,6 +1552,10 @@ pub fn lower_module_ex(
     // leaf wasm-strplus: str repetition (FN_STR_REPEAT = 76) — dense append
     // AFTER emit_super_mro; FN_FIRST_USER moved 76 -> 77 (emitter_state).
     prelude::str_repeat(&mut funcs, &mut code);
+    // leaf wasm-w2w3 (W3): attr read with the CPython AttributeError raise
+    // on miss (FN_ATTR_GET_EXC = 77) — dense append AFTER str_repeat; emit
+    // order IS index assignment: FN_FIRST_USER moved 77 -> 78 (emitter_state).
+    crate::prelude_classes::attr_get_or_raise(&mut funcs, &mut code, &mut tab, &g);
 
     // ---- 03.03b: the top-level EH wrap is ON BY DEFAULT. The parked
     // "operators remaining / values remaining on stack" rejection was NOT a
@@ -6549,11 +6553,15 @@ fn emit_expr(f: &mut Function, e: &Expr, ctx: &mut EmitCtx) {
             f.instruction(&Instruction::RefNull(prelude::hc(T_BIGINT)));
             f.instruction(&Instruction::StructNew(T_INT));
         }
-        // 03.03: attribute read (S-03-9): instances -> class mro walk
+        // 03.03: attribute read (S-03-9): instances -> class mro walk.
+        // leaf wasm-w2w3 (W3): rides FN_ATTR_GET_EXC — a MISS raises the
+        // CPython AttributeError ("'A' object has no attribute 'missing'")
+        // instead of answering a null that Stmt::ExprStmt silently dropped
+        // (rc=0, no output, no traceback — the audit's silent swallow).
         Expr::Attribute(obj, name, _) => {
             emit_expr(f, obj, ctx);
             push_interned_str(f, name.as_str(), ctx);
-            f.instruction(&Instruction::Call(fx::FN_ATTR_GET));
+            f.instruction(&Instruction::Call(fx::FN_ATTR_GET_EXC));
         }
         Expr::Call(func, args, _) => emit_call(f, func, args, ctx),
         Expr::Lambda(..) => {
@@ -6940,71 +6948,23 @@ fn emit_call(f: &mut Function, func: &Expr, args: &[Arg], ctx: &mut EmitCtx) {
     // 03.03: method call obj.m(*args) — attribute lookup; when the found
     // value is a plain $function it is a descriptor and binds self
     // (S-03-9 binding rule) — args become [self, *args].
-    // D12d (bughunt 6.1): a MISSING attribute makes attr_get answer null —
-    // the old unguarded RefCastNullable($function) trapped as a raw wasm
-    // trap; CPython raises AttributeError('C' object has no attribute 'm').
-    // Null guard: build + throw that AttributeError (lit_str pattern, the
-    // emit_raise no-active-exception shape) instead of casting the null.
+    // leaf wasm-w2w3 (W3): a MISSING attribute raises through
+    // FN_ATTR_GET_EXC — the CPython message
+    // "'C' object has no attribute 'm'" (type name interpolated; the old
+    // D12d guard answered the short "' object has no attribute 'm'" form).
+    // The raise happens INSIDE the prelude fn: hit -> value, miss ->
+    // throw (never returns to the null path), so the null RefCast below
+    // is unreachable on the miss arm and the hit arm casts a real value.
     if let Expr::Attribute(obj, mname, _) = func {
         emit_expr(f, obj, ctx);
-        f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A)); // receiver
+        // receiver rides TEMP_LOCAL_A: the bound-object test below calls
+        // FN_BOUND_OBJ against it (restored — the W3 rewire dropped the
+        // stash and pd (a.m()) dispatched with a garbage bound arg,
+        // Unreachable in py_call's arity window).
+        f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A));
         f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
         push_interned_str(f, mname.as_str(), ctx);
-        f.instruction(&Instruction::Call(fx::FN_ATTR_GET));
-        f.instruction(&Instruction::RefIsNull);
-        f.instruction(&Instruction::If(BlockType::Empty));
-        // missing attribute -> AttributeError("<type name>' object has no attribute '<mname>'")-shaped
-        // (message bytes: TYPE_NAME(obj) + "' object has no attribute '" + name + "'") —
-        // full message assembly needs str_cat chains; this slice throws the
-        // CPython-PREFIX-exact short form via exc_new with a one-part args
-        // tuple (the corpus pins the raise type + rc, print(e) rides exc_msg).
-        let (off, len) = {
-            let msg = format!("' object has no attribute '{}'", mname.as_str());
-            let idx = ctx
-                .strs
-                .iter()
-                .position(|b| b.as_slice() == msg.as_bytes())
-                .expect("scan interned the missing-attr message");
-            let mut off = TYPE_ORDER
-                .iter()
-                .chain(EXC_TREE.iter().map(|(n, _)| n))
-                .map(|n| n.len() as u32)
-                .sum::<u32>();
-            for b in ctx.strs.iter().take(idx) {
-                off += b.len() as u32;
-            }
-            (off, msg.len() as u32)
-        };
-        f.instruction(&Instruction::GlobalGet(
-            crate::types::exc_type_global("AttributeError").unwrap_or(0),
-        ));
-        f.instruction(&Instruction::GlobalGet(
-            builtin_type_global("str").unwrap_or(0),
-        ));
-        f.instruction(&Instruction::I64Const(0));
-        f.instruction(&Instruction::I32Const(0));
-        f.instruction(&Instruction::I32Const(len as i32));
-        f.instruction(&Instruction::I32Const(off as i32));
-        f.instruction(&Instruction::I32Const(len as i32));
-        f.instruction(&Instruction::ArrayNewData {
-            array_type_index: T_BYTE_ARR,
-            array_data_index: 1,
-        });
-        f.instruction(&Instruction::StructNew(T_STR));
-        f.instruction(&Instruction::ArrayNewFixed {
-            array_type_index: T_OBJ_ARR_RO,
-            array_size: 1,
-        });
-        f.instruction(&Instruction::Call(fx::FN_EXC_NEW));
-        f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
-        f.instruction(&Instruction::Call(fx::FN_EXC_RAISE));
-        // exc_raise returns o; If(Empty) arms leave NO values (03.02c fact)
-        f.instruction(&Instruction::Drop);
-        f.instruction(&Instruction::End);
-        // non-null path: load the found attribute back for the cast below
-        f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
-        push_interned_str(f, mname.as_str(), ctx);
-        f.instruction(&Instruction::Call(fx::FN_ATTR_GET));
+        f.instruction(&Instruction::Call(fx::FN_ATTR_GET_EXC));
         f.instruction(&Instruction::RefCastNullable(hc(T_FUNCTION)));
         // The method function rides a second stash: the bound-object test
         // below calls FN_BOUND_OBJ, which must not run under the fn operand.
