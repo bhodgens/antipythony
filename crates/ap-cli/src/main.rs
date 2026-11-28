@@ -60,8 +60,11 @@ fn usage() -> i32 {
 
 fn run(args: &[String]) -> Result<i32, String> {
     let mut i = 1;
-    // Pre-scan for --tier (accepted on every verb, forwarded to execution).
+    // Pre-scan for --tier / --tier-seam (accepted on every verb, forwarded
+    // to execution). fp-rollout 03: the override spec is an explicit opt-in
+    // seam; no default flips.
     let mut tier: Option<String> = None;
+    let mut tier_seam: Option<String> = None;
     while i < args.len() {
         match args[i].as_str() {
             "--tier" => {
@@ -74,6 +77,18 @@ fn run(args: &[String]) -> Result<i32, String> {
             }
             other if other.starts_with("--tier=") => {
                 tier = Some(other["--tier=".len()..].to_string());
+                i += 1;
+            }
+            "--tier-seam" => {
+                tier_seam = Some(
+                    args.get(i + 1)
+                        .ok_or("antipythony: --tier-seam requires a spec (tier:name,...))")?
+                        .clone(),
+                );
+                i += 2;
+            }
+            other if other.starts_with("--tier-seam=") => {
+                tier_seam = Some(other["--tier-seam=".len()..].to_string());
                 i += 1;
             }
             _ => break,
@@ -105,7 +120,7 @@ fn run(args: &[String]) -> Result<i32, String> {
         Some("--notices") | Some("notices") => Ok(ap_cli::notices::cmd_notices()),
         Some("new") => cmd_new(&rest),
         Some("add") => cmd_add(&rest),
-        Some("run") => cmd_run(&rest, false, tier.as_deref()),
+        Some("run") => cmd_run(&rest, false, tier.as_deref(), tier_seam.as_deref()),
         Some("build") => cmd_build(&rest),
         Some("build-ext") => build_ext::build_ext(&rest).map(|_| 0),
         Some("cache") => cmd_cache(&rest),
@@ -113,12 +128,12 @@ fn run(args: &[String]) -> Result<i32, String> {
         // Single-file legacy form: `antipythony file.py` (02.02 seam).
         Some(other) if other.ends_with(".py") => {
             let r2: Vec<&str> = vec![other];
-            cmd_run(&r2, false, tier.as_deref())
+            cmd_run(&r2, false, tier.as_deref(), tier_seam.as_deref())
         }
         Some(other) if other != "run" && rest.iter().any(|a| a.ends_with(".py")) => {
             // `--tier 0 file.py` fell through the pre-scan into verb position.
             let r2: Vec<&str> = std::iter::once(other).chain(rest.iter().copied()).collect();
-            cmd_run(&r2, false, tier.as_deref())
+            cmd_run(&r2, false, tier.as_deref(), tier_seam.as_deref())
         }
         Some(other) => {
             eprintln!("antipythony: unexpected argument '{other}'");
@@ -358,7 +373,12 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<(), String> {
 // run
 // ---------------------------------------------------------------------------
 
-fn cmd_run(rest: &[&str], _wasm: bool, tier: Option<&str>) -> Result<i32, String> {
+fn cmd_run(
+    rest: &[&str],
+    _wasm: bool,
+    tier: Option<&str>,
+    tier_seam: Option<&str>,
+) -> Result<i32, String> {
     let mut path: Option<String> = None;
     let mut no_cache = false;
     let mut wasm = false;
@@ -491,6 +511,7 @@ fn cmd_run(rest: &[&str], _wasm: bool, tier: Option<&str>) -> Result<i32, String
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| path.clone());
     let tier_owned = tier.map(|s| s.to_string());
+    let tier_seam_owned = tier_seam.map(|s| s.to_string());
     let exit_code = std::thread::Builder::new()
         .stack_size(256 << 20)
         .spawn(move || {
@@ -500,7 +521,13 @@ fn cmd_run(rest: &[&str], _wasm: bool, tier: Option<&str>) -> Result<i32, String
             match tier_owned.as_deref() {
                 Some("0") => ap_run::tier_flag::set("0"),
                 Some("bytecode") => ap_run::tier_flag::set("bytecode"),
+                Some("adaptive") | Some("jit") => ap_run::tier_flag::set("adaptive"),
                 _ => {}
+            }
+            // fp-rollout 03: explicit per-function override spec (consumed
+            // inside run_module's exec_module seam).
+            if let Some(spec) = &tier_seam_owned {
+                std::env::set_var("APX_TIER_SEAM_OVERRIDE", spec);
             }
             let mut out = std::io::stdout();
             let mut err = std::io::stderr();

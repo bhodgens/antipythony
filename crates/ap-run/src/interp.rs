@@ -661,13 +661,24 @@ impl FnRegistry {
     /// The Vec borrow never outlives the call. 02.07: entries are now
     /// mutated in place during imports while worker threads read them —
     /// transient-borrow retry (writes are entry-atomic).
-    pub(crate) fn entry(&self, fn_id: u32) -> Option<FnEntry> {
+    pub fn entry(&self, fn_id: u32) -> Option<FnEntry> {
         // 02.09b P7 (F1): RwLock read — no retry loop, no panic fallback.
         self.entries
             .read()
             .unwrap_or_else(|p| p.into_inner())
             .get(fn_id as usize)
             .cloned()
+    }
+
+    /// fp-rollout 03 seam: stable module-level function ids (Vec indices).
+    /// Used only by the explicit per-function tier override resolver.
+    pub fn entry_ids(&self) -> Vec<u32> {
+        let n = self
+            .entries
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .len();
+        (0..n as u32).collect()
     }
 
     /// Snapshot of the module-level entries (legacy `interp.functions`
@@ -759,6 +770,16 @@ fn exec_module(
     ));
     *interp.registry.lock().unwrap_or_else(|p| p.into_inner()) = Some(reg.clone());
     *interp.functions.lock().unwrap_or_else(|p| p.into_inner()) = reg.entries_snapshot();
+
+    // fp-rollout 03: install the explicit per-function tier override table
+    // against the freshly-built module registry. No spec (every existing
+    // gate) = no-op; a bad spec is a loud error below rather than a silent
+    // fallback to one-mode-per-run.
+    if let Err(why) = crate::jit_hook::install_tier_seam_for_registry(&reg) {
+        // A malformed spec is a LOUD error (rc=1 + traceback on stderr),
+        // never a silent fallback to one-mode-per-run.
+        return Err(crate::exc_hier::ExceptionValue::msg("ValueError", &why));
+    }
 
     // 02.05a-residual: eager warm pass (compile cache / fallback table for
     // every module-level def BEFORE the first call — execs stays
@@ -9981,6 +10002,17 @@ fn call_function(
             return start_generator(interp, entry, o, args, kwargs);
         }
     }
+    // fp-rollout 03: resolve ONE effective tier per call from the explicit
+    // per-function override (when active) else the run-wide mode. The
+    // default (no override table) reproduces the old bytecode-first/JIT-
+    // second/Tree-fallback chain exactly — all existing gates unchanged.
+    let eff = crate::jit_hook::effective_tier(&entry);
+    // Only overridden functions are counted in the seam's per-tier exec
+    // table — the thread worker / unrelated defs run at their own tier and
+    // must not pollute the mixed-chain exercise proof.
+    if crate::jit_hook::tier_override(&entry).is_some() {
+        crate::jit_hook::note_effective_exec(eff);
+    }
     let result: Result<Value, Flow> = if let Some(body) = lambda_body {
         eval_expr(interp, &frame, &body, &current_registry(interp))
     } else if let Some(aot_idx) = crate::aot_runtime::entry_for(&def.name) {
@@ -9990,24 +10022,32 @@ fn call_function(
         // resolve (manifest qualnames are main-module def names);
         // everything else falls through the routes below untouched.
         crate::aot_runtime::call_body(aot_idx, interp, &frame, &entry)
-    } else if crate::jit_hook::tier_mode().bytecode_enabled() {
+    } else if eff == crate::jit_hook::EffectiveTier::Bytecode {
         // fast-path leaf 00-infra/02 (the bytecode dispatch arm, checked
         // BEFORE the JIT arm — `--tier bytecode` and `--tier jit` are
         // distinct, mutually exclusive modes): route the body through the
         // flat-bytecode dispatch loop. Ok(None) = lowerer fallback →
         // tree-walker, byte-identical.
+        //
+        // fp-rollout 03: with an explicit per-function override, THIS arm
+        // is chosen by the override for the function identity, not by the
+        // run-wide mode — so a bytecode-dispatched caller can call a tier-1
+        // (adaptive) callee in the same run.
         match crate::bytecode_interp::call_body_bytecode(interp, &entry, &frame) {
             Ok(Some(v)) => Ok(v),
             Ok(None) => exec_block(interp, &frame, &def.body.blocks, &current_registry(interp))
                 .map(|_| Value::None),
             Err(f) => Err(f),
         }
-    } else if crate::jit_hook::tier_mode().jit_enabled() {
+    } else if eff == crate::jit_hook::EffectiveTier::Adaptive {
         // 02.05a JIT entry hook (the ONE dispatch arm): route the body
         // through the compiled cfg::Func baseline. Ok(None) = fallback
         // table (Unsupported lowering) → tree-walker, identical bytes.
         // GIL v1 coexistence: the JIT call runs on this thread under the
         // same lock — no new thread state anywhere in the hook.
+        //
+        // fp-rollout 03: the explicit per-function override selects THIS
+        // arm for a tier-1 callee of a bytecode-dispatched caller.
         match crate::jit_hook::jit_call_body(interp, &entry, &frame) {
             Ok(Some(v)) => Ok(v),
             Ok(None) => exec_block(interp, &frame, &def.body.blocks, &current_registry(interp))
