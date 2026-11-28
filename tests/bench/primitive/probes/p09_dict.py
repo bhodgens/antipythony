@@ -22,6 +22,13 @@ Four workloads: dict.build (dictcomp), dict.get (bound-method lookup),
 dict.getitem (subscript lookup), dict.iter (insertion-order key
 iteration). The get/getitem split exists to attribute the measured gap
 between method dispatch and getitem dispatch.
+
+Fast-path note: every zero-arg workload handed to emit() is a NAMED
+MODULE-LEVEL function whose body contains the measured loop (lambda
+bodies bypass call_function/tier dispatch via eval_expr). Module globals
+carry the per-size inputs so the SAME source runs under CPython and
+antipythony with identical semantics. emit()'s protocol and all row
+labels are unchanged.
 """
 import json
 import time
@@ -43,41 +50,52 @@ def make_keys(count):
     return [i * 2654435761 % (1 << 62) for i in range(count)]
 
 
-def build(keys):
-    return {k: k for k in keys}
+# Per-size inputs; set by run_size()/run_size_named() before the emits.
+_KEYS = None
+_DICT = None
 
 
-def get_lookups(d, keys):
+def workload_build():
+    """dictcomp hot loop, dispatched through call_function."""
+    return {k: k for k in _KEYS}
+
+
+def workload_get():
+    """dict.get hot loop, dispatched through call_function."""
     hit = 0
-    for k in keys:
-        if d.get(k) is not None:
+    for k in _KEYS:
+        if _DICT.get(k) is not None:
             hit += 1
     return hit
 
 
-def getitem_lookups(d, keys):
+def workload_getitem():
+    """dict.getitem hot loop, dispatched through call_function."""
     hit = 0
-    for k in keys:
-        if d[k] is not None:
+    for k in _KEYS:
+        if _DICT[k] is not None:
             hit += 1
     return hit
 
 
-def iter_keys(d):
+def workload_iter():
+    """dict insertion-order iteration hot loop, dispatched via call_function."""
     n = 0
-    for k in d:
+    for k in _DICT:
         n += 1
     return n
 
 
 def run_size(count):
+    global _KEYS, _DICT
     keys = make_keys(count)
     nbytes = count * 8
-    d = build(keys)
-    emit("dict.build", nbytes, lambda: build(keys))
-    emit("dict.get", nbytes, lambda: get_lookups(d, keys))
-    emit("dict.getitem", nbytes, lambda: getitem_lookups(d, keys))
-    emit("dict.iter", nbytes, lambda: iter_keys(d))
+    _KEYS = keys
+    _DICT = {k: k for k in keys}
+    emit("dict.build", nbytes, workload_build)
+    emit("dict.get", nbytes, workload_get)
+    emit("dict.getitem", nbytes, workload_getitem)
+    emit("dict.iter", nbytes, workload_iter)
 
 
 def main():
@@ -91,13 +109,15 @@ def main():
 
 
 def run_size_named():
+    global _KEYS, _DICT
     keys = make_keys(32_000)
     nbytes = 32_000 * 8
-    d = build(keys)
-    emit("dict.build_32k", nbytes, lambda: build(keys))
-    emit("dict.get_32k", nbytes, lambda: get_lookups(d, keys))
-    emit("dict.getitem_32k", nbytes, lambda: getitem_lookups(d, keys))
-    emit("dict.iter_32k", nbytes, lambda: iter_keys(d))
+    _KEYS = keys
+    _DICT = {k: k for k in keys}
+    emit("dict.build_32k", nbytes, workload_build)
+    emit("dict.get_32k", nbytes, workload_get)
+    emit("dict.getitem_32k", nbytes, workload_getitem)
+    emit("dict.iter_32k", nbytes, workload_iter)
 
 
 if __name__ == "__main__":
