@@ -24,7 +24,7 @@
 - Fix: both functions grow an `If(sel==2)` arm casting to $int and reading
   the smi payload (I64Ne 0 -> flag). No new prelude fn.
 - Evidence: probe d1_bool now prints else/False/True identical to CPython
-  3.14.7; pinned as classes_wasm/CLW013-bool-truthy-and-floateq (GREEN).
+  3.14.7; pinned as classes_wasm/CLW019-bool-truthy-and-floateq (GREEN).
 
 ### D3 — i64::MIN / zero-limb $bigint traps in big_bits — FIXED
 - Auditor claim: i64::MIN (and any zero-limbed $bigint from big_norm) has
@@ -64,7 +64,7 @@
 - Fix: a both-sel==1 arm before the mixed-numeric arm: cast both to $float,
   struct.get F_FLOAT_VAL, F64Eq, Return. f64.eq gives -0.0==0.0 true and
   NaN!=NaN false — both CPython-exact by construction.
-- Evidence: d6_floateq prints True True False / True. Pinned in CLW013.
+- Evidence: d6_floateq prints True True False / True. Pinned in CLW019.
 
 ### D8 — infinite recursion = raw wasm trap — FIXED
 - Auditor claim: frame_depth global incremented, no limit check; host trap
