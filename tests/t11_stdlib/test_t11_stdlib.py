@@ -388,7 +388,10 @@ def _require_impl():
     return impl
 
 
-@xfail_ap
+# 2026-11-28 flip wave (issue #29): with the CI seam + ap-conform --tier
+# splice fixed, the live-differential stdlib slice is green on darwin
+# (full run 2026-11-28); the earlier ubuntu XFAIL was the harness spawn
+# bug. Live ref-vs-impl differential (no frozen host pins) — host-safe.
 @pytest.mark.skipif(AP_CONFORM is None, reason="ap-conform bin missing")
 @pytest.mark.parametrize("mode", ["tier-0", "adaptive"])
 def test_apconform_antipythony_stdlib_slice(mode):
@@ -405,8 +408,22 @@ def test_apconform_antipythony_stdlib_slice(mode):
         f"{mode}: {proc.returncode} {data.get('summary')} {proc.stderr[:400]}")
 
 
-@xfail_ap
-@pytest.mark.parametrize("case", ALL_CASES[:6] + ALL_CASES[-2:], ids=[p.stem for p in (ALL_CASES[:6] + ALL_CASES[-2:])])
+# 2026-11-28 flip wave (issue #29): 7 of 8 params XPASS on BOTH CI hosts
+# (ubuntu run 46064375840 + darwin full run 2026-11-28) — stale blanket
+# marker. s006_math_basics is a known darwin-frozen libm-dialect pin
+# (issue #17, HOST_CONDITIONAL above): xfail ONLY on linux, hard assert on
+# darwin, so neither host reports an unlogged xpass.
+@pytest.mark.parametrize(
+    "case",
+    [pytest.param(
+         c,
+         marks=pytest.mark.xfail(
+             sys.platform.startswith("linux"), strict=False,
+             reason="issue #17: s006 pin is darwin libm dialect (cbrt/lgamma "
+             "1-ulp); linux sibling pin awaits docs/host-adaptive-pins.md"))
+     if c.stem == "s006_math_basics" else c
+     for c in ALL_CASES[:6] + ALL_CASES[-2:]],
+    ids=[p.stem for p in (ALL_CASES[:6] + ALL_CASES[-2:])])
 def test_binary_mode_matches_expected(case):
     # Third leg of the 02.08 gate: `antipythony build <case> -o <art>` then
     # run the artifact; stdout/stderr/rc must equal the pinned expected

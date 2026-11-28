@@ -354,7 +354,8 @@ def test_cross_mode_byte_identity(script):
             break
 
 
-@xfail_ap
+# 2026-11-28 flip wave (issue #29): XPASS on both CI hosts (ubuntu run
+# 45891017928 + darwin full run 2026-11-28) — stale "awaits 02.05" marker.
 def test_cross_mode_suite_runs_over_grown_corpus():
     # Sanity wrapper proving the glob is live at gate time (C-33): the suite
     # parametrization must include every directory that exists under tests/corpus.
@@ -373,8 +374,13 @@ def test_cross_mode_suite_runs_over_grown_corpus():
 # ---------------------------------------------------------------------------
 
 
-@xfail_ap
-@pytest.mark.parametrize("mode", MODES)
+# 2026-11-28 flip wave (issue #29): the tier0/adaptive params XPASSed on
+# BOTH CI hosts (ubuntu run 45891017928: 17+17 params; darwin full run
+# 2026-11-28) — stale blanket marker. The `binary` mode params still XFAIL
+# on darwin (17/17), so only that mode keeps the marker.
+@pytest.mark.parametrize(
+    "mode",
+    [pytest.param(m, marks=xfail_ap) if m == "binary" else m for m in MODES])
 @pytest.mark.parametrize("script", PROBES, ids=_ids(PROBES))
 def test_probe_matches_reference_bytes(script, mode):
     proc = _run_mode(mode, script)
@@ -388,7 +394,8 @@ def test_probe_matches_reference_bytes(script, mode):
     assert proc.returncode == int(rc_f.read_text()), f"{script.name} under {mode}: rc differs (C-31/C-29)"
 
 
-@xfail_ap
+# 2026-11-28 flip wave (issue #29): XPASS on both CI hosts (ubuntu run
+# 45891017928 + darwin full run 2026-11-28) — stale "awaits 02.05" marker.
 def test_osr_side_effects_exactly_once_adaptive():
     # C-31 Verify verbatim: side effects across an OSR/deopt boundary run
     # exactly once (no duplicated or dropped prints/accumulations). t1_004 is

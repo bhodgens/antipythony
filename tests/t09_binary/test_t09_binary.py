@@ -335,18 +335,31 @@ def test_ap_conform_self_comparison_green_on_slice(rel):
 
 
 # ---------------------------------------------------------------------------
-# HALF 2 — 02.06 GATE (xfail, strict=False). The BINARY is the artifact.
+# HALF 2 — 02.06 GATE. The BINARY is the artifact.
+# 2026-11-28 flip wave (issue #29, leaf 01.02 protocol): 02.06 landed
+# (main @ d010846; AGENTS.md status block) — every gate here that ran green
+# on BOTH CI hosts keeps a hard assert. The blanket @XFAIL_0206 markers were
+# stale: ubuntu run 46064375840 reported 42 XPASSes from this file (the
+# XPASS-ceiling gate breach is failure #6 of issue #29; test_binary_size_
+# within_bound is one of these nodes — the musl 15MB bound stays asserted in
+# APX_TARGET=linux-musl mode per GAP-2, report-only elsewhere).
+# Markers KEPT only where the gate genuinely still fails:
+#  - test_binary_runs_under_path_isolation: ubuntu XFAIL in BOTH evidence
+#    runs (45891017928/46064375840); the node never XPASSed on the hosted
+#    linux runner.
+#  - test_binary_exit_code_contract x003_exit_str / x007_exit_object /
+#    x008_exit_list / x010_thread_systemexit: real XFAILs in the full
+#    post-fix darwin run (2249 passed / 104 xpassed, 2026-11-28); the other
+#    seven EXIT params pass on both hosts and are now hard asserts.
 # ---------------------------------------------------------------------------
 
 
-@XFAIL_0206
 def test_build_hello_succeeds():
     """02.06 Expose: `antipythony build app.py -o app` emits an executable."""
     app = build_binary(CORPUS / "001_hello.py", "hello_app")
     assert app.exists()
 
 
-@XFAIL_0206
 def test_binary_runs_hello_program():
     """02.06 Gate part 1: `./app` runs the hello-world program byte-identically
     to the reference on all three channels (C-27, C-31 AoT invisibility)."""
@@ -359,7 +372,6 @@ def test_binary_runs_hello_program():
     assert proc.returncode == ref.returncode
 
 
-@XFAIL_0206
 def test_binary_runs_classes_corpus_program():
     """02.06 Gate part 2: a classes corpus program (c001) runs in the binary
     with bytes == the recorded T-06 expected anchor."""
@@ -372,7 +384,20 @@ def test_binary_runs_classes_corpus_program():
     assert proc.returncode == 0
 
 
-@XFAIL_0206
+# Host-conditional (issue #17 mechanism, like t11 HOST_CONDITIONAL): this
+# node never reproduced green on the hosted ubuntu runner — absent from the
+# XPASS lists of runs 45891017928 AND 46064375840 (where APX_CLI was already
+# healthy and all 41 sibling binary nodes XPASSed), while darwin XPASSed it
+# in the 2026-11-28 post-fix full run. Ubuntu-runner artifact (image ships
+# interpreter surfaces under /usr/bin:/bin and/or a path-dependent binary
+# startup byte); mechanism un-diagnosed here — reroute the strip per host as
+# follow-up. The darwin leg keeps the HARD assert (never weakened).
+@pytest.mark.xfail(
+    sys.platform.startswith("linux"),
+    strict=False,
+    reason="issue #29: hosted ubuntu /usr/bin contains python3.14 — isolation "
+    "precondition artifact (flip wave keeps the darwin-side hard assert)",
+)
 def test_binary_runs_under_path_isolation():
     """GAP-7 / Go-style UX: a static binary needs no Python interpreter. Run
     with PATH=/usr/bin:/bin — asserted to contain no python3.14 — and require
@@ -390,8 +415,15 @@ def test_binary_runs_under_path_isolation():
     assert proc.returncode == ref.returncode
 
 
-@XFAIL_0206
-@pytest.mark.parametrize("stem", EXIT_CASES)
+@pytest.mark.parametrize(
+    "stem",
+    [pytest.param(s, marks=XFAIL_0206) if s in {
+        # issue #29 flip wave (2026-11-28 full darwin run): these four exit
+        # cases STILL fail against the binary (genuine impl gaps); the other
+        # seven params pass on BOTH CI hosts and are now hard asserts.
+        "x003_exit_str", "x007_exit_object", "x008_exit_list",
+        "x010_thread_systemexit"} else s
+     for s in EXIT_CASES])
 def test_binary_exit_code_contract(stem):
     """C-28/C-29/C-30 measured ON THE BINARY: each inline case, compiled and
     run standalone, reproduces its pinned (stdout, stderr, rc) triple."""
@@ -399,7 +431,6 @@ def test_binary_exit_code_contract(stem):
     compare_case(app, stem)
 
 
-@XFAIL_0206
 @pytest.mark.parametrize("rel", SLICE_30)
 def test_ap_conform_slice_against_binary(rel):
     """02.06 Gate verbatim: "conformance suite runs against the BINARY, not
@@ -417,7 +448,6 @@ def test_ap_conform_slice_against_binary(rel):
     )
 
 
-@XFAIL_0206
 def test_ap_conform_whole_slice_against_binaries():
     """Aggregate rollup of the per-case gate: all 30 must pass; failure detail
     lives in the per-case tests above (this one is the CI one-liner)."""
@@ -432,7 +462,6 @@ def test_ap_conform_whole_slice_against_binaries():
     assert not failures, f"slice-vs-binary failures: {failures}"
 
 
-@XFAIL_0206
 def test_binary_size_within_bound():
     """02.06 Gate: "binary <= 15MB musl". GAP-2 platform handling: the bound is
     ASSERTED only in linux-musl mode (APX_TARGET=linux-musl); on macOS-arm64 the
@@ -472,7 +501,6 @@ def test_reproducible_build_byte_identity():
     assert a.read_bytes() == b.read_bytes(), "two builds differ byte-wise (04.02)"
 
 
-@XFAIL_0206
 def test_argv_passthrough():
     """02.06 Expose UX (single static binary): sys.argv inside the binary is
     what is given AFTER the binary name — `./app alpha 2` -> ['alpha', '2'].
@@ -484,7 +512,6 @@ def test_argv_passthrough():
     assert proc.returncode == 0
 
 
-@XFAIL_0206
 def test_cwd_invariance():
     """The same binary run from two different working directories produces
     identical bytes + rc (C-04/C-27; x013 is cwd-invariant by construction —

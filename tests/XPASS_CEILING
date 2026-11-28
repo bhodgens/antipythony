@@ -1,10 +1,16 @@
 0
-# 2026-11-07 flip wave (leaf 01.02 protocol): ALL 93 stale markers flipped
-# (64x t11 "awaits 02.08", 28x A-1/A-12 backfill, 1x t09/t14 reproducible
-# build). 3 consecutive green runs at 0 xpassed: 2080 passed / 6 skipped /
-# 670 xfailed / 0 xpassed. Remaining 7 decorator/mark sites are GENUINE
-# xfails (verified failing params: t11 sys + 7 partial rows, t10 T109 + G-1,
-# a1 qp-roundtrip/hex-sep/kill-zero, a12 b16/b32/b64/hashlib-shape/
-# hex-sep-invalid/hexlify). Monotone-decreasing policy: any xpass above 0
-# is a stale marker and must flip in the next wave.
+# 2026-11-28 flip wave (issue #29, leaf 01.02 protocol): the conformance
+# pytest legs were red because stale strict=False markers produced 58 XPASSes
+# on ubuntu / 104 on darwin once the CI APX_IMPL seam stopped carrying the
+# bogus `run` verb (ap-run-eval is clap-strict) and ap-conform's --tier
+# splice stopped front-inserting before argv[0] for verb-less impls.
+# Both-host XPASS evidence (ubuntu run 45891017928 = last healthy-seam leg,
+# ubuntu 46064375840, darwin full runs 2026-11-28) drove the flips:
+# 42x t09 (minus path_isolation -> linux-xfail; 4 exit params -> XFAIL),
+# 36x t08 probes/suite/osr (binary-mode rows stay XFAIL), 8x t11 (s006 ->
+# linux-xfail), 2x t15, 7x t16 (hybrid_python_path -> linux-xfail), 1x t07,
+# 1x t05 (skip-safe seam). Verified: full darwin run post-flip (this commit)
+# = 2423 passed / 35 skipped / 554 xfailed / 0 xpassed, exit 0.
+# Previous wave: 2026-11-07 (93 stale markers flipped, 2080 passed / 0
+# xpassed). Monotone-decreasing policy holds: ceiling stays 0.
 # Previous ceiling: 74 (measured 2026-10-20, leaf 01.01; see git history).
