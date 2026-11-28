@@ -1,9 +1,15 @@
 # Cites: S-03-32, S-03-34
 # Every direct subclass of Exception in the live 3.14 tree is a real,
 # catchable class: derive the list from Exception.__subclasses__() itself
-# (deterministic on builtins-only startup), raise one instance of each under a
-# tuple target of all of them, and check identity of the catch. Group types
-# need (message, exceptions) args; the rest take one arg.
+# (deterministic once re is imported — see below), raise one instance of each
+# under a tuple target of all of them, and check identity of the catch. Group
+# types need (message, exceptions) args; the rest take one arg.
+# `import re` is load-bearing (issue #29): the pin counts PatternError (22
+# subclasses); re.PatternError exists in the tree only after re is imported.
+# The recording host's Homebrew sitecustomize pre-imports re, CI's
+# python-build-standalone interpreter does not — the explicit import makes
+# the 22-count pin byte-reproducible on any CPython 3.14 (see e002).
+import re  # noqa: F401 — ensures re.PatternError is in Exception.__subclasses__()
 subs = sorted(Exception.__subclasses__(), key=lambda t: t.__name__)
 print(len(subs))
 GROUPY = {"ExceptionGroup", "BaseExceptionGroup"}

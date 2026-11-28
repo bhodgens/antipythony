@@ -286,8 +286,18 @@ def test_ap_conform_gc_slice_green_tier0():
     )
 
 
-@xfail_ap
-@pytest.mark.parametrize("case", CASES)
+# 2026-11-28 flip wave (issue #29): with the CI seam + ap-conform --tier
+# splice fixed (crates/ap-conform/src/main.rs), the per-case tier-0 gate
+# runs for real: 19/20 params XPASS on darwin (full run 2026-11-28); the
+# previous ubuntu XFAIL wave was the harness spawn bug (ENOENT /
+# "unexpected argument run"), not engine gaps. gc018 (unraisable source
+# echo) keeps its marker (genuine darwin XFAIL; ubuntu side unmeasured with
+# a healthy seam until this lands); the slice rollup keeps its marker
+# because it aggregates gc018.
+@pytest.mark.parametrize(
+    "case",
+    [pytest.param(c, marks=xfail_ap) if c == "gc018_unraisable_source_echo_strip"
+     else c for c in CASES])
 def test_ap_conform_case_green_tier0(case):
     proc = run_conform(str(SCRIPTS[case]))
     assert proc.returncode == 0, (
@@ -295,7 +305,9 @@ def test_ap_conform_case_green_tier0(case):
     )
 
 
-@xfail_ap
+# 2026-11-28 flip wave (issue #29): both CI hosts XPASSed this node with a
+# healthy APX_IMPL seam (ubuntu run 45891017928 list + darwin full run
+# 2026-11-28) — the "awaits 02.04" marker is stale; hard assert now.
 def test_refcount_api_absent_or_stub_safe():
     # C-19/D3 impl-side projection (task contract: "sys.getrefcount
     # ABSENT assertion belongs to the impl-side xfail test citing C-14").
@@ -327,6 +339,28 @@ def test_refcount_api_absent_or_stub_safe():
     )
 
 
+def _rss_from_time_output(stderr_text: str):
+    """Max-RSS bytes from /usr/bin/time stderr, both flavours (issue #29).
+
+    BSD time (darwin, -l): 'maximum resident set size: <bytes>'.
+    GNU time (linux, -v):  'Maximum resident set size (kbytes): <KB>' —
+    kilobytes, so the value is scaled by 1024 before it is compared against
+    the byte-unit bound (run 46064375840: the darwin-shaped regex never
+    matched the GNU line and the calibration test died at 'rss is not
+    None'). Also accepts the Git-Bash 'N peak memory footprint' shape.
+    """
+    m = re.search(
+        r"maximum resident set size:\s*([0-9]+)"
+        r"|maximum resident set size \(kbytes\):\s*([0-9]+)"
+        r"|([0-9]+)\s+peak memory footprint",
+        stderr_text, re.IGNORECASE)
+    if not m:
+        return None
+    if m.group(2) is not None:  # GNU: kilobytes -> bytes
+        return int(m.group(2)) * 1024
+    return int(m.group(1) or m.group(3))
+
+
 def test_10k_projection_reference_calibration():
     # Calibration (green today, reference-side): the heap probe run under
     # the REFERENCE must pass the identical 1 GiB bound + exact-once
@@ -344,13 +378,15 @@ def test_10k_projection_reference_calibration():
     assert proc.returncode == 0
     assert "fired: 10000" in proc.stdout.decode()
     assert "complete: True" in proc.stdout.decode()
-    m = re.search(r"maximum resident set size:\s*([0-9]+)|([0-9]+)\s+peak memory footprint", proc.stderr.decode(errors="replace"), re.IGNORECASE)
-    rss = int(m.group(1) or m.group(2)) if m else None
-    assert rss is not None, f"no RSS line from /usr/bin/time -l:\n{proc.stderr.decode(errors='replace')}"
+    rss = _rss_from_time_output(proc.stderr.decode(errors="replace"))
+    assert rss is not None, f"no RSS line from /usr/bin time:\n{proc.stderr.decode(errors='replace')}"
     assert rss < 1024 * 1024 * 1024, f"reference itself exceeds the bound: RSS {rss} B"
 
 
-@xfail_ap
+# 2026-11-28 flip wave (issue #29): XPASS on darwin + ubuntu-XFAILed ONLY
+# because the linux /usr/bin/time -v output shape never matched the
+# darwin-shaped RSS regex (fixed in this commit) — the leak bound itself
+# holds on both hosts.
 def test_10k_iteration_bounded_heap():
     # 02.04 Gate, second clause: "no leak across 10k iterations (heap
     # growth bounded)". Runs the probe under the impl, asserts (a) exact-
@@ -370,7 +406,6 @@ def test_10k_iteration_bounded_heap():
     assert proc.returncode == 0, f"impl heap probe run failed: {proc.stderr.decode(errors='replace')[-2000:]}"
     assert "fired: 10000" in proc.stdout.decode(), "C-21 eventually-run guarantee violated"
     assert "complete: True" in proc.stdout.decode(), "double/lost finalization detected"
-    m = re.search(r"maximum resident set size:\s*([0-9]+)|([0-9]+)\s+peak memory footprint", proc.stderr.decode(errors="replace"), re.IGNORECASE)
-    assert m, "no RSS line from /usr/bin/time -l"
-    rss_bytes = int(m.group(1) or m.group(2))
+    rss_bytes = _rss_from_time_output(proc.stderr.decode(errors="replace"))
+    assert rss_bytes is not None, "no RSS line from /usr/bin time"
     assert rss_bytes < 1024 * 1024 * 1024, f"heap NOT bounded across 10k iterations: RSS {rss_bytes} B"

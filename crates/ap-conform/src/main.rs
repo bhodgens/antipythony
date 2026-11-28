@@ -394,7 +394,17 @@ fn run(
     // every case (the audit's 0/48-wide harness failure), and a naive
     // front-splice would make [0] the flag itself (spawn ENOENT).
     if let Some(mode) = tier {
-        let insert_at = impl_.len().saturating_sub(1).min(1);
+        // Insertion index: AFTER argv[0] (the program) so [0] stays the
+        // executable; before any trailing verb so `<bin> --tier <mode> ...`
+        // reaches the bin's pre-scan / clap option parser.
+        // len>=2 (e.g. "antipythony run"): old shape kept (position 1).
+        // len==1 (bare program, e.g. the CI seam ".../ap-run-eval"): the
+        // OLD `saturating_sub(1)` yielded 0 and front-spliced, making [0]
+        // the flag itself -> spawn ENOENT for EVERY case (issue #29: the
+        // t06/t07 ap-conform gates could never run through a verb-less
+        // seam). Result: `<bin> --tier <mode> <file>` — ap-run-eval (clap)
+        // and antipythony (pre-scan) both accept it.
+        let insert_at = 1.min(impl_.len());
         impl_.splice(insert_at..insert_at, ["--tier".to_string(), mode]);
     }
 

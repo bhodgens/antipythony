@@ -307,7 +307,8 @@ def test_case_pair_is_one_values_one_classes():
 # ---------------------------------------------------------------------------
 
 
-@XFAIL_0405
+# 2026-11-28 flip wave (issue #29): XPASS on both CI hosts (ubuntu run
+# 46064375840 + darwin full run 2026-11-28) — 04.05 --hybrid build landed.
 def test_hybrid_build_produces_executable():
     """04.05 Expose: `antipythony build --hybrid` -> one executable native
     binary with the wasm payload embedded (master.md: the hybrid is the third
@@ -316,8 +317,13 @@ def test_hybrid_build_produces_executable():
     assert app.exists() and os.access(app, os.X_OK)
 
 
-@XFAIL_0405
-@pytest.mark.parametrize("script", CASES, ids=[_case_id(c) for c in CASES])
+# 2026-11-28 flip wave (issue #29): the V003 param XPASSes on BOTH CI hosts
+# (ubuntu 46064375840 + darwin full run 2026-11-28) — flipped to a hard
+# assert; c001 keeps the marker (genuine XFAIL on both hosts).
+@pytest.mark.parametrize(
+    "script",
+    [pytest.param(c, marks=XFAIL_0405) if c.stem == "c001_class_basics" else c
+     for c in CASES], ids=[_case_id(c) for c in CASES])
 def test_hybrid_binary_native_green(script):
     """04.05 Gate half 1 verbatim ('one binary passes native conformance
     slice'): the hybrid binary executed plainly reproduces the pinned CPython
@@ -331,8 +337,12 @@ def test_hybrid_binary_native_green(script):
     assert _triple(proc)[2] == exp[2], f"{script.name}: hybrid native rc != pinned (C-30)"
 
 
-@XFAIL_0405
-@pytest.mark.parametrize("script", CASES, ids=[_case_id(c) for c in CASES])
+# 2026-11-28 flip wave (issue #29): V003 param XPASS on BOTH CI hosts —
+# flipped; c001 keeps the marker (genuine XFAIL, darwin full run 2026-11-28).
+@pytest.mark.parametrize(
+    "script",
+    [pytest.param(c, marks=XFAIL_0405) if c.stem == "c001_class_basics" else c
+     for c in CASES], ids=[_case_id(c) for c in CASES])
 def test_emit_wasm_extracts_module(script):
     """04.05 Expose: `app --emit-wasm` extracts the embedded module — the run
     exits 0 and produces exactly one .wasm (magic \\x00asm) in the working dir.
@@ -342,8 +352,14 @@ def test_emit_wasm_extracts_module(script):
     assert mod.read_bytes()[:4] == b"\x00asm", f"extracted file {mod} is not a wasm module"
 
 
-@XFAIL_REPRO
-@pytest.mark.parametrize("script", CASES, ids=[_case_id(c) for c in CASES])
+# 2026-11-28 flip wave (issue #29): V003 param XPASS on BOTH CI hosts (ubuntu
+# 46064375840 + darwin full run 2026-11-28) — the payload-identity G-3
+# decision question is moot for that param; flipped to a hard assert. c001
+# keeps the marker (genuine XFAIL, darwin full run 2026-11-28).
+@pytest.mark.parametrize(
+    "script",
+    [pytest.param(c, marks=XFAIL_REPRO) if c.stem == "c001_class_basics" else c
+     for c in CASES], ids=[_case_id(c) for c in CASES])
 def test_embedded_payload_byte_matches_wasm_build(script):
     """Reproducibility of the EMBEDDED PAYLOAD: the extracted .wasm must be
     byte-identical to a separately built `antipythony build --wasm` artifact of
@@ -366,8 +382,12 @@ def test_embedded_payload_byte_matches_wasm_build(script):
 # --- plus comparison against the pinned reference where the triple ships.
 
 
-@XFAIL_0405
-@pytest.mark.parametrize("script", CASES, ids=[_case_id(c) for c in CASES])
+# 2026-11-28 flip wave (issue #29): V003 param XPASS on BOTH CI hosts —
+# flipped; c001 keeps the marker (genuine XFAIL, darwin full run 2026-11-28).
+@pytest.mark.parametrize(
+    "script",
+    [pytest.param(c, marks=XFAIL_0405) if c.stem == "c001_class_basics" else c
+     for c in CASES], ids=[_case_id(c) for c in CASES])
 def test_pair_native_vs_hybrid(script):
     """Pairwise leg N↔H: plain native binary (02.06 `build`) and hybrid binary
     (`build --hybrid`) agree byte-for-byte on all three channels (C-31:
@@ -396,8 +416,12 @@ def test_pair_native_vs_wasm_under_ap_host(script):
     )
 
 
-@XFAIL_0405
-@pytest.mark.parametrize("script", CASES, ids=[_case_id(c) for c in CASES])
+# 2026-11-28 flip wave (issue #29): V003 param XPASS on BOTH CI hosts —
+# flipped; c001 keeps the marker (genuine XFAIL, darwin full run 2026-11-28).
+@pytest.mark.parametrize(
+    "script",
+    [pytest.param(c, marks=XFAIL_0405) if c.stem == "c001_class_basics" else c
+     for c in CASES], ids=[_case_id(c) for c in CASES])
 def test_pair_wasm_build_vs_extracted_under_ap_host(script):
     """Pairwise leg W↔H(wasm): the standalone `build --wasm` artifact and the
     hybrid's EXTRACTED module, both run under ap-host, agree on all three
@@ -467,7 +491,9 @@ def test_three_way_lattice_aggregate(script):
         assert got == native, f"{script.name}: {label} leg differs from native leg (C-31)"
 
 
-@XFAIL_0405
+# 2026-11-28 flip wave (issue #29): XPASS on both CI hosts — 04.05 clean
+# refusal shipped (GAP G-4 resolved by the implementation, not by easing the
+# strictest reading).
 def test_emit_wasm_rejected_on_plain_native_binary():
     """`--emit-wasm` is a HYBRID capability: on a plain `build` (non-hybrid)
     native binary the flag MUST fail cleanly — nonzero exit (not a signal death:
@@ -520,7 +546,17 @@ def test_embedded_host_exec_flag_same_triple(script):
     )
 
 
-@XFAIL_0405
+# Host-conditional, same class as t09 test_binary_runs_under_path_isolation
+# (issue #17 mechanism): this node never XPASSed on the hosted ubuntu runner
+# in either evidence run while its darwin twin XPASSes post-fix — the
+# /usr/bin:/bin isolation precondition is a runner-image artifact, not a
+# hybrid gap. xfail on linux only; hard assert on darwin.
+@pytest.mark.xfail(
+    sys.platform.startswith("linux"),
+    strict=False,
+    reason="issue #29: hosted ubuntu PATH isolation precondition artifact "
+    "(mirrors t09 path_isolation); darwin leg stays a hard assert",
+)
 def test_hybrid_binary_runs_without_python_on_path():
     """The hybrid is still a single static native binary (master.md artifact
     decision; Go-style UX): the native execution path works with
