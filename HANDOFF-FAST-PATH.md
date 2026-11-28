@@ -296,3 +296,45 @@ Disk at 14:01: 51 GB free / 927 GB (95%). One heavy cargo lane only.
 - Run the composition matrix (20 meaningful cells) and the standard
   battery, then the candidate-mode (bytecode) closing 64-row bench.
   Default flip remains the sole USER GATE.
+
+---
+
+## ADDENDUM 2026-11-27 17:50 MST (closing bench landed — GATE RED)
+
+### Merged
+- Closing bench leaf 5ac23b0 merged (merge commit follows). 7 owned files:
+  64-row bytecode-mode bench_report.json (generated 2026-11-28 00:35 UTC),
+  BOTH charts regenerated from that JSON, docs/fast-path-report.md (277
+  lines), README perf section, benefits doc sync, NEXT-FP-BENCH.md.
+- Verified first-hand: 64 rows / 28 PASS / 36 FAIL / 0 ERROR; geomean
+  1.180x; simple mean 3.292x; all 64 ratio labels present in regenerated
+  speedup SVG (computed, not transcribed).
+
+### EXIT GATE: RED (honest result, no gate weakened)
+- ALL 18 walk-bound rows below 1.0x:
+  dict.getitem 0.205/0.267/0.268x, dict.build 0.181/0.192/0.192x,
+  list.sort 0.168/0.112/0.146x, sorted() 0.828/0.849/0.811x,
+  str.join 0.193/0.230x, str.split 0.451/0.509x,
+  json.loads 0.509/0.289x.
+- Simple-mean floor >=1.5x PASSES (3.292x) but the parity clause fails.
+- ROOT CAUSE: probe hot loops are MODULE-LEVEL and bypass call_function
+  tier dispatch. BC-STATS on P09 = compiles=6 fallbacks=3 execs=79,
+  TIER-STATS execs=0. Function-shaped helpers DID improve: dict.get
+  0.01x -> 0.24-0.28x, sorted 0.4x -> 0.81-0.85x. list.sort/join/split/
+  json.loads remain sub-1.0x even when function-shaped.
+
+### Gates all GREEN on leaf binary (SHA256 068cc7f2...160)
+fix_bytecode 13/13; diff_b64 2132/0; diff_hex 1976/0; fix_int 18653
+lines byte-identical; fix_json 127/0; fix_sort 42/0; fix_random PASS;
+fix_sha_zlib 818 lines 0 diff tree-vs-bytecode (62 CORRUPT-only zlib-rs
+residual vs CPython); conform 50/50 + 48/48 BOTH tiers; tier_seam 3/3;
+ic_invalidation 9/9; cargo ap-bytecode+ap-run --release rc=0,
+22 result blocks, 282 passed / 0 failed / 1 ignored.
+
+### DECISION STATE
+- Default flip NOT executed (USER GATE untouched).
+- Per master.md exit gate, fast-path campaign does NOT exit green.
+  Recommend a new leaf: function-shape the 18 walk-bound probes (or
+  lower module-level loops) before re-running; otherwise file the gate
+  as an honest gap and let the user choose.
+- Disk 30 GB free / 927 GB (97%) at 17:45.
