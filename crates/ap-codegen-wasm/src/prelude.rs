@@ -362,7 +362,11 @@ fn big_from_i64(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encod
             f.instruction(&Instruction::I64Const(0));
             f.instruction(&Instruction::I64LtS);
             f.instruction(&Instruction::LocalSet(3));
-            // u = |v| & i64::MAX (wrap-abs handles i64::MIN)
+            // u = |v| — wrap-abs handles i64::MIN: 0 - MIN wraps to MIN
+            // itself, whose magnitude 2^63 is exactly limb pair (0,
+            // 0x8000000000000000) after the & i64::MAX below (the old
+            // unconditional & MAX FIRST gave u = 0 -> EMPTY limbs -> the
+            // big_bits limbs[0] trap, D3 bughunt 6.1).
             f.instruction(&Instruction::LocalGet(0));
             f.instruction(&Instruction::I64Const(0));
             f.instruction(&Instruction::I64LtS);
@@ -580,6 +584,20 @@ fn bool_obj(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::
             f.instruction(&Instruction::ArrayLen);
             f.instruction(&Instruction::I32Const(0));
             f.instruction(&Instruction::I32Ne);
+            f.instruction(&Instruction::LocalSet(4));
+            f.instruction(&Instruction::End);
+            // bool (sel 2): the payload smi IS the truth value (0/1) — the
+            // default 1 made every stored False truthy (D1, bughunt 6.1).
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(2));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(2));
+
+            f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
+            int_smi(f);
+            f.instruction(&Instruction::I64Const(0));
+            f.instruction(&Instruction::I64Ne);
             f.instruction(&Instruction::LocalSet(4));
             f.instruction(&Instruction::End);
             // None: falsy (sel 8 => flag stays/forced 0)
@@ -901,6 +919,21 @@ fn truthy(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::Co
             f.instruction(&Instruction::ArrayLen);
             f.instruction(&Instruction::I32Const(0));
             f.instruction(&Instruction::I32Ne);
+            f.instruction(&Instruction::LocalSet(4));
+            f.instruction(&Instruction::End);
+            // bool (sel 2): the payload smi IS the truth value (0/1) — the
+            // default 1 made every stored False truthy in if/while/not/and/or
+            // (D1, bughunt 6.1).
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I32Const(2));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(2));
+
+            f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
+            int_smi(f);
+            f.instruction(&Instruction::I64Const(0));
+            f.instruction(&Instruction::I64Ne);
             f.instruction(&Instruction::LocalSet(4));
             f.instruction(&Instruction::End);
             // None
@@ -1651,7 +1684,13 @@ fn compare(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
         funcs,
         code,
         FT_TOP_I,
-        &[(2, oref()), (2, ValType::I32), (2, ValType::F64)],
+        &[
+            (2, oref()),
+            (2, ValType::I32),
+            (2, ValType::F64),
+            // 9=i 10=verdict 11=ca 12=cb — the D12b str-ordering walk
+            (4, ValType::I32),
+        ],
         |f| {
             // params: 0=op 1=a 2=b; locals: 3=a(o) 4=b(o) 5=sel-a 6=sel-b
             // 7=va 8=vb (f64 promoted)
@@ -1700,7 +1739,159 @@ fn compare(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
             f.instruction(&Instruction::I32Const(0));
             f.instruction(&Instruction::LocalSet(6));
             f.instruction(&Instruction::End);
-            // both numeric? (sel 0/1 after bool-normalize)
+            // str vs str ordering (D12b, bughunt 6.1): lexicographic
+            // u16 code-unit compare (CPython compares code POINTS; on the
+            // BMP slice code-unit order == code-point order — the corpus
+            // pins ASCII). The old path fell to Unreachable on any str
+            // ordering (`'a' < 'b'` trapped). Nested If chain collapses
+            // to ONE i32: LT then EQ-mixed rules per op.
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::I32Const(3));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::LocalGet(6));
+            f.instruction(&Instruction::I32Const(3));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::I32And);
+            f.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
+            // c = memcmp-style walk over the two byte arrays: result
+            // -1/0/1 rides local 9 (i32)
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalSet(9)); // i
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalSet(10)); // verdict
+            f.instruction(&Instruction::Block(BlockType::Empty)); // $wend
+            f.instruction(&Instruction::Loop(BlockType::Empty));
+            // i == len(a) || i == len(b) -> exhausted
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+            sget(f, T_STR, F_STR_DATA);
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::I32GeU);
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+            sget(f, T_STR, F_STR_DATA);
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::I32GeU);
+            f.instruction(&Instruction::I32Or);
+            f.instruction(&Instruction::BrIf(1)); // -> $wend
+                                                  // ca = a.data[i]; cb = b.data[i]
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+            sget(f, T_STR, F_STR_DATA);
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::ArrayGetU(T_BYTE_ARR));
+            f.instruction(&Instruction::LocalSet(11)); // ca
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+            sget(f, T_STR, F_STR_DATA);
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::ArrayGetU(T_BYTE_ARR));
+            f.instruction(&Instruction::LocalSet(12)); // cb
+                                                       // ca != cb -> verdict = (ca < cb) ? -1 : 1; break
+            f.instruction(&Instruction::LocalGet(11));
+            f.instruction(&Instruction::LocalGet(12));
+            f.instruction(&Instruction::I32Ne);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(11));
+            f.instruction(&Instruction::LocalGet(12));
+            f.instruction(&Instruction::I32LtU);
+            f.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
+            f.instruction(&Instruction::I32Const(-1));
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalSet(10));
+            // exit BOTH the If(ca!=cb) (0) and the Loop (1): 2 = $wend
+            f.instruction(&Instruction::Br(2));
+            f.instruction(&Instruction::End);
+            // i++
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Add);
+            f.instruction(&Instruction::LocalSet(9));
+            f.instruction(&Instruction::Br(0));
+            f.instruction(&Instruction::End); // Loop
+            f.instruction(&Instruction::End); // $wend
+                                              // exhausted: shorter-or-equal-prefix rules; tie-break on len
+                                              // (verdict still 0 here). If(Empty) arms leave NO values — the
+                                              // verdict computes INSIDE and rides local 10 via LocalSet.
+            f.instruction(&Instruction::LocalGet(10));
+            f.instruction(&Instruction::I32Eqz);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+            sget(f, T_STR, F_STR_DATA);
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+            sget(f, T_STR, F_STR_DATA);
+            f.instruction(&Instruction::ArrayLen);
+            // verdict = (la < lb) ? -1 : (la == lb ? 0 : 1)
+            f.instruction(&Instruction::I32LtU);
+            f.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
+            f.instruction(&Instruction::I32Const(-1));
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+            sget(f, T_STR, F_STR_DATA);
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+            sget(f, T_STR, F_STR_DATA);
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalSet(10));
+            f.instruction(&Instruction::End);
+            // op dispatch on verdict v: LT -> v<0; LE -> v<=0; GT -> v>0;
+            // GE -> v>=0
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::I32Const(OPS::LT));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
+            f.instruction(&Instruction::LocalGet(10));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::I32LtS);
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::I32Const(OPS::LE));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
+            f.instruction(&Instruction::LocalGet(10));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::I32LeS);
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::I32Const(OPS::GT));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
+            f.instruction(&Instruction::LocalGet(10));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::I32GtS);
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::I32Const(OPS::GE));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::If(BlockType::Result(ValType::I32)));
+            f.instruction(&Instruction::LocalGet(10));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::I32GeS);
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::Unreachable);
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::End); // GE
+            f.instruction(&Instruction::End); // GT
+            f.instruction(&Instruction::End); // LE
+            f.instruction(&Instruction::End); // LT
+            f.instruction(&Instruction::Else); // NOT both-str: numeric or unsupported
+                                               // both numeric? (sel 0/1 after bool-normalize)
             f.instruction(&Instruction::LocalGet(5));
             f.instruction(&Instruction::I32Const(1));
             f.instruction(&Instruction::I32LeU);
@@ -1803,13 +1994,14 @@ fn compare(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
             f.instruction(&Instruction::End); // GE
             f.instruction(&Instruction::End); // GT
             f.instruction(&Instruction::End); // LE
-            f.instruction(&Instruction::End); // LT
+            f.instruction(&Instruction::End); // LT (numeric dispatch chain closed)
             f.instruction(&Instruction::Else);
-            // non-numeric ordering on this slice: unsupported (unreachable
-            // keeps it loud; scan must keep these shapes off the slice)
+            // non-numeric ordering (e.g. str vs int): not on the slice —
+            // unreachable keeps it loud; scan keeps these shapes off the corpus
             f.instruction(&Instruction::Unreachable);
             f.instruction(&Instruction::I32Const(0));
             f.instruction(&Instruction::End); // numeric?
+            f.instruction(&Instruction::End); // str-vs-str ordering If
             f.instruction(&Instruction::End); // NE
             f.instruction(&Instruction::End); // EQ
         },
@@ -1846,6 +2038,30 @@ fn eq_full(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
             f.instruction(&Instruction::LocalSet(4));
             type_sel(f, 3, 6);
             f.instruction(&Instruction::LocalSet(5));
+            // float vs float (both sel 1): compare the f64 payloads directly
+            // (f64.eq gives -0.0 == 0.0 true and NaN != NaN false — both
+            // CPython-exact). The old arm required an int/bool on one side,
+            // so two DISTINCT float objects always compared unequal (D6,
+            // bughunt 6.1: x = 1.5; x == x + 0.0 was False).
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::I32And);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(2));
+
+            f.instruction(&Instruction::RefCastNullable(hc(T_FLOAT)));
+            sget(f, T_FLOAT, F_FLOAT_VAL);
+            f.instruction(&Instruction::LocalGet(3));
+
+            f.instruction(&Instruction::RefCastNullable(hc(T_FLOAT)));
+            sget(f, T_FLOAT, F_FLOAT_VAL);
+            f.instruction(&Instruction::F64Eq);
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
             // float involved (sel-a==1 || sel-b==1): float_py_eq handles
             // float-vs-float AND numeric promotion (int/bool payloads read
             // as f64 inside); float vs non-numeric -> 0.
@@ -3482,6 +3698,20 @@ fn big_bits(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::
             // 2=b 3=n 4=v
             f.instruction(&Instruction::LocalGet(0));
             f.instruction(&Instruction::LocalSet(2));
+            // n == 0 (a zero-valued $bigint, e.g. big_norm of 0 or the old
+            // i64::MIN wrap-abs output): answer 0 — the unconditional
+            // limbs[0] read below was an out-of-range array trap (D3,
+            // bughunt 6.1: `print(-(2**63))`).
+            f.instruction(&Instruction::LocalGet(2));
+
+            f.instruction(&Instruction::RefCastNullable(hc(T_BIGINT)));
+            sget(f, T_BIGINT, F_BIG_LIMBS);
+            f.instruction(&Instruction::ArrayLen);
+            f.instruction(&Instruction::I32Eqz);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::I64Const(0));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
             f.instruction(&Instruction::LocalGet(2));
 
             f.instruction(&Instruction::RefCastNullable(hc(T_BIGINT)));

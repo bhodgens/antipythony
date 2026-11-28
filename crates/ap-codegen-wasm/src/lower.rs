@@ -964,6 +964,9 @@ fn collect_expr(
         Expr::Attribute(obj, name, _) => {
             // the attribute name rides FN_ATTR_GET as an interned $str
             scan.intern_str(name.as_str());
+            // D12d: the missing-attribute message interpolates the name —
+            // intern the suffix so the emit-time lookup succeeds.
+            scan.intern_str(&format!("' object has no attribute '{}'", name.as_str()));
             collect_expr(obj, refs, bound, nonlocal, scan)
         }
         Expr::Call(f, args, _) => {
@@ -1471,6 +1474,11 @@ pub fn lower_module_ex(
     let strings_snapshot = scan.strings.clone();
     let mut tab = StrTab::new(name_blob.clone(), &strings_snapshot);
     let _prelude_base = tab.prelude_base();
+    // Bare-`raise` fallback message (D5): interned BEFORE any emission so
+    // every later emit_raise can build the RuntimeError message from a
+    // stable passive-segment offset (the blob snapshot at data-section
+    // time includes it).
+    let reraise_msg = tab.push("No active exception to reraise");
 
     let mut m = Module::new();
 
@@ -1555,7 +1563,16 @@ pub fn lower_module_ex(
         } else {
             funcs.function(FT_PY_RO);
         }
-        let f = emit_user_fn(uf, slot, &scan, &res_maps[slot], &tab, &g, eh_wrap);
+        let f = emit_user_fn(
+            uf,
+            slot,
+            &scan,
+            &res_maps[slot],
+            &tab,
+            &g,
+            eh_wrap,
+            reraise_msg,
+        );
         code.function(&f);
     }
 
@@ -1798,6 +1815,7 @@ pub fn lower_module_ex(
             }
             let mut ctx = EmitCtx {
                 comp_emit_cursor: 0,
+                fin_bodies: Vec::new(),
                 scan: &scan,
                 res_maps: &res_maps,
                 tab: &tab,
@@ -1810,6 +1828,7 @@ pub fn lower_module_ex(
                 cls_obj: None,
                 fg: g,
                 eh_wrap_top: eh_wrap,
+                reraise_msg,
             };
             let slot = scan
                 .fns
@@ -1903,6 +1922,7 @@ pub fn lower_module_ex(
         for item in &module.items {
             let mut ctx = EmitCtx {
                 comp_emit_cursor: comp_cursor,
+                fin_bodies: Vec::new(),
                 scan: &scan,
                 res_maps: &res_maps,
                 tab: &tab,
@@ -1915,6 +1935,7 @@ pub fn lower_module_ex(
                 cls_obj: None,
                 fg: g,
                 eh_wrap_top: eh_wrap,
+                reraise_msg,
             };
             match item {
                 Item::Stmt(stmt) => emit_stmt(&mut f, stmt, &mut ctx),
@@ -2349,6 +2370,13 @@ struct EmitCtx<'a> {
     /// hidden fns register in scan (source) order; emit visits comp exprs
     /// in the same order, so the cursor picks this call site's fn.
     comp_emit_cursor: usize,
+    /// Passive-segment (offset, len) of the bare-`raise` fallback message
+    /// "No active exception to reraise" (interned once per module, D5).
+    reraise_msg: (u32, u32),
+    /// try/finally bodies pending inline before a `return` (D11, mirrors
+    /// the c633a0b bytecode-mode inlining discipline: innermost LAST, a
+    /// return emits rev() = innermost first).
+    fin_bodies: Vec<Vec<ap_ir::item::Stmt>>,
 }
 
 /// Shared temp locals (valid in `_start` AND user-function frames; user
@@ -4578,6 +4606,7 @@ fn emit_user_fn(
     tab: &StrTab,
     g: &crate::prelude_classes::FrameGlobals,
     eh_wrap_top: bool,
+    reraise_msg: (u32, u32),
 ) -> Function {
     let nparams = uf.params.len() as u32;
     // local layout: 0/1/2 = FT_PY_RO convention (fn, args, kwargs), then
@@ -4875,6 +4904,7 @@ fn emit_user_fn(
     let mut buf_end = fx::PRINT_BUF;
     let mut ctx = EmitCtx {
         comp_emit_cursor: 0,
+        fin_bodies: Vec::new(),
         scan,
         res_maps: &[],
         tab,
@@ -4889,6 +4919,7 @@ fn emit_user_fn(
         // frame pokes/pops inside user fns only run when the caller's
         // module body is wrapped (03.03b gate)
         eh_wrap_top: eh_wrap_top,
+        reraise_msg,
     };
     if uf.is_generator {
         // emit_gen_step_fn closes $out, pushes the FT filler, and emits the
@@ -5184,6 +5215,16 @@ fn emit_stmt(f: &mut Function, stmt: &Stmt, ctx: &mut EmitCtx) {
             emit_name_store(f, n.as_str(), ctx);
         }
         Stmt::Return(Some(e)) => {
+            // D11: a return inside try/finally runs the pending finalbodies
+            // first (innermost first; mirrors c633a0b bytecode mode). The
+            // fin stack is DISABLED while emitting them (a return inside a
+            // finally overrides the pending ones — CPython semantics).
+            let saved_fin = std::mem::take(&mut ctx.fin_bodies);
+            for fin in saved_fin.iter().rev() {
+                for s in fin {
+                    emit_stmt(f, s, ctx);
+                }
+            }
             emit_expr(f, e, ctx);
             if ctx.eh_wrap_top {
                 f.instruction(&Instruction::Call(fx::FN_FRAME_POP));
@@ -5191,6 +5232,12 @@ fn emit_stmt(f: &mut Function, stmt: &Stmt, ctx: &mut EmitCtx) {
             f.instruction(&Instruction::Return);
         }
         Stmt::Return(None) => {
+            let saved_fin = std::mem::take(&mut ctx.fin_bodies);
+            for fin in saved_fin.iter().rev() {
+                for s in fin {
+                    emit_stmt(f, s, ctx);
+                }
+            }
             f.instruction(&Instruction::GlobalGet(G_NONE));
             if ctx.eh_wrap_top {
                 f.instruction(&Instruction::Call(fx::FN_FRAME_POP));
@@ -5887,9 +5934,50 @@ fn emit_class_def(f: &mut Function, cd: &ap_ir::item::ClassDef, ctx: &mut EmitCt
 /// Emit a raise (S-02-27/28/34): bare = re-raise via exc_raise on
 /// G_ACTIVE_EXC; value form = exc_raise (throw + tb snapshot); `from`
 /// rides exc_ctx_set first.
+///
+/// Bare `raise` needs G_ACTIVE_EXC to hold the in-flight exception. The
+/// try/except handler chain (emit_try_handlers) now GlobalSets it with the
+/// caught payload on entry (the old path only copied the payload to
+/// TEMP_LOCAL_A, so the global stayed null outside generator lowering and
+/// exc_raise trapped on the null — D5, bughunt 6.1). OUTSIDE any handler
+/// there is no active exception: CPython raises
+/// RuntimeError('No active exception to reraise') — build that inline and
+/// throw it instead of handing a null to exc_raise.
 fn emit_raise(f: &mut Function, e: Option<&Expr>, cause: Option<&Expr>, ctx: &mut EmitCtx) {
     match e {
         None => {
+            // active_exc null? -> RuntimeError("No active exception to reraise")
+            f.instruction(&Instruction::GlobalGet(ctx.fg.active_exc));
+            f.instruction(&Instruction::RefIsNull);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            let (msg_off, msg_len) = ctx.reraise_msg;
+            f.instruction(&Instruction::GlobalGet(
+                crate::types::exc_type_global("RuntimeError").unwrap_or(0),
+            ));
+            f.instruction(&Instruction::GlobalGet(
+                builtin_type_global("str").unwrap_or(0),
+            ));
+            f.instruction(&Instruction::I64Const(0));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::I32Const(msg_len as i32));
+            f.instruction(&Instruction::I32Const(msg_off as i32));
+            f.instruction(&Instruction::I32Const(msg_len as i32));
+            f.instruction(&Instruction::ArrayNewData {
+                array_type_index: T_BYTE_ARR,
+                array_data_index: 1,
+            });
+            f.instruction(&Instruction::StructNew(T_STR));
+            f.instruction(&Instruction::ArrayNewFixed {
+                array_type_index: T_OBJ_ARR_RO,
+                array_size: 1,
+            });
+            f.instruction(&Instruction::Call(fx::FN_EXC_NEW));
+            f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
+            f.instruction(&Instruction::Call(fx::FN_EXC_RAISE));
+            // FN_EXC_RAISE returns o; If(Empty) arms leave NO values
+            // (03.02c engine fact).
+            f.instruction(&Instruction::Drop);
+            f.instruction(&Instruction::End);
             f.instruction(&Instruction::GlobalGet(ctx.fg.active_exc));
             f.instruction(&Instruction::Call(fx::FN_EXC_RAISE));
             f.instruction(&Instruction::Drop);
@@ -5928,14 +6016,121 @@ fn emit_try(f: &mut Function, ts: &ap_ir::item::TryStmt, ctx: &mut EmitCtx) {
         }
         return;
     }
-    // finally (S-02-33): normal path runs finalbody inline; the exception
-    // path re-raises through the handler chain — finalbody-on-exception is
-    // the catch_all_ref surface, deferred (documented; corpus slice has
-    // finally only on the normal path).
-    emit_try_handlers(f, ts, ctx, false);
+    // finally (S-02-33). Two exit paths (D11, bughunt 6.1):
+    //   normal path: finalbody emitted inline after the guarded region.
+    //   exception path: a Catch::All try_table over the guarded region
+    //     lands in $fin-catch with the payload; the finalbody runs there,
+    //     then the payload rethrows.
+    // A `return` inside the body/handlers emits the pending finalbodies
+    // before the wasm return (ctx.fin_bodies — the c633a0b bytecode-mode
+    // inlining discipline, mirrored here). try/else/finally routes the
+    // else INSIDE the guarded region (an exception raised in the else also
+    // runs the finally — CPython semantics).
+    if ts.orelse.is_empty() {
+        emit_try_finally(f, ts, ctx);
+        return;
+    }
+    let mut with_else = ts.clone();
+    with_else.body.extend(ts.orelse.iter().cloned());
+    with_else.orelse = Vec::new();
+    emit_try_finally(f, &with_else, ctx);
+}
+
+/// try[/except][/else] ... finally — D11.
+/// Shape (payload handling mirrors the proven emit_try_handlers stash):
+///   Block $fin-catch (result exc-ref)     <- CatchAll label 0 target
+///     try_table (empty) [CatchAll -> 0 ($fin-catch)]
+///       guarded region (body / handler chain)
+///     end
+///     RefNull(exc)                        # success payload
+///   end                                   # payload: real exc or null
+///   LocalSet A; stash payload -> active_exc? NO (null on success); test:
+///   LocalGet A; RefIsNull; If             # null = success -> Br $fin-done
+///     Br 1
+///   End
+///   # exception: payload in A — publish it (bare raise in the finally
+///   # re-raises it, CPython's sys.exc_info in finally), run finalbody,
+///   # rethrow.
+///   GlobalSet(active_exc) with payload; finalbody; A -> Throw
+///   Br $fin-done                          # (unreachable — Throw)
+/// end ($fin-done)
+fn emit_try_finally(f: &mut Function, ts: &ap_ir::item::TryStmt, ctx: &mut EmitCtx) {
+    // $fin-done (Empty): the success exit lands here (a Br into an Empty
+    // block needs no stack value; the result block alone can't be Br'd to
+    // with an empty stack — the validation error this restructure fixed).
+    f.instruction(&Instruction::Block(BlockType::Empty));
+    ctx.depth += 1;
+    f.instruction(&Instruction::Block(BlockType::Result(ValType::Ref(
+        wasm_encoder::RefType {
+            nullable: true,
+            heap_type: hc(T_EXCEPTION),
+        },
+    )))); // $fin-catch
+    ctx.depth += 1;
+    {
+        // Catch::One on TAG_PYEXC (NOT Catch::All: a catch_all label must
+        // have NO result types, and this block carries the exc-ref payload;
+        // every Python exception this backend raises throws via TAG_PYEXC,
+        // so the guarded-region coverage is identical). The tag's payload
+        // is delivered ON the target label's stack — that is what lands in
+        // $fin-catch as the exception value.
+        let catches = [wasm_encoder::Catch::One {
+            tag: TAG_PYEXC,
+            label: 0,
+        }];
+        f.instruction(&Instruction::TryTable(
+            BlockType::Empty,
+            std::borrow::Cow::Owned(catches.to_vec()),
+        ));
+        ctx.depth += 1;
+        // finalbody open for Return inlining (innermost LAST on the stack;
+        // a return emits rev() = innermost first)
+        ctx.fin_bodies.push(ts.finalbody.clone());
+        if ts.handlers.is_empty() {
+            for s in &ts.body {
+                emit_stmt(f, s, ctx);
+            }
+        } else {
+            emit_try_handlers(f, ts, ctx, false);
+        }
+        ctx.fin_bodies.pop();
+        ctx.depth -= 1;
+        f.instruction(&Instruction::End); // try_table
+                                          // success: deliver a null payload to $fin-catch
+        f.instruction(&Instruction::RefNull(hc(T_EXCEPTION)));
+    }
+    ctx.depth -= 1;
+    f.instruction(&Instruction::End); // $fin-catch: exc (or null) on stack
+    f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A));
+    f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+    f.instruction(&Instruction::RefIsNull);
+    f.instruction(&Instruction::If(BlockType::Empty));
+    // success: leave the whole try/finally (0 = this If, 1 = $fin-done —
+    // $fin-catch already closed above, mirroring emit_try_handlers where
+    // the success Br(1) targets $out)
+    f.instruction(&Instruction::Br(1));
+    f.instruction(&Instruction::End);
+    // exception path: the payload IS the in-flight exception again (a bare
+    // raise inside the finally must re-raise it, not hit the no-active
+    // fallback) — publish BEFORE the finalbody, then run the finalbody
+    // with the fin stack DISABLED (a return inside the finally overrides,
+    // CPython semantics), then rethrow the payload.
+    f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+    f.instruction(&Instruction::GlobalSet(ctx.fg.active_exc));
+    let saved_fin = std::mem::take(&mut ctx.fin_bodies);
     for s in &ts.finalbody {
         emit_stmt(f, s, ctx);
     }
+    ctx.fin_bodies = saved_fin;
+    // rethrow the original payload
+    f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+    f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
+    f.instruction(&Instruction::Throw(TAG_PYEXC));
+    // (the Throw makes the $fin-catch tail stack-polymorphic; its End was
+    // already emitted above — right after the try_table End + RefNull —
+    // mirroring emit_try_handlers)
+    ctx.depth -= 1;
+    f.instruction(&Instruction::End); // $fin-done
 }
 
 /// try/except/else without finally.
@@ -5988,6 +6183,13 @@ fn emit_try_handlers(
     ctx.depth -= 1;
     f.instruction(&Instruction::End); // $catch: exc (or null) on stack
     f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A));
+    // D5 (bughunt 6.1): the caught payload IS the in-flight exception —
+    // publish it to G_ACTIVE_EXC so a bare `raise` inside the handler
+    // re-raises it (the old path only copied the payload to TEMP_LOCAL_A;
+    // the global stayed null outside generator lowering and exc_raise
+    // trapped on the null).
+    f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+    f.instruction(&Instruction::GlobalSet(ctx.fg.active_exc));
     f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
     f.instruction(&Instruction::RefIsNull);
     f.instruction(&Instruction::If(BlockType::Empty));
@@ -5995,12 +6197,33 @@ fn emit_try_handlers(
     // orelse wrap where it lands ON the orelse — $out end — instead)
     f.instruction(&Instruction::Br(1));
     f.instruction(&Instruction::End);
-    // handler chain (S-02-30)
+    // handler chain (S-02-30). A tuple target (D12c, bughunt 6.1) expands
+    // into an OR-chain of exc_match tests — the runtime never sees a tuple
+    // (exc_match casts its target to $type and would trap on one).
     for h in &ts.handlers {
         f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
         match &h.ty {
             None => {
                 f.instruction(&Instruction::I32Const(1)); // bare except
+            }
+            Some(Expr::Tuple(items)) => {
+                // matched = isinst(exc, t0) || isinst(exc, t1) || ...
+                // i32 OR-fold via I32If arms would need result-block plumbing;
+                // accumulate into TEMP_LOCAL_B? No — B is the EH payload stash
+                // under eh_wrap_top. Compute into a chain of If(Empty) arms
+                // writing TEMP_LOCAL_CMP (i32 scratch, dead across the test).
+                f.instruction(&Instruction::I32Const(0));
+                f.instruction(&Instruction::LocalSet(TEMP_LOCAL_CMP));
+                for t in items {
+                    f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+                    emit_expr(f, t, ctx);
+                    f.instruction(&Instruction::Call(fx::FN_EXC_MATCH));
+                    f.instruction(&Instruction::If(BlockType::Empty));
+                    f.instruction(&Instruction::I32Const(1));
+                    f.instruction(&Instruction::LocalSet(TEMP_LOCAL_CMP));
+                    f.instruction(&Instruction::End);
+                }
+                f.instruction(&Instruction::LocalGet(TEMP_LOCAL_CMP));
             }
             Some(ty) => {
                 emit_expr(f, ty, ctx);
@@ -6216,10 +6439,7 @@ fn emit_expr(f: &mut Function, e: &Expr, ctx: &mut EmitCtx) {
             // chain: AND-reduce each link (middle terms evaluated once on
             // the slice: side-effect-free operands)
             for (i, op) in ops.iter().enumerate() {
-                f.instruction(&Instruction::I32Const(cmp_op(*op)));
-                emit_expr(f, &operands[i], ctx);
-                emit_expr(f, &operands[i + 1], ctx);
-                f.instruction(&Instruction::Call(fx::FN_COMPARE));
+                emit_compare_link(f, op, &operands[i], &operands[i + 1], ctx);
             }
             for _ in 1..ops.len() {
                 f.instruction(&Instruction::I32And);
@@ -6420,13 +6640,34 @@ fn emit_expr(f: &mut Function, e: &Expr, ctx: &mut EmitCtx) {
 /// a pyobj and goes through TRUTHY. Semantically identical to
 /// bool(cond)-then-test (S-01-27) — the bool object wrapper carries no
 /// extra information the test reads.
+/// One compare link (D12, bughunt 6.1): `in`/`not in` route to
+/// FN_ITER_CONTAINS (eq scan over $list/$tuple; the old path fed OPS::IN
+/// to FN_COMPARE whose opcode chain had no IN arm -> Unreachable trap);
+/// everything else rides FN_COMPARE (str ordering now handled inside
+/// compare's ordering arm). `not in` = Eqz at the use site.
+fn emit_compare_link(f: &mut Function, op: &CmpOp, a: &Expr, b: &Expr, ctx: &mut EmitCtx) {
+    match op {
+        CmpOp::In | CmpOp::NotIn => {
+            emit_expr(f, b, ctx);
+            emit_expr(f, a, ctx);
+            f.instruction(&Instruction::Call(fx::FN_ITER_CONTAINS));
+            if matches!(op, CmpOp::NotIn) {
+                f.instruction(&Instruction::I32Eqz);
+            }
+        }
+        _ => {
+            f.instruction(&Instruction::I32Const(cmp_op(*op)));
+            emit_expr(f, a, ctx);
+            emit_expr(f, b, ctx);
+            f.instruction(&Instruction::Call(fx::FN_COMPARE));
+        }
+    }
+}
+
 fn emit_cond_i32(f: &mut Function, cond: &Expr, ctx: &mut EmitCtx) {
     if let Expr::Compare(ops, operands, _) = cond {
         for (i, op) in ops.iter().enumerate() {
-            f.instruction(&Instruction::I32Const(cmp_op(*op)));
-            emit_expr(f, &operands[i], ctx);
-            emit_expr(f, &operands[i + 1], ctx);
-            f.instruction(&Instruction::Call(fx::FN_COMPARE));
+            emit_compare_link(f, op, &operands[i], &operands[i + 1], ctx);
         }
         for _ in 1..ops.len() {
             f.instruction(&Instruction::I32And);
@@ -6606,9 +6847,68 @@ fn emit_call(f: &mut Function, func: &Expr, args: &[Arg], ctx: &mut EmitCtx) {
     // 03.03: method call obj.m(*args) — attribute lookup; when the found
     // value is a plain $function it is a descriptor and binds self
     // (S-03-9 binding rule) — args become [self, *args].
+    // D12d (bughunt 6.1): a MISSING attribute makes attr_get answer null —
+    // the old unguarded RefCastNullable($function) trapped as a raw wasm
+    // trap; CPython raises AttributeError('C' object has no attribute 'm').
+    // Null guard: build + throw that AttributeError (lit_str pattern, the
+    // emit_raise no-active-exception shape) instead of casting the null.
     if let Expr::Attribute(obj, mname, _) = func {
         emit_expr(f, obj, ctx);
         f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A)); // receiver
+        f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
+        push_interned_str(f, mname.as_str(), ctx);
+        f.instruction(&Instruction::Call(fx::FN_ATTR_GET));
+        f.instruction(&Instruction::RefIsNull);
+        f.instruction(&Instruction::If(BlockType::Empty));
+        // missing attribute -> AttributeError("<type name>' object has no attribute '<mname>'")-shaped
+        // (message bytes: TYPE_NAME(obj) + "' object has no attribute '" + name + "'") —
+        // full message assembly needs str_cat chains; this slice throws the
+        // CPython-PREFIX-exact short form via exc_new with a one-part args
+        // tuple (the corpus pins the raise type + rc, print(e) rides exc_msg).
+        let (off, len) = {
+            let msg = format!("' object has no attribute '{}'", mname.as_str());
+            let idx = ctx
+                .strs
+                .iter()
+                .position(|b| b.as_slice() == msg.as_bytes())
+                .expect("scan interned the missing-attr message");
+            let mut off = TYPE_ORDER
+                .iter()
+                .chain(EXC_TREE.iter().map(|(n, _)| n))
+                .map(|n| n.len() as u32)
+                .sum::<u32>();
+            for b in ctx.strs.iter().take(idx) {
+                off += b.len() as u32;
+            }
+            (off, msg.len() as u32)
+        };
+        f.instruction(&Instruction::GlobalGet(
+            crate::types::exc_type_global("AttributeError").unwrap_or(0),
+        ));
+        f.instruction(&Instruction::GlobalGet(
+            builtin_type_global("str").unwrap_or(0),
+        ));
+        f.instruction(&Instruction::I64Const(0));
+        f.instruction(&Instruction::I32Const(0));
+        f.instruction(&Instruction::I32Const(len as i32));
+        f.instruction(&Instruction::I32Const(off as i32));
+        f.instruction(&Instruction::I32Const(len as i32));
+        f.instruction(&Instruction::ArrayNewData {
+            array_type_index: T_BYTE_ARR,
+            array_data_index: 1,
+        });
+        f.instruction(&Instruction::StructNew(T_STR));
+        f.instruction(&Instruction::ArrayNewFixed {
+            array_type_index: T_OBJ_ARR_RO,
+            array_size: 1,
+        });
+        f.instruction(&Instruction::Call(fx::FN_EXC_NEW));
+        f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
+        f.instruction(&Instruction::Call(fx::FN_EXC_RAISE));
+        // exc_raise returns o; If(Empty) arms leave NO values (03.02c fact)
+        f.instruction(&Instruction::Drop);
+        f.instruction(&Instruction::End);
+        // non-null path: load the found attribute back for the cast below
         f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
         push_interned_str(f, mname.as_str(), ctx);
         f.instruction(&Instruction::Call(fx::FN_ATTR_GET));

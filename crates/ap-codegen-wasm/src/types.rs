@@ -305,7 +305,7 @@ pub const GLOBAL_COUNT: u32 = G_TYPE_BASE + TYPE_ORDER.len() as u32 + EXC_TREE.l
 
 /// (name, base) rows for the exception tree rt_init builds. Names/spellings
 /// match ap-run exc_hier.rs (S-03-32's observed 3.14 tree, corpus slice).
-pub const EXC_TREE: [(&str, &str); 24] = [
+pub const EXC_TREE: [(&str, &str); 25] = [
     ("BaseException", "object"),
     ("Exception", "BaseException"),
     ("TypeError", "Exception"),
@@ -330,6 +330,7 @@ pub const EXC_TREE: [(&str, &str); 24] = [
     ("GeneratorExit", "BaseException"),
     ("Warning", "Exception"),
     ("NotImplementedError", "RuntimeError"),
+    ("RecursionError", "RuntimeError"),
 ];
 
 /// Total $type globals after rt_init: TYPE_ORDER + the exception tree.
