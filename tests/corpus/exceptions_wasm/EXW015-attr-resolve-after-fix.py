@@ -1,4 +1,4 @@
-# Cites: S-03-9
+# Cites: S-03-09
 # Pins: real attributes/methods still resolve after the W3 rewire (the
 # method-call path re-stashes the receiver before FN_BOUND_OBJ — the
 # interim build dispatched a garbage bound arg).

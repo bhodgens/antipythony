@@ -1,4 +1,4 @@
-# Cites: S-03-9 S-07-28
+# Cites: S-03-09 S-07-28
 # Pins: a missing attribute READ (not call — EXW013's shape) raises the
 # CATCHABLE AttributeError with the FULL CPython message (audit W3: the
 # read path answered null and ExprStmt dropped it — rc=0 empty). The
