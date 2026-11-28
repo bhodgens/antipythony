@@ -167,6 +167,26 @@ CPython reference: 3.14.0 (codecs ground-truthed against 3.14.7).
   module-level loops never reach the JIT dispatch arm (the older 0.96x corpus report
   measured startup noise, not tier-1).
 
+## 5b. Fast-path bytecode tier — closing bench (2026-11-28)
+
+The fast-path plan (`plans/fast-path/`) landed a bytecode dispatch tier
+(flat instruction stream, line/site/exception tables, non-recursive dispatch),
+inline caches for globals/attrs/calls, three histogram-backed fused opcodes,
+and a per-function tier seam (bytecode fn -> tier-1 JIT fn -> bytecode fn in
+one process, proven byte-identical). Full method + architecture:
+`docs/fast-path-report.md`.
+
+Closing 64-row primitive bench in candidate bytecode mode (fresh release
+binary `068cc7f2...160`, `APX_TIER=bytecode`): **28 PASS / 36 FAIL / 0 ERROR**.
+Simple mean ratio vs CPython **3.292x** (>= 1.5x floor PASS; geomean 1.180x),
+but the master exit gate's parity clause is **NOT MET**: all 18 walk-bound
+rows remain below 1.0x (dict 0.18-0.28x, `list.sort` 0.11-0.17x, `sorted()`
+0.81-0.85x, join 0.19-0.23x, split 0.45-0.51x, `json.loads` 0.29-0.51x).
+Why: the probe hot loops are module-level and bypass `call_function` tier
+dispatch (function-shaped helpers DO run bytecode — `[BC-STATS] execs=79` on
+P09); byte-exactness held in every gate (13/13 three-way, 50/50 + 48/48 in
+both modes, 282 passed / 0 failed / 1 ignored). Default tier flip remains a USER GATE.
+
 ## 6. One-line takeaway
 
 antipythony already delivers, with measured gates, what CPython 3.14 does not: a
