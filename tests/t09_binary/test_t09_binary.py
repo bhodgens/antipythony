@@ -17,6 +17,7 @@
 #                 binary form, size bound (mode-gated, G-2), argv/cwd probes.
 #   XFAIL (04.02) — reproducible-build byte identity (separate marker, G-3).
 
+import atexit
 import os
 import re
 import shlex
@@ -179,12 +180,31 @@ def _cli_cmd() -> list:
 
 
 _BUILD_DIR = None
+_TRACKED_TMP_DIRS: list[Path] = []
+
+
+def _mkdtemp_tracked(prefix: str) -> Path:
+    """mkdtemp with registered cleanup. Plain mkdtemp never auto-deletes and
+    leaked ~43.8 GB of t09_* dirs in $TMPDIR across killed runs (2026-11-27
+    audit); every temp dir this suite makes goes through here so atexit rmtree
+    covers crash/`pytest -x`/Ctrl-C exits."""
+    d = Path(tempfile.mkdtemp(prefix=prefix))
+    _TRACKED_TMP_DIRS.append(d)
+    return d
+
+
+def _cleanup_tracked_tmp_dirs() -> None:
+    for d in _TRACKED_TMP_DIRS:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+atexit.register(_cleanup_tracked_tmp_dirs)
 
 
 def _build_root() -> Path:
     global _BUILD_DIR
     if _BUILD_DIR is None:
-        _BUILD_DIR = Path(tempfile.mkdtemp(prefix="t09_build_"))
+        _BUILD_DIR = _mkdtemp_tracked("t09_build_")
     return _BUILD_DIR
 
 
@@ -455,7 +475,7 @@ def test_reproducible_build_byte_identity():
     source into fresh paths MUST be byte-identical once the linker build-id is
     zeroed per the 04.02 reproducibility gate."""
     script = CORPUS / "001_hello.py"
-    root = Path(tempfile.mkdtemp(prefix="t09_repro_"))
+    root = _mkdtemp_tracked("t09_repro_")
     a = root / "a" / "app"
     b = root / "b" / "app"
     for out in (a, b):
@@ -490,8 +510,8 @@ def test_cwd_invariance():
     identical bytes + rc (C-04/C-27; x013 is cwd-invariant by construction —
     a static binary that breaks on cwd is a 02.06 packaging bug)."""
     app = build_binary(CASES / "x013_cwd_probe.py", "cwd_app")
-    d1 = Path(tempfile.mkdtemp(prefix="t09_cwd1_"))
-    d2 = Path(tempfile.mkdtemp(prefix="t09_cwd2_"))
+    d1 = _mkdtemp_tracked("t09_cwd1_")
+    d2 = _mkdtemp_tracked("t09_cwd2_")
     p1 = run_binary(app, cwd=d1)
     p2 = run_binary(app, cwd=d2)
     assert (p1.stdout, p1.stderr, p1.returncode) == (p2.stdout, p2.stderr, p2.returncode)
