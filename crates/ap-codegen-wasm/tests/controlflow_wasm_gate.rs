@@ -30,6 +30,9 @@ const CASES: &[(&str, &str)] = &[
     ("CF016-closure-factory-independent", ""),
     ("CF017-lambda-values", ""),
     ("CF018-nonlocal-shared-cell", ""),
+    // leaf wasm-findings (bughunt D11/D12a/b):
+    ("CF019-finally-on-raise-and-return", ""),
+    ("CF020-membership-str-order", ""),
 ];
 
 fn repo_root() -> std::path::PathBuf {
