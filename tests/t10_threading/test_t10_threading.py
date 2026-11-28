@@ -83,13 +83,23 @@ def _mask_ref_stdlib(data: bytes) -> bytes:
     """
     return re.sub(rb"/[^\s\"',;()]*?lib/python3\.14/([^\s\"',;()]*)",
                   rb"<REF>/lib/python3.14/\1", data)
-    # NOTE: line NUMBERS inside threading.py frames are also version- and
-    # host-conditional (darwin 3.14.7: 1082/1024; linux 3.14.10: 1083/1025).
-    # Masking them would drop the semantic frame identity, so instead the
-    # Face-A self-check skips T109 on non-darwin hosts (see DARWIN_PINNED).
+    # NOTE: line NUMBERS inside threading.py frames are also patch-conditional
+    # (3.14.7: 1082/1024; 3.14.10: 1083/1025). Masking them would drop the
+    # semantic frame identity, so instead the Face-A self-check skips the case
+    # unless the resolved reference IS the pinned patch (see PIN_PATCH_T10;
+    # issue #37 — the drift axis is the CPython patch, not the OS, so the old
+    # darwin-only guard let macos-15 + 3.14.10 through and it drifted).
 
 
-DARWIN_PINNED_T10 = frozenset({"T109-exception-in-thread"})
+# Cases whose pinned triple is frozen to one exact CPython PATCH release.
+# T109's thread-excepthook stderr embeds the reference's threading.py frame
+# line numbers (issue #17, then issue #37): 3.14.7 emits bootstrap_inner
+# 1082/_bootstrap 1024; 3.14.10 emits 1083/1025 — byte-verified identical
+# shift on BOTH CI legs (ubuntu and macos-15 both run 3.14.10 under
+# setup-python), which proves the drift rides the patch version, not the OS.
+# Keyed by stem -> pinned 'X.Y.Z'; the guard below skips whenever the resolved
+# reference reports a different patch.
+PIN_PATCH_T10 = {"T109-exception-in-thread": "3.14.7"}
 
 
 CORPUS_DIR = REPO_ROOT / "tests" / "corpus" / "threading"
@@ -99,6 +109,26 @@ EXPECTED_DIR = CORPUS_DIR / "expected"
 # AP_REQUIRE_REFERENCE=1 skip->fail policy; see tests/tools/_ref_python.py.
 sys.path.insert(0, str(REPO_ROOT / "tests" / "tools"))
 from _ref_python import reference_or_skip  # noqa: E402
+
+
+import functools
+
+
+@functools.lru_cache(maxsize=1)
+def _reference_version() -> str:
+    """Exact 'X.Y.Z' reported by the resolved reference interpreter.
+
+    _ref_python exposes only a coarse 3.14 boolean (_is_python_314), so the
+    patch level is read directly from `reference_or_skip() --version` once per
+    process (issue #37: T109's guard needs the PATCH, not just 3.14)."""
+    out = subprocess.run([reference_or_skip(), "--version"],
+                         capture_output=True, timeout=10)
+    text = (out.stdout + out.stderr).decode(errors="replace")
+    m = re.search(r"Python (\d+\.\d+\.\d+)", text)
+    if not m:
+        raise RuntimeError(f"cannot parse reference --version output: {text!r}")
+    return m.group(1)
+
 AP_CONFORM = os.environ.get(
     "AP_CONFORM", str(REPO_ROOT / "target" / "debug" / "ap-conform")
 )
@@ -179,11 +209,17 @@ def test_expected_stdout_nonempty_and_exit_pinned(case):
 
 @pytest.mark.parametrize("case", ALL_CASES, ids=case_ids())
 def test_expected_bytes_stable(case):
-    # T109's pin embeds darwin-3.14.7 threading.py line numbers (1082/1024);
-    # linux 3.14.10 emits 1083/1025 — the live reference itself cannot
-    # reproduce the pin off-darwin (issue #17 host-conditional class).
-    if case.stem in DARWIN_PINNED_T10 and sys.platform != "darwin":
-        pytest.skip("T109 pin is darwin-3.14.7-frozen (threading.py line numbers)")
+    # T109's pin embeds 3.14.7 threading.py line numbers (1082/1024); any
+    # other patch (e.g. CI's 3.14.10 -> 1083/1025 on BOTH OSes) makes the
+    # live reference itself unable to reproduce it — OS-independent drift
+    # (issue #37; supersedes the issue #17 darwin-only guard).
+    if case.stem in PIN_PATCH_T10:
+        ref_ver = _reference_version()
+        if ref_ver != PIN_PATCH_T10[case.stem]:
+            pytest.skip(
+                f"{case.stem} pin is CPython {PIN_PATCH_T10[case.stem]}-frozen "
+                f"(threading.py frame line numbers); resolved reference is "
+                f"{ref_ver} (issue #37)")
     # Re-run the reference and byte-compare all three channels against the
     # pinned triple (C-24/C-27: stdout, stderr, exit code; no trimming, no
     # normalization). Drift here means a race leaked into output: the case is
@@ -193,6 +229,13 @@ def test_expected_bytes_stable(case):
     exp_out = (EXPECTED_DIR / (stem + ".stdout")).read_bytes()
     exp_err = (EXPECTED_DIR / (stem + ".stderr")).read_bytes()
     exp_rc = int((EXPECTED_DIR / (stem + ".exit")).read_bytes())
+    if proc.stdout == b"" and exp_out != b"":
+        # T133 CI-only empty-stdout (issue #37): the stdout-first assert order
+        # hid the child's death reason; surface it.
+        pytest.fail(
+            f"{stem}: EMPTY stdout (want {len(exp_out)} bytes) — the child "
+            f"exited before printing. rc={proc.returncode} "
+            f"stderr(tail 2KB)={proc.stderr[-2048:]!r}")
     assert proc.stdout == exp_out, (
         f"{stem}: stdout drift\n got={proc.stdout!r}\nwant={exp_out!r}"
     )
