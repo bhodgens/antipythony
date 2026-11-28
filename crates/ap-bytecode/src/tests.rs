@@ -1720,7 +1720,8 @@ fn fused_peephole_preserves_jump_targets_and_line_table() {
         .iter()
         .any(|i| matches!(i, Instr::LoadConst2BinOp { .. })));
     // validate() checks every jump target, site id, const idx.
-    c.validate().expect("peephole preserves structural invariants");
+    c.validate()
+        .expect("peephole preserves structural invariants");
     for pc in 0..c.instrs.len() {
         assert!(c.lines.line_for(pc as u32) >= 1, "line at {pc}");
     }

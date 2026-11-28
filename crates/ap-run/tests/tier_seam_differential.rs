@@ -45,7 +45,13 @@ fn memory_pressure_ok() -> bool {
     let free_pages = text
         .lines()
         .find_map(|l| l.strip_prefix("Pages free:"))
-        .and_then(|v| v.trim().trim_end_matches('.').replace(',', "").parse::<u64>().ok())
+        .and_then(|v| {
+            v.trim()
+                .trim_end_matches('.')
+                .replace(',', "")
+                .parse::<u64>()
+                .ok()
+        })
         .unwrap_or(0);
     free_pages.saturating_mul(page_size) > 2 * 1024 * 1024 * 1024 || free_pages == 0
 }
@@ -233,9 +239,7 @@ fn program_stderr(stderr: &[u8]) -> String {
     // this leaf cannot edit the shared harness, so filter them here).
     stripped
         .lines()
-        .filter(|line| {
-            !line.starts_with("[TIER-SEAM]") && !line.starts_with("[TIER-SEAM-STATS]")
-        })
+        .filter(|line| !line.starts_with("[TIER-SEAM]") && !line.starts_with("[TIER-SEAM-STATS]"))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -272,10 +276,22 @@ fn assert_three_way(label: &str, probe: &Path, spec: &str) {
     );
     eprintln!("mixed stats stderr: {}", String::from_utf8_lossy(&mix_err));
 
-    assert_eq!(py_rc, tree_rc, "{label}: tree0 rc diverges from CPython 3.14");
-    assert_eq!(py_rc, mix_rc, "{label}: mixed rc diverges from CPython 3.14");
-    assert_eq!(py_out, tree_out, "{label}: tree0 stdout diverges from CPython");
-    assert_eq!(py_out, mix_out, "{label}: mixed stdout diverges from CPython");
+    assert_eq!(
+        py_rc, tree_rc,
+        "{label}: tree0 rc diverges from CPython 3.14"
+    );
+    assert_eq!(
+        py_rc, mix_rc,
+        "{label}: mixed rc diverges from CPython 3.14"
+    );
+    assert_eq!(
+        py_out, tree_out,
+        "{label}: tree0 stdout diverges from CPython"
+    );
+    assert_eq!(
+        py_out, mix_out,
+        "{label}: mixed stdout diverges from CPython"
+    );
     assert_eq!(
         program_stderr(&py_err),
         program_stderr(&tree_err),
@@ -304,9 +320,18 @@ fn assert_three_way(label: &str, probe: &Path, spec: &str) {
         jit > 0,
         "{label}: adaptive/tier-1 tier never executed (execs=0)"
     );
-    assert_eq!(tree, 0, "{label}: unexpected tree-walk fallback in mixed chain");
-    assert!(tier1 > 0, "{label}: tier-1 fast path never installed (tier1=0)");
-    assert!(bc_layer > 0, "{label}: BC-STATS execs=0 — vacuous byte compare");
+    assert_eq!(
+        tree, 0,
+        "{label}: unexpected tree-walk fallback in mixed chain"
+    );
+    assert!(
+        tier1 > 0,
+        "{label}: tier-1 fast path never installed (tier1=0)"
+    );
+    assert!(
+        bc_layer > 0,
+        "{label}: BC-STATS execs=0 — vacuous byte compare"
+    );
     assert!(
         jit_layer > 0,
         "{label}: TIER-STATS execs=0 — vacuous byte compare"

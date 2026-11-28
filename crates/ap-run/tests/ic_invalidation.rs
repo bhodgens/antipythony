@@ -335,7 +335,10 @@ fn assert_verdict(tier: &str, name: &str, want: &[&str]) {
         .map(|(_, s)| *s)
         .unwrap_or_else(|| panic!("unknown probe {name}"));
     let (out, err, rc) = run_probe(tier, src);
-    assert_eq!(rc, 0, "[{tier}/{name}] rc != 0\nstdout:\n{out}\nstderr:\n{err}");
+    assert_eq!(
+        rc, 0,
+        "[{tier}/{name}] rc != 0\nstdout:\n{out}\nstderr:\n{err}"
+    );
     // [TIER-STATS]/[BC-STATS] transparency lines are expected on stderr
     // (fp-exceptions' stats emitter prints them unconditionally on the
     // bytecode route); filter them before the clean-stderr assert.
@@ -344,12 +347,12 @@ fn assert_verdict(tier: &str, name: &str, want: &[&str]) {
         .filter(|l| !l.trim_start().starts_with("[TIER-STATS]"))
         .filter(|l| !l.trim_start().starts_with("[BC-STATS]"))
         .count();
-    assert!(
-        noisy == 0,
-        "[{tier}/{name}] stderr not clean: {err}"
-    );
+    assert!(noisy == 0, "[{tier}/{name}] stderr not clean: {err}");
     for w in want {
-        assert!(out.contains(w), "[{tier}/{name}] missing verdict {w:?} in:\n{out}");
+        assert!(
+            out.contains(w),
+            "[{tier}/{name}] missing verdict {w:?} in:\n{out}"
+        );
     }
 }
 
@@ -363,7 +366,10 @@ fn gate(name: &str, want: &[&str]) {
 
 #[test]
 fn inval_set_instance_attr_after_warm() {
-    gate("set_instance_attr_after_warm", &["SET-INST-OK", "SET-INST-OK2"]);
+    gate(
+        "set_instance_attr_after_warm",
+        &["SET-INST-OK", "SET-INST-OK2"],
+    );
 }
 
 #[test]
@@ -426,7 +432,10 @@ fn gate_with_ic_hits(name: &str, want: &[&str]) {
         "[bytecode/{name}] ic hit arm never exercised (ahit={ahit}):\n{err}"
     );
     for w in want {
-        assert!(out.contains(w), "[bytecode/{name}] missing verdict {w:?} in:\n{out}");
+        assert!(
+            out.contains(w),
+            "[bytecode/{name}] missing verdict {w:?} in:\n{out}"
+        );
     }
 }
 
@@ -525,10 +534,10 @@ print("CONTENTION-OK", samples, final)
     );
     // The probe emits "FREEZE: ..." (NOT "TEAR" — that typo made this
     // assertion vacuous). A stale IC under contention must fail here.
-    assert!(
-        !out.contains("FREEZE"),
-        "stale IC under contention:\n{out}"
-    );
+    assert!(!out.contains("FREEZE"), "stale IC under contention:\n{out}");
     let ahit = bc_ahit(&err);
-    assert!(ahit > 0, "contention never hit an IC site (ahit={ahit}):\n{err}");
+    assert!(
+        ahit > 0,
+        "contention never hit an IC site (ahit={ahit}):\n{err}"
+    );
 }

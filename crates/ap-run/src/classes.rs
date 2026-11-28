@@ -5905,8 +5905,7 @@ pub fn is_data_descriptor_scratch(v: &Value) -> bool {
             let Some(t) = t else {
                 return false;
             };
-            t.lookup("__set__").is_some()
-                || t.lookup("__delete__").is_some()
+            t.lookup("__set__").is_some() || t.lookup("__delete__").is_some()
         }
         // T1-d fix (attr/_make.py cached_property slots path): a FUNCTION
         // marked as cached_property is a data descriptor.
