@@ -1063,6 +1063,9 @@ pub const FT_ITER_CONTAINS: u32 = 108;
 /// returns (wasm `throw` is stack-polymorphic; the trailing null filler is
 /// validator-visible but unreachable).
 pub const FT_STOP_ITER: u32 = 109;
+/// leaf wasm-strplus: (i64 n, $str s) -> $str — str repetition (`'s' * n`;
+/// appended after FT_STOP_ITER; ids never move).
+pub const FT_S_REPEAT: u32 = 110;
 
 pub fn append_class_exc_fts(types: &mut wasm_encoder::TypeSection) {
     let o = || pyobj_ref();
@@ -1073,6 +1076,7 @@ pub fn append_class_exc_fts(types: &mut wasm_encoder::TypeSection) {
     let ro = || nullable_concrete(T_OBJ_ARR_RO);
     let ta = || nullable_concrete(T_TYPE_ARR);
     let i32v = || ValType::I32;
+    let i64v = || ValType::I64;
     // 63 FT_TAG: (exc) -> ()
     types.ty().function([ex()], []);
     // 63 FT_ATTR_GET: (o, str) -> o
@@ -1176,6 +1180,8 @@ pub fn append_class_exc_fts(types: &mut wasm_encoder::TypeSection) {
     // 109 FT_STOP_ITER: (o value, i32 empty-flag) -> o — build+throw
     //     StopIteration(args); never returns (throw is stack-polymorphic)
     types.ty().function([o(), i32v()], [o()]);
+    // 110 FT_S_REPEAT (leaf wasm-strplus): (i64 n, $str s) -> $str
+    types.ty().function([i64v(), sg()], [sg()]);
 }
 
 /// The `$tag_pyexc` wasm tag index (declared once, payload FT_TAG).

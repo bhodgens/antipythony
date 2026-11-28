@@ -113,10 +113,15 @@ pub const FN_SUPER_MRO_GET: u32 = 74; // (o super-obj, str) -> o  lookup after t
                                       // receiver, appended after 74 — dense, never renumbered.
                                       // FN_FIRST_USER moves 75 -> 76 for it.
 pub const FN_BOUND_OBJ: u32 = 75; // (o receiver) -> o  self for the call (null = use the args as-is)
+                                  // leaf wasm-strplus: str repetition driver, appended after py_call — dense,
+                                  // never renumbered. FN_FIRST_USER moves 75 -> 76 for it.
+pub const FN_STR_REPEAT: u32 = 76; // (i64 count, str) -> str  's' * n
 /// First wasm function index of the EMITTED user functions (Item::FnDef /
 /// Stmt::LocalDef), which follow the prelude densely. `_start` is
 /// computed at emit time as FN_FIRST_USER + n_user_fns.
-pub const FN_FIRST_USER: u32 = 76;
+/// leaf wasm-strplus: str_repeat appended AFTER emit_super_mro (lower.rs) —
+/// FN_FIRST_USER moved 75 -> 77 for it (dense, never renumbered).
+pub const FN_FIRST_USER: u32 = 77;
 
 /// rt_init is index 3 (03.03 layout: 0 fd_write, 1 abort_msg, 2 proc_exit,
 /// 3 rt_init — proc_exit joined the imports for the uncaught-traceback
@@ -126,8 +131,14 @@ pub const FN_RT_INIT: u32 = 3;
 /// Linear-memory scratch layout (S-07-41 print buffer + digit scratch).
 /// 0..64 iovec scratch; 64..1024 reserved; 1024.. print buffer; 4096..
 /// digit-assembly scratch.
-pub const PRINT_BUF: i32 = 1024;
-pub const DIGIT_SCRATCH: i32 = 4096;
+pub const PRINT_BUF: i32 = 16384;
+pub const DIGIT_SCRATCH: i32 = 32768;
+/// leaf wasm-strplus: print-start SAVE STACK (16 i32 slots — one per nesting
+/// level; a slot is only occupied while its print statement is between the
+/// save and the restore emissions, and nested prints occupy HIGHER slots).
+/// Print statements are never re-entered at the same depth concurrently on
+/// the single-threaded slice, so 16 levels bound the deepest legal nesting.
+pub const PRINT_SAVES: i32 = 33920;
 
 // ---------------------------------------------------------------------------
 // $binop / $unop / $compare opcode encoding (spec S-07-45 prelude op table).

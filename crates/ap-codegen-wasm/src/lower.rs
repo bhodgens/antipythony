@@ -1521,6 +1521,11 @@ pub fn lower_module_ex(
         active_exc: G_MOD_BASE + scan.module_names.len() as u32 + 4,
         pending_exc: G_MOD_BASE + scan.module_names.len() as u32 + 5,
     };
+    // leaf wasm-strplus: the SHARED print-buffer cursor global sits right
+    // after the frame block (the GlobalSection emission order below must
+    // match — G_PRINT_END is appended after G_PENDING_EXC).
+    let print_end_g = g.pending_exc + 1;
+    let print_depth_g = g.pending_exc + 2;
     crate::prelude_classes::emit_all(&mut funcs, &mut code, &mut tab, &g);
     // leaf 03.04: generators + iterator drivers (dense append after 61;
     // FN_FIRST_USER=69 is the tail of this block — never renumber).
@@ -1536,6 +1541,9 @@ pub fn lower_module_ex(
     // the attribute-call bound-object rule (FN_BOUND_OBJ = 75) — dense append
     // after the drains; FN_FIRST_USER moved 74 -> 76.
     crate::prelude_classes::emit_super_mro(&mut funcs, &mut code, &mut tab);
+    // leaf wasm-strplus: str repetition (FN_STR_REPEAT = 76) — dense append
+    // AFTER emit_super_mro; FN_FIRST_USER moved 75 -> 77 (emitter_state).
+    prelude::str_repeat(&mut funcs, &mut code);
 
     // ---- 03.03b: the top-level EH wrap is ON BY DEFAULT. The parked
     // "operators remaining / values remaining on stack" rejection was NOT a
@@ -1706,6 +1714,30 @@ pub fn lower_module_ex(
             T_PYOBJ,
         ))]),
     ); // G_PENDING_EXC (module-boundary escape hatch for tb_render)
+    globals.global(
+        GlobalType {
+            val_type: ValType::I32,
+            mutable: true,
+            shared: false,
+        },
+        &ConstExpr::extended([Instruction::I32Const(fx::PRINT_BUF)]),
+    ); // G_PRINT_END (leaf wasm-strplus): the SHARED print-buffer cursor.
+       // Nested prints during argument evaluation read/append/flush/restore
+       // this cursor, so every print flushes its own disjoint [start..end)
+       // range and a callee can no longer clobber the caller's partial line
+       // (the per-frame local-40 scheme is retired).
+    globals.global(
+        GlobalType {
+            val_type: ValType::I32,
+            mutable: true,
+            shared: false,
+        },
+        &ConstExpr::extended([Instruction::I32Const(0)]),
+    ); // G_PRINT_DEPTH (leaf wasm-strplus): the print nesting level. Each
+       // print statement saves the cursor at PRINT_SAVES[depth], bumps the
+       // depth, and restores both at the flush; a nested print inside
+       // argument evaluation occupies the NEXT slot, so no locals (which
+       // nested calls clobber) are needed to carry the start across.
 
     // NOTE: the data-segment blob is snapshotted AFTER _start emission —
     // the EH-wrap prologue pushes the source filename + "<module>" into the
@@ -1810,6 +1842,8 @@ pub fn lower_module_ex(
                 cls_obj: None,
                 fg: g,
                 eh_wrap_top: eh_wrap,
+                print_end_g,
+                print_depth_g,
             };
             let slot = scan
                 .fns
@@ -1915,6 +1949,8 @@ pub fn lower_module_ex(
                 cls_obj: None,
                 fg: g,
                 eh_wrap_top: eh_wrap,
+                print_end_g,
+                print_depth_g,
             };
             match item {
                 Item::Stmt(stmt) => emit_stmt(&mut f, stmt, &mut ctx),
@@ -2340,11 +2376,18 @@ struct EmitCtx<'a> {
     /// after the module namespace); the G_* consts are pre-namespace and
     /// wrong whenever the module has names.
     fg: crate::prelude_classes::FrameGlobals,
-    /// Top-level EH wrap is active: the wrap's catch payload rides
+    /// EH wrap is active: the wrap's catch payload rides
     /// TEMP_LOCAL_A across the handler, so statement emission must NOT
     /// use TEMP_LOCAL_A as a scratch across block boundaries (03.03b).
     /// Scratch here = TEMP_LOCAL_B/TEMP_LOCAL_S.
     eh_wrap_top: bool,
+    /// Global slot of the SHARED print-buffer cursor (leaf wasm-strplus):
+    /// G_PRINT_END. Print statements read/advance/restore it instead of the
+    /// retired per-frame local-40 scheme.
+    print_end_g: u32,
+    /// Global slot of the print NESTING DEPTH (leaf wasm-strplus):
+    /// G_PRINT_DEPTH (pairs with the PRINT_SAVES memory stack).
+    print_depth_g: u32,
     /// Emit cursor for per-module hidden <listcomp> fns (03.04f GE005):
     /// hidden fns register in scan (source) order; emit visits comp exprs
     /// in the same order, so the cursor picks this call site's fn.
@@ -4239,9 +4282,33 @@ fn gen_emit_builtin(f: &mut Function, name: &str, args: &[Arg], ctx: &mut EmitCt
     }
     match name {
         "print" => {
+            // Leaf wasm-strplus: SAME shared-global-cursor + PRINT_SAVES
+            // save-stack scheme as emit_builtin_call's print (see the long
+            // comment there). Gen scratch is NOT safe to carry the start —
+            // nested emissions clobber it — so everything rides globals.
+            // i32.store pops [addr, value] — the ADDRESS goes first (an
+            // operand swap here stores the cursor INTO the buffer and the
+            // slot keeps 0: the flush then reads start=0 and re-emits raw
+            // memory — the 16386-byte stdout bug).
+            f.instruction(&Instruction::GlobalGet(ctx.print_depth_g));
+            f.instruction(&Instruction::I32Const(4));
+            f.instruction(&Instruction::I32Mul);
+            f.instruction(&Instruction::I32Const(fx::PRINT_SAVES));
+            f.instruction(&Instruction::I32Add);
+            f.instruction(&Instruction::GlobalGet(ctx.print_end_g));
+            f.instruction(&Instruction::I32Store(wasm_encoder::MemArg {
+                offset: 0,
+                align: 2,
+                target: wasm_encoder::MemArgTarget::Memory(0),
+                ordering: None,
+            }));
+            f.instruction(&Instruction::GlobalGet(ctx.print_depth_g));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Add);
+            f.instruction(&Instruction::GlobalSet(ctx.print_depth_g));
             for (i, a) in pos.iter().enumerate() {
                 if i > 0 {
-                    f.instruction(&Instruction::LocalGet(TEMP_LOCAL));
+                    f.instruction(&Instruction::GlobalGet(ctx.print_end_g));
                     f.instruction(&Instruction::I32Const(b' ' as i32));
                     f.instruction(&Instruction::I32Store8(wasm_encoder::MemArg {
                         offset: 0,
@@ -4249,24 +4316,48 @@ fn gen_emit_builtin(f: &mut Function, name: &str, args: &[Arg], ctx: &mut EmitCt
                         target: wasm_encoder::MemArgTarget::Memory(0),
                         ordering: None,
                     }));
-                    f.instruction(&Instruction::LocalGet(TEMP_LOCAL));
+                    f.instruction(&Instruction::GlobalGet(ctx.print_end_g));
                     f.instruction(&Instruction::I32Const(1));
                     f.instruction(&Instruction::I32Add);
-                    f.instruction(&Instruction::LocalSet(TEMP_LOCAL));
+                    f.instruction(&Instruction::GlobalSet(ctx.print_end_g));
                 }
                 gen_emit_expr(f, a, ctx, gen);
                 f.instruction(&Instruction::Call(fx::FN_PY_STR));
                 f.instruction(&Instruction::LocalSet(gen.scratch.s));
-                f.instruction(&Instruction::LocalGet(TEMP_LOCAL));
+                f.instruction(&Instruction::GlobalGet(ctx.print_end_g));
                 f.instruction(&Instruction::LocalGet(gen.scratch.s));
                 f.instruction(&Instruction::Call(fx::FN_PRINT_ONE));
-                f.instruction(&Instruction::LocalSet(TEMP_LOCAL));
+                f.instruction(&Instruction::GlobalSet(ctx.print_end_g));
             }
-            f.instruction(&Instruction::I32Const(fx::PRINT_BUF));
-            f.instruction(&Instruction::LocalGet(TEMP_LOCAL));
+            f.instruction(&Instruction::GlobalGet(ctx.print_depth_g));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Sub);
+            f.instruction(&Instruction::GlobalSet(ctx.print_depth_g));
+            f.instruction(&Instruction::GlobalGet(ctx.print_depth_g));
+            f.instruction(&Instruction::I32Const(4));
+            f.instruction(&Instruction::I32Mul);
+            f.instruction(&Instruction::I32Const(fx::PRINT_SAVES));
+            f.instruction(&Instruction::I32Add);
+            f.instruction(&Instruction::I32Load(wasm_encoder::MemArg {
+                offset: 0,
+                align: 2,
+                target: wasm_encoder::MemArgTarget::Memory(0),
+                ordering: None,
+            }));
+            f.instruction(&Instruction::GlobalGet(ctx.print_end_g));
             f.instruction(&Instruction::Call(fx::FN_PRINT_FLUSH));
-            f.instruction(&Instruction::I32Const(fx::PRINT_BUF));
-            f.instruction(&Instruction::LocalSet(TEMP_LOCAL));
+            f.instruction(&Instruction::GlobalGet(ctx.print_depth_g));
+            f.instruction(&Instruction::I32Const(4));
+            f.instruction(&Instruction::I32Mul);
+            f.instruction(&Instruction::I32Const(fx::PRINT_SAVES));
+            f.instruction(&Instruction::I32Add);
+            f.instruction(&Instruction::I32Load(wasm_encoder::MemArg {
+                offset: 0,
+                align: 2,
+                target: wasm_encoder::MemArgTarget::Memory(0),
+                ordering: None,
+            }));
+            f.instruction(&Instruction::GlobalSet(ctx.print_end_g));
         }
         "next" => {
             // 1-arg: value = iter_next(it) (SI propagates). 2-arg:
@@ -4889,6 +4980,8 @@ fn emit_user_fn(
         // frame pokes/pops inside user fns only run when the caller's
         // module body is wrapped (03.03b gate)
         eh_wrap_top: eh_wrap_top,
+        print_end_g: g.pending_exc + 1,
+        print_depth_g: g.pending_exc + 2,
     };
     if uf.is_generator {
         // emit_gen_step_fn closes $out, pushes the FT filler, and emits the
@@ -6966,11 +7059,44 @@ fn emit_builtin_call(f: &mut Function, name: &str, args: &[Arg], ctx: &mut EmitC
     }
     match name {
         "print" => {
-            // print(*args): space-joined str(x) + newline via the print
-            // buffer; running end lives in TEMP_LOCAL (i32).
+            // print(*args): space-joined str(x) + newline. Leaf wasm-strplus:
+            // the buffer cursor is the SHARED GLOBAL ctx.print_end_g (was the
+            // per-frame local 40 — a callee's print re-initialized it to
+            // PRINT_BUF and its flush destroyed the caller's partial line,
+            // 'print('A', inner())' printing 'inB'). Emission:
+            //   start = G_PRINT_END; for each arg: ',' -> store ' ' at cursor,
+            //   cursor++; arg -> py_str -> print_one(cursor) -> cursor;
+            //   print_flush(start, cursor); G_PRINT_END = start.
+            // Nested prints inside argument evaluation read the SAME global:
+            // they flush their own disjoint [start..end) range and restore
+            // the cursor, so the outer line's bytes are never clobbered and
+            // CPython's evaluation-order interleaving is byte-exact. The
+            // start itself rides the PRINT_SAVES memory stack (index =
+            // G_PRINT_DEPTH) — NO locals: any local (CMP/A/B/S) can be
+            // clobbered by the nested emission of an argument.
+            // i32.store pops [addr, value] — the ADDRESS goes first (an
+            // operand swap here stores the cursor INTO the buffer and the
+            // slot keeps 0: the flush then reads start=0 and re-emits raw
+            // memory — the 16386-byte stdout bug).
+            f.instruction(&Instruction::GlobalGet(ctx.print_depth_g));
+            f.instruction(&Instruction::I32Const(4));
+            f.instruction(&Instruction::I32Mul);
+            f.instruction(&Instruction::I32Const(fx::PRINT_SAVES));
+            f.instruction(&Instruction::I32Add);
+            f.instruction(&Instruction::GlobalGet(ctx.print_end_g));
+            f.instruction(&Instruction::I32Store(wasm_encoder::MemArg {
+                offset: 0,
+                align: 2,
+                target: wasm_encoder::MemArgTarget::Memory(0),
+                ordering: None,
+            }));
+            f.instruction(&Instruction::GlobalGet(ctx.print_depth_g));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Add);
+            f.instruction(&Instruction::GlobalSet(ctx.print_depth_g));
             for (i, a) in args.iter().enumerate() {
                 if i > 0 {
-                    f.instruction(&Instruction::LocalGet(TEMP_LOCAL));
+                    f.instruction(&Instruction::GlobalGet(ctx.print_end_g));
                     f.instruction(&Instruction::I32Const(b' ' as i32));
                     f.instruction(&Instruction::I32Store8(wasm_encoder::MemArg {
                         offset: 0,
@@ -6978,10 +7104,10 @@ fn emit_builtin_call(f: &mut Function, name: &str, args: &[Arg], ctx: &mut EmitC
                         target: wasm_encoder::MemArgTarget::Memory(0),
                         ordering: None,
                     }));
-                    f.instruction(&Instruction::LocalGet(TEMP_LOCAL));
+                    f.instruction(&Instruction::GlobalGet(ctx.print_end_g));
                     f.instruction(&Instruction::I32Const(1));
                     f.instruction(&Instruction::I32Add);
-                    f.instruction(&Instruction::LocalSet(TEMP_LOCAL));
+                    f.instruction(&Instruction::GlobalSet(ctx.print_end_g));
                 }
                 let Arg::Pos(xe) = a else {
                     unreachable!("scan vetted positional args");
@@ -6997,20 +7123,46 @@ fn emit_builtin_call(f: &mut Function, name: &str, args: &[Arg], ctx: &mut EmitC
                     f.instruction(&Instruction::LocalGet(TEMP_LOCAL_A));
                     f.instruction(&Instruction::LocalSet(TEMP_LOCAL_B));
                 }
-                f.instruction(&Instruction::LocalGet(TEMP_LOCAL));
+                f.instruction(&Instruction::GlobalGet(ctx.print_end_g));
                 f.instruction(&Instruction::LocalGet(TEMP_LOCAL_S));
                 f.instruction(&Instruction::Call(fx::FN_PRINT_ONE));
-                f.instruction(&Instruction::LocalSet(TEMP_LOCAL));
+                f.instruction(&Instruction::GlobalSet(ctx.print_end_g));
                 if ctx.eh_wrap_top {
                     f.instruction(&Instruction::LocalGet(TEMP_LOCAL_B));
                     f.instruction(&Instruction::LocalSet(TEMP_LOCAL_A));
                 }
             }
-            f.instruction(&Instruction::I32Const(fx::PRINT_BUF));
-            f.instruction(&Instruction::LocalGet(TEMP_LOCAL));
+            // d = depth - 1; start = SAVES[d]; flush(start, cursor);
+            // cursor = start; depth = d.
+            f.instruction(&Instruction::GlobalGet(ctx.print_depth_g));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Sub);
+            f.instruction(&Instruction::GlobalSet(ctx.print_depth_g));
+            f.instruction(&Instruction::GlobalGet(ctx.print_depth_g));
+            f.instruction(&Instruction::I32Const(4));
+            f.instruction(&Instruction::I32Mul);
+            f.instruction(&Instruction::I32Const(fx::PRINT_SAVES));
+            f.instruction(&Instruction::I32Add);
+            f.instruction(&Instruction::I32Load(wasm_encoder::MemArg {
+                offset: 0,
+                align: 2,
+                target: wasm_encoder::MemArgTarget::Memory(0),
+                ordering: None,
+            }));
+            f.instruction(&Instruction::GlobalGet(ctx.print_end_g));
             f.instruction(&Instruction::Call(fx::FN_PRINT_FLUSH));
-            f.instruction(&Instruction::I32Const(fx::PRINT_BUF));
-            f.instruction(&Instruction::LocalSet(TEMP_LOCAL));
+            f.instruction(&Instruction::GlobalGet(ctx.print_depth_g));
+            f.instruction(&Instruction::I32Const(4));
+            f.instruction(&Instruction::I32Mul);
+            f.instruction(&Instruction::I32Const(fx::PRINT_SAVES));
+            f.instruction(&Instruction::I32Add);
+            f.instruction(&Instruction::I32Load(wasm_encoder::MemArg {
+                offset: 0,
+                align: 2,
+                target: wasm_encoder::MemArgTarget::Memory(0),
+                ordering: None,
+            }));
+            f.instruction(&Instruction::GlobalSet(ctx.print_end_g));
         }
         "bool" => {
             f.instruction(&Instruction::I32Const(0)); // unused op
