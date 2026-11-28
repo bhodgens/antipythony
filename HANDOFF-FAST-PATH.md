@@ -338,3 +338,42 @@ ic_invalidation 9/9; cargo ap-bytecode+ap-run --release rc=0,
   lower module-level loops) before re-running; otherwise file the gate
   as an honest gap and let the user choose.
 - Disk 30 GB free / 927 GB (97%) at 17:45.
+
+---
+
+## ADDENDUM 2026-11-28 (probe shaping + independent correction)
+
+### Merged
+- e36e817 — merge fp-function-probes (7de8665). Four probe files changed
+  so hot loops run in NAMED module-level functions. Official bytecode
+  bench: 64 rows, 29 PASS / 35 FAIL / 0 ERROR, simple mean 3.484x.
+  ALL 18 exit-gate rows remain BELOW 1.0x: dict.getitem 0.608/0.335/
+  0.323x, dict.build 0.463/0.186/0.186x, list.sort 0.141/0.102/0.126x,
+  sorted() 0.867/0.938/0.803x, str.join 0.214/0.234x, str.split 0.493/
+  0.503x, json.loads 0.509/0.279x. Exercise proven: BC-STATS execs>0
+  on all 4 probes; p09 ghit=850998. Byte-exact gates green.
+
+### INDEPENDENT AUDIT CORRECTION (deleg_c8ef4845 task 1) — VERDICT SHAPING-INSUFFICIENT
+- My earlier root cause was WRONG: probe workloads were LAMBDAS, which DO
+  enter call_function (interp.rs:8666) but skip tier dispatch because
+  eval_expr short-circuits at interp.rs:10018-10019. P09 inner loops
+  (build/get_lookups/getitem_lookups/iter_keys) were ALREADY named
+  functions and already on the bytecode path. Do not repeat the wrong
+  "module-level bypass" claim.
+- Issue #33 was mis-specified: it claimed 48KiB+1MiB for every family =
+  15 rows, but the 18 rows are 4 families x3 arms + 3 x2. run_bench.py
+  :131-132 buckets all 12 P09 rows to the '48KiB' label; no 1MiB dict
+  row exists. Issue body AND comment were corrected.
+- p08 list.sort rows regenerate random data INSIDE the timed region while
+  sorted() rows reuse pre-built data — the 0.11-0.17x vs 0.81-0.85x gap
+  is partly a workload mismatch. Future A/B must pair inputs.
+- Audit verified all 64 numbers in docs/fast-path-report.md match the
+  JSON exactly; no transcription error. It flagged that 14 other sub-1.0x
+  rows exist outside the 18-row gate framing.
+
+### State
+- Default flip NOT executed. Issue #33 remains OPEN, deferred.
+- Shaping is exhausted as a lever. Remaining work is structural:
+  lazy BoundMethod mint, GC registry nursery/batching, homogeneous
+  int-list compare, bulk list-of-str join, str.split per-piece allocation,
+  json C-style scanner.
