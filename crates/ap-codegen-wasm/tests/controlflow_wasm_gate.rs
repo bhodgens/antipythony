@@ -33,6 +33,8 @@ const CASES: &[(&str, &str)] = &[
     // leaf wasm-findings (bughunt D11/D12a/b):
     ("CF019-finally-on-raise-and-return", ""),
     ("CF020-membership-str-order", ""),
+    // leaf wasm-w2w3 (audit W2):
+    ("CF021-membership-str-substring", ""),
 ];
 
 fn repo_root() -> std::path::PathBuf {
