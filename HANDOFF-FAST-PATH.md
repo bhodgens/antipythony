@@ -267,3 +267,32 @@ Disk at 14:01: 51 GB free / 927 GB (95%). One heavy cargo lane only.
 ### Next
 - 02-perf COMPLETE. 03-rollout is USER GATED (default flip). Prerequisite:
   per-function tier dispatch seam (bb2731e design doc). Disk 34 GB free.
+
+---
+
+## ADDENDUM 2026-11-27 17:30 MST (tier seam merged)
+
+### Merged
+- 506b976 — merge fp-tier-dispatch-seam (ee6ddae). Explicit per-function
+  tier override via APX_TIER_SEAM_OVERRIDE / --tier-seam
+  'bytecode:outer,adaptive:mid,bytecode:inner', keyed by FnEntry Arc
+  pointer (process-global OnceLock, no source markers). Bad specs fail
+  loudly. DEFAULT UNCHANGED — no flip.
+- Mixed chain PROVEN first-hand on fresh target-pp-fastpath binary:
+  [TIER-SEAM-STATS] bytecode_execs=62 adaptive_execs=31 tree_execs=0,
+  [TIERUP-STATS] tier1=1, [BC-STATS] execs=62, stdout 1999003 =
+  CPython 3.14 output byte-for-byte.
+- tier_seam_differential 3/3 green on trunk. Leaf reported ap-run 20
+  suites / 225 passed / 0 failed / 1 ignored.
+
+### Verification GAP (honest)
+- My own full ap-run --release suite run was BLOCKED by an approval
+  timeout on the terminal command; I did not retry it. Before the seam
+  merge I had verified 21 suites / 274 passed / 0 failed on trunk.
+  The seam leaf reports its own full suite green. Re-run in a quiet
+  window before the final gate sign-off.
+
+### Next (03-rollout, no flip yet)
+- Run the composition matrix (20 meaningful cells) and the standard
+  battery, then the candidate-mode (bytecode) closing 64-row bench.
+  Default flip remains the sole USER GATE.
