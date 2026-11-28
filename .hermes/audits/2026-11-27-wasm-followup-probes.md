@@ -34,6 +34,21 @@ Each leaf's own corpus cases are byte-exact; these shapes sit outside them.
 - Site: lower.rs attribute-call path / the leaf's attr_get null-guard - verify it calls
   FN_EXC_RAISE (not a return-null); check the top-level EH wrap handles module-body raises.
 
+## Outcome (updated 2026-11-27, after the fix leaves)
+
+- W2 FIXED: merge 96cbd1c (leaf wasm-w2w3). FN_ITER_CONTAINS gained a
+  $str/$str substring arm + a $dict arm; CF021 pins it byte-exact.
+- W3 FIXED: same merge. New FN_ATTR_GET_EXC=77 raises a catchable
+  AttributeError with the byte-exact CPython message; uncaught prints a
+  traceback + rc 1. EXW014/EXW015 pin it. Parent harness: both probes
+  PASS on the merged tree.
+- W1 (int overflow): leaf wasm-bigint landed the promotion core on
+  branch fix-wasm-bigint (gates green, silent wrap eliminated) but
+  honest-stopped PARTIAL: promoted values still print wrong bytes
+  (2**63 -> '1'). Characterization + continuation spec in issue #31
+  (comment 7235348922); a continuation leaf is in flight. NOT merged to
+  main yet - merges only when the 8 issue probes are byte-exact.
+
 ## Method note
 The leaves verified their fixes with corpus shapes; my post-merge probes diverge on adjacent
 shapes. Both facts are true. The honest reading: fixes are partial for D3/D12; the addendum
