@@ -238,8 +238,14 @@ def test_no_nondeterministic_addresses_leak(case):
 # ---------------------------------------------------------------------------
 
 
-@xfail_ap_conform
-@pytest.mark.parametrize("sname", sorted(SLICE_DIRS))
+# 2026-11-28 flip wave (issue #29): with the CI APX_IMPL seam + ap-conform
+# --tier splice fixed, the tier-0 gate runs for real: the exceptions slice +
+# 50/53 cases are byte-green (darwin full run 2026-11-28). Genuine failures
+# keep per-param markers (c002/c030/c031 engine gaps, classes slice rollup).
+@pytest.mark.parametrize(
+    "sname",
+    [pytest.param(s, marks=xfail_ap_conform) if s == "classes" else s
+     for s in sorted(SLICE_DIRS)])
 def test_ap_conform_slice_green_tier0(sname):
     # 02.03 Gate: "corpus classes/exceptions slices green under tier-0".
     proc = run_conform(str(SLICE_DIRS[sname] / "*.py"))
@@ -248,8 +254,17 @@ def test_ap_conform_slice_green_tier0(sname):
     )
 
 
-@xfail_ap_conform
-@pytest.mark.parametrize("case", IDS)
+_STILL_XFAIL_T06_CASES = frozenset({
+    "classes/c002_class_dict_and_body",
+    "classes/c030_unary_contains_metaclass_hooks",
+    "classes/c031_init_subclass_and_meta_call",
+})
+
+
+@pytest.mark.parametrize(
+    "case",
+    [pytest.param(c, marks=xfail_ap_conform)
+     if c in _STILL_XFAIL_T06_CASES else c for c in IDS])
 def test_ap_conform_case_green_tier0(case):
     sname, stem = case.split("/")
     script = SLICE_DIRS[sname] / (stem + ".py")

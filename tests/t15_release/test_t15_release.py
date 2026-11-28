@@ -293,7 +293,9 @@ def test_notices_license_policy_conformance():
     )
 
 
-@XFAIL_0403
+# 2026-11-28 flip wave (issue #29): XPASS on both CI hosts (ubuntu run
+# 46064375840 + darwin full run 2026-11-28). 04.03's matrix workflow +
+# install script landed — hard assert now.
 def test_ci_matrix_runner_config_exists():
     """04.03 text: 'CI matrix (linux-musl static, linux-gnu, macos-arm64,
     macos-x86_64)'. A CI runner config declaring those targets must exist in
@@ -373,7 +375,8 @@ def test_release_artifact_per_matrix_target(target):
         )
 
 
-@XFAIL_0403
+# 2026-11-28 flip wave (issue #29): XPASS on both CI hosts — scripts/install.sh
+# (04.03) is committed and POSIX-parseable. Hard assert now.
 def test_install_script_exists_and_posix_parseable():
     """04.03 text: 'install script'. URL and PATH are unpinned (G-1): we look
     for a committed install shell script (dist/install.sh or

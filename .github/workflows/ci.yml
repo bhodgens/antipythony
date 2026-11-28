@@ -255,11 +255,20 @@ jobs:
           # ABSOLUTE paths: several suites spawn these with cwd=scratch dirs
           # (t14 _run_cli cwd=home/proj), so a relative seam path ENOENTs
           # (CI 45895467048: t14 new/build ENOENT with cwd-relative path).
-          # APX_IMPL carries the `run` verb (t05/t07/t08/t10/t11 append
-          # corpus files); APX_CLI must NOT (t09/t14/t15 append their own
+          # APX_IMPL is the ap-conform/pytest IMPL seam `<program> [args...]`
+          # (t05:280 t07:143 t08:162 t10 t11 append the corpus file directly;
+          # ap-conform main.rs splices --tier after argv[0]). ap-run-eval is
+          # clap-strict (`Usage: ap-run-eval [OPTIONS] <FILE>`) — it has NO
+          # `run` verb, and the trailing "run" made every non-ap-conform
+          # spawn die with "unexpected argument" (issue #29: t10
+          # test_gil_free_correctness_differential + test_scaling_gate
+          # on run 46064375840). The suite-local PATH/target fallbacks all
+          # use `antipythony run`, so the seam mirrors that binary for
+          # cross-checking on fresh machines.
+          APX_IMPL: "${{ github.workspace }}/target-0304c/debug/ap-run-eval"
+          # APX_CLI carries NO run verb (t09/t14/t15/t16 append their own
           # verbs — `antipythony run new myapp` was the run 45898948109
           # new_scaffolds failure).
-          APX_IMPL: "${{ github.workspace }}/target-0304c/debug/ap-run-eval run"
           APX_CLI: "${{ github.workspace }}/target-0304c/debug/antipythony"
         run: |
           set -o pipefail

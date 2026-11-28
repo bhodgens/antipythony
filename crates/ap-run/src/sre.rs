@@ -1971,6 +1971,21 @@ impl Groups {
 
 impl<'a> Matcher<'a> {
     /// Search: leftmost match starting at each position in [from, end).
+    ///
+    /// Issue #30 proof (transmute REMOVED): `run` borrows the AST root for
+    /// exactly the duration of the call and never lets the reference
+    /// escape (m/m_seq carry node data only as re-borrows or raw pointers
+    /// re-dereferenced inside the call). Every caller passes a root that
+    /// outlives the statement: sre.rs pat_exec/pat_sub/pat_split/pat_findall
+    /// and builtins_modules.rs re_dispatch `run_from` all borrow
+    /// `&pat.compiled.root` (an Arc<PatBox> held across the call) or a
+    /// local `wrapped` clone, with the local `chars` vec as the text.
+    /// RE_CACHE reuse is not a hazard: the cache stores the Gc pattern
+    /// OBJECT, and each match re-borrows through the live Arc — a cached
+    /// Compiled can never dangle because no borrow outlives its `pat`
+    /// parameter. The old transmute to &'a existed only so m_seq's
+    /// re-built references type-checked; with m_seq re-dereferencing per
+    /// level (see its SAFETY block), the extension is not needed here.
     fn run(
         &mut self,
         root: &Node,
@@ -1984,12 +1999,7 @@ impl<'a> Matcher<'a> {
             let mut groups = Groups::new(ngroups);
             let mut result_end: Option<usize> = None;
             {
-                // SAFETY: the pattern AST behind `root` is an immutable borrow that outlives
-                // the match (same never-mutated-AST invariant as m_seq), so extending the
-                // reference to 'a for the duration of self.m keeps it valid. AUDIT: verify
-                // all Matcher<'a> callers pass ASTs living at least 'a.
-                let root2: &'a Node = unsafe { std::mem::transmute(root) };
-                let r = self.m(root2, start, &mut groups, &mut |_m, e, _g| {
+                let r = self.m(root, start, &mut groups, &mut |_m, e, _g| {
                     result_end = Some(e);
                     Ok(Some(e))
                 })?;

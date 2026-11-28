@@ -478,14 +478,18 @@ impl FnRegistry {
         }
         // Not registered (defensive: a table built outside register_scopes
         // — e.g. exec_module's pre-registration adopt): scan it directly.
+        // Issue #30 proof (transmute REMOVED): `table` is typed
+        // &'static ScopeInfoModule and every source of that reference is
+        // compiler-checked: `register_scopes` (Box::leak), `exec_module`
+        // (Box::leak before FnRegistry::build) and `FnEntry.scope_table` /
+        // `Frame.scope_table` (only ever set from those two). Iterating a
+        // &'static Vec therefore already yields &'static ScopeInfo — the
+        // old transmute was a no-op lifetime cast, so this arm needs no
+        // unsafe at all and the "non-leaked 'a table" hazard is
+        // unrepresentable in the type system.
         for s in table.scopes.iter() {
             if s.path.join(".").as_str() == path {
-                // SAFETY: scope tables are process-lifetime (Box::leak'd via register_scopes;
-                // the adopt path in exec_module stores the same leaked table). AUDIT: verify no
-                // caller can reach this arm with a table that is not leaked.
-                return Some(unsafe {
-                    std::mem::transmute::<&ap_parse::ScopeInfo, &'static ap_parse::ScopeInfo>(s)
-                });
+                return Some(s);
             }
         }
         None
@@ -673,11 +677,7 @@ impl FnRegistry {
     /// fp-rollout 03 seam: stable module-level function ids (Vec indices).
     /// Used only by the explicit per-function tier override resolver.
     pub fn entry_ids(&self) -> Vec<u32> {
-        let n = self
-            .entries
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .len();
+        let n = self.entries.read().unwrap_or_else(|p| p.into_inner()).len();
         (0..n as u32).collect()
     }
 
@@ -1436,13 +1436,15 @@ fn exec_stmt(
             // pulls through gen_pull and keeps its own retirement path —
             // never remove those here (send()/close() still need the frame).
             if id % 2 == 0 {
-                loop {
-                    {
-                        let mut its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
-                        its.remove(&id);
-                        break;
-                    }
-                }
+                // issue #30 en-route: was a `loop { ...; break; }` spin-retry
+                // from the RefCell era; under std Mutex lock() blocks instead
+                // of failing, so the retry never loops — flattened (clippy
+                // never_loop, pre-existing on main).
+                interp
+                    .iterators
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .remove(&id);
             }
             match r {
                 Ok(()) => {}
@@ -11981,13 +11983,13 @@ fn register_iter(interp: &Arc<Interpreter>, v: &Value) -> Result<u64, Flow> {
     // then panics 'RefCell already borrowed' on the unconditional
     // borrow_mut (T102-lock-shared-list aborts rc=134 ~1-in-8 runs).
     // Mirror pull_iter's contended-borrow retry discipline.
-    loop {
-        {
-            let mut its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
-            it.table_id.set(Some(id));
-            its.insert(id, it);
-            break;
-        }
+    // issue #30 en-route: was a `loop { ...; break; }` spin-retry from the
+    // RefCell era; under std Mutex lock() blocks instead of failing, so the
+    // retry never loops — flattened (clippy never_loop, pre-existing on main).
+    {
+        let mut its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
+        it.table_id.set(Some(id));
+        its.insert(id, it);
     }
     Ok(id)
 }
@@ -12030,15 +12032,16 @@ pub(crate) fn prune_dropped_iters(interp: &Arc<Interpreter>) {
         {
             continue;
         }
-        loop {
-            {
-                let mut its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
-                // Only remove when the entry's OWN table_id matches the
-                // dropped id (an exhausted-and-replaced entry is already
-                // gone; a re-registered id is impossible — monotonic).
-                its.remove(&id);
-                break;
-            }
+        // issue #30 en-route: was a `loop { ...; break; }` spin-retry from
+        // the RefCell era; under std Mutex lock() blocks instead of failing,
+        // so the retry never loops — flattened (clippy never_loop,
+        // pre-existing on main).
+        {
+            let mut its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
+            // Only remove when the entry's OWN table_id matches the
+            // dropped id (an exhausted-and-replaced entry is already
+            // gone; a re-registered id is impossible — monotonic).
+            its.remove(&id);
         }
     }
 }
@@ -12077,45 +12080,35 @@ fn pull_iter(interp: &Arc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> 
                 .unwrap_or(false)
         };
         if is_callfn {
-            loop {
-                let (f, sent, done) = {
-                    let its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
-                    let it = its.get(&id);
-                    match it.and_then(|it| {
-                        match &*it.state.lock().unwrap_or_else(|p| p.into_inner()) {
-                            IterState::CallFn {
-                                func,
-                                sentinel,
-                                done,
-                            } => Some((func.clone(), sentinel.clone(), *done)),
-                            _ => None,
-                        }
-                    }) {
-                        Some(t) => t,
-                        None => break,
-                    }
-                };
-                if done {
-                    return Ok(None);
+            // issue #30 en-route: was a `loop` whose every arm breaks/returns
+            // on the first pass (the retry died with the RefCell->Mutex flip;
+            // the post-loop `return Ok(None)` is what `None => break` reached).
+            // Flattened — clippy never_loop, pre-existing on main.
+            let (f, sent, done) = {
+                let its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
+                let it = its.get(&id);
+                match it.and_then(
+                    |it| match &*it.state.lock().unwrap_or_else(|p| p.into_inner()) {
+                        IterState::CallFn {
+                            func,
+                            sentinel,
+                            done,
+                        } => Some((func.clone(), sentinel.clone(), *done)),
+                        _ => None,
+                    },
+                ) {
+                    Some(t) => t,
+                    None => return Ok(None),
                 }
-                let r = match crate::interp::call_value_pub(interp, &f, &[], &[]) {
-                    Ok(r) => r,
-                    Err(Flow::Raise(e)) if e.class == "StopIteration" => {
-                        // 02.08f (s020): callable exhausted
-                        // (iter(lines).__next__) — termination, not error.
-                        let its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
-                        if let Some(it) = its.get(&id) {
-                            if let IterState::CallFn { done, .. } =
-                                &mut *it.state.lock().unwrap_or_else(|p| p.into_inner())
-                            {
-                                *done = true;
-                            }
-                        }
-                        return Ok(None);
-                    }
-                    Err(other) => return Err(other),
-                };
-                if ap_obj::ops::eq(&r, &sent) {
+            };
+            if done {
+                return Ok(None);
+            }
+            let r = match crate::interp::call_value_pub(interp, &f, &[], &[]) {
+                Ok(r) => r,
+                Err(Flow::Raise(e)) if e.class == "StopIteration" => {
+                    // 02.08f (s020): callable exhausted
+                    // (iter(lines).__next__) — termination, not error.
                     let its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
                     if let Some(it) = its.get(&id) {
                         if let IterState::CallFn { done, .. } =
@@ -12126,9 +12119,20 @@ fn pull_iter(interp: &Arc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> 
                     }
                     return Ok(None);
                 }
-                return Ok(Some(r));
+                Err(other) => return Err(other),
+            };
+            if ap_obj::ops::eq(&r, &sent) {
+                let its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
+                if let Some(it) = its.get(&id) {
+                    if let IterState::CallFn { done, .. } =
+                        &mut *it.state.lock().unwrap_or_else(|p| p.into_inner())
+                    {
+                        *done = true;
+                    }
+                }
+                return Ok(None);
             }
-            return Ok(None);
+            return Ok(Some(r));
         }
     }
     // F5: prune dropped iterators' registry entries first (the Drop list is
@@ -12150,7 +12154,9 @@ fn pull_iter(interp: &Arc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> 
     // that inner pull re-locks interp.iterators. The table lock is a
     // std Mutex (not reentrant): holding it across it.next() self-deadlocks
     // the thread. Clone the handle OUT, drop the lock, then pull.
-    let r = loop {
+    // issue #30 en-route: was a `loop` that always breaks on the first pass
+    // (clippy never_loop, pre-existing on main) — flattened.
+    let r = {
         let it = {
             let mut its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
             // 02.08f (s020): a Native iterator (itertools.chain over an
@@ -12165,20 +12171,21 @@ fn pull_iter(interp: &Arc<Interpreter>, id: u64) -> Result<Option<Value>, Flow> 
             }
             its.get(&id).map(|it| it.clone())
         };
-        let Some(it) = it else { break None };
-        break it.next();
+        match it {
+            Some(it) => it.next(),
+            None => None,
+        }
     };
     if r.is_none() {
         // 02.04: a finished iterator's Seq state pins every value it ever
         // yielded (genexpr snapshots) — a permanent root set. Drop it.
         // 02.07: retry on contention (workers hold borrows under the GIL).
-        loop {
-            {
-                let mut its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
-                its.remove(&id);
-                break;
-            }
-        }
+        // issue #30 en-route: was a `loop { ...; break; }` spin-retry from
+        // the RefCell era; under std Mutex lock() blocks instead of failing,
+        // so the retry never loops — flattened (clippy never_loop,
+        // pre-existing on main).
+        let mut its = interp.iterators.lock().unwrap_or_else(|p| p.into_inner());
+        its.remove(&id);
     }
     match r {
         Some(v) => Ok(Some(v)),

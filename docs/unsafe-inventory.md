@@ -153,6 +153,18 @@ after waves #21/#22/#23 + #27 verified `cargo clippy --workspace --all-targets`
   lib/bin crate roots only — `tests/` integration targets are separate crate
   roots and are NOT covered by these forbid attributes.
 
+### tests/ visibility (issue #29)
+
+Integration tests under `crates/*/tests/` are separate crate roots, so the
+`#![forbid(unsafe_code)]` pins above do not bind them, and this project does
+not forbid unsafe in tests. Since issue #29 the ratchet report
+(`scripts/unsafe_report.sh`) surfaces them in a dedicated `tests-blocks`
+column (count of `unsafe {` lines under each crate's `tests/`), regenerated
+into `docs/unsafe-baseline.txt`. The column is visibility-only: the CI drift
+gate now pins the tests/ counts as of this baseline (growth = red build,
+same ratchet semantics as the src/ columns), while the `--diff` new-unsafe
+gate and the forbid pins remain unchanged for test code.
+
 ## Verdict: the realistic floor
 
 The issue's stance ("zero is not achievable for C-API/JIT/GC") is confirmed and

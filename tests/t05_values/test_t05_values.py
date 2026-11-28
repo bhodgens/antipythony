@@ -247,7 +247,11 @@ def _impl_cmd():
 
 
 @pytest.mark.skipif(not _ap_conform_available(), reason="ap-conform bin missing")
-@xfail_ap
+# 2026-11-28 flip wave (issue #29): the values slice is green under
+# ap-conform — XPASS in the 2026-11-28 post-fix full darwin run (the ubuntu
+# leg skips this node: its default AP_CONFORM path predates the
+# target-0304c redirect; siblings t06/t08 resolve via tests/tools/_target_dir
+# — seam fix is a separate follow-up, so no false green claim here).
 def test_apconform_antipythony_full_slice():
     # Leaf 02.01 Gate: "ap-conform green on the values corpus slice".
     impl = _impl_cmd()
