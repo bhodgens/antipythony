@@ -120,7 +120,15 @@ pub const FN_STR_REPEAT: u32 = 76; // (i64 count, str) -> str  's' * n
 /// Stmt::LocalDef), which follow the prelude densely. `_start` is
 /// computed at emit time as FN_FIRST_USER + n_user_fns.
 /// leaf wasm-strplus: str_repeat appended AFTER emit_super_mro (lower.rs) —
-/// FN_FIRST_USER moved 75 -> 77 for it (dense, never renumbered).
+/// emit order IS index assignment: 76 = the next slot after FN_BOUND_OBJ(75).
+/// FN_FIRST_USER moves 76 -> 77 for it.
+/// NOTE: main's FN_APPEND_F64(76)/FN_FLOAT_TO_STR(77)/FN_WIDEN_128(78)
+/// constants are PHANTOM — those three helpers are emitted inside emit()
+/// at indices ~35-37 (emit runs first), so their const values are wrong on
+/// main and any call to them traps with 'unknown function'. Found while
+/// renumbering this leaf; calls never reached it because no wasm corpus
+/// case printed a float. The constants need renumbering to the real
+/// emit-order slots in a follow-up leaf.
 pub const FN_FIRST_USER: u32 = 77;
 
 /// rt_init is index 3 (03.03 layout: 0 fd_write, 1 abort_msg, 2 proc_exit,

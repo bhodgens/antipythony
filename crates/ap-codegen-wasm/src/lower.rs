@@ -1542,7 +1542,7 @@ pub fn lower_module_ex(
     // after the drains; FN_FIRST_USER moved 74 -> 76.
     crate::prelude_classes::emit_super_mro(&mut funcs, &mut code, &mut tab);
     // leaf wasm-strplus: str repetition (FN_STR_REPEAT = 76) — dense append
-    // AFTER emit_super_mro; FN_FIRST_USER moved 75 -> 77 (emitter_state).
+    // AFTER emit_super_mro; FN_FIRST_USER moved 76 -> 77 (emitter_state).
     prelude::str_repeat(&mut funcs, &mut code);
 
     // ---- 03.03b: the top-level EH wrap is ON BY DEFAULT. The parked

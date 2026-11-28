@@ -3756,8 +3756,9 @@ fn big_cmp(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
 // ===========================================================================
 // leaf wasm-strplus: str repetition driver. Emitted by lower.rs AFTER
 // emit_super_mro — NOT inside emit(): emit order IS index assignment and the
-// classes/generators block (fns 17..75) must never shift. FN_STR_REPEAT = 76;
-// FN_FIRST_USER moved 75 -> 77 (emitter_state.rs).
+// classes/generators block (fns 17..75) must never shift. FN_STR_REPEAT = 76
+// (the next slot after FN_BOUND_OBJ=75); FN_FIRST_USER moved 76 -> 77
+// (emitter_state.rs).
 // ===========================================================================
 
 /// str_repeat (FT_S_REPEAT): (n i64, s $str) -> $str — `'s' * n` (CPython
