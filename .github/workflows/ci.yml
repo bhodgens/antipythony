@@ -138,6 +138,8 @@ jobs:
         run: cargo build --workspace
       - name: cargo build --release -p ap-run --bin ap-run-probe (ast_getattr_fence prefers the release probe; debug needs >10 min, over its 600s fence deadline)
         run: cargo build --release -p ap-run --bin ap-run-probe
+      - name: cargo build --release -p ap-cli --bin antipythony (ic_invalidation spawns the RELEASE bin by design for IC warm-up timing and resolves it via CARGO_TARGET_DIR path math; without this step every inval_* gate dies with 'spawn antipythony NotFound' — CI 46110210382, latent since fe7cc86)
+        run: cargo build --release -p ap-cli --bin antipythony
       - name: install uv (packaging_differential native-wheel gate shells out to uv; its absence fails the C-10 diagnostic test)
         uses: astral-sh/setup-uv@v5
       - name: cargo test
