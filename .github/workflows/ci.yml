@@ -191,11 +191,18 @@ jobs:
       - name: Pick OSes for this event
         id: pick
         run: |
-          # macOS runner cost note (audit "Proposed CI pipeline"): macos-14
+          # macOS runner cost note (audit "Proposed CI pipeline"): macOS
           # hosted runners bill ~10x ubuntu-latest, so the differential
           # track runs on macOS ONLY for main pushes; PRs verify on ubuntu.
+          # Label: macos-15 — macos-14 was RETIRED by GitHub 2026-11-02
+          # (actions/runner-images#13518); jobs on it are cancelled ~1s
+          # after dispatch with the annotation "The configuration
+          # 'macos-14-arm64-us-default' is not supported" and zero steps
+          # run (issue #36; every main-push macos leg since 11-02 was
+          # red this way). macos-15 is the arm64 successor; Xcode jump
+          # irrelevant here (rust + python toolchain only).
           if [ "$GITHUB_EVENT_NAME" = "push" ] && [ "$GITHUB_REF" = "refs/heads/main" ]; then
-            echo 'oses=["ubuntu-latest","macos-14"]' >> "$GITHUB_OUTPUT"
+            echo 'oses=["ubuntu-latest","macos-15"]' >> "$GITHUB_OUTPUT"
           else
             echo 'oses=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
           fi
