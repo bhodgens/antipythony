@@ -1,0 +1,3 @@
+first caught TypeError
+second caught KeyError
+value falls to the second handler

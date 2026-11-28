@@ -105,7 +105,10 @@ pub fn emit_all(
     dhas(funcs, code);
     str_cat(funcs, code);
     type_name(funcs, code);
-    frame_push(funcs, code, g);
+    // D8: intern BEFORE frame_push so the limit-exceeded RuntimeError
+    // message rides a stable passive-segment offset.
+    let rec_msg = strings.push("maximum recursion depth exceeded");
+    frame_push(funcs, code, g, rec_msg);
     frame_pop(funcs, code, g);
     frame_line(funcs, code, g);
     issub(funcs, code);
@@ -672,6 +675,7 @@ fn frame_push(
     funcs: &mut wasm_encoder::FunctionSection,
     code: &mut wasm_encoder::CodeSection,
     g: &FrameGlobals,
+    rec_msg: (u32, u32),
 ) {
     add(
         funcs,
@@ -699,8 +703,47 @@ fn frame_push(
                     heap_type: hc(T_TB_FRAME),
                 }),
             ),
+            // D8: 6 = the limit-exceeded $exception scratch (tag payload
+            // type) for the RecursionError throw.
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_EXCEPTION),
+                }),
+            ),
         ],
         |f| {
+            // D8 (bughunt 6.1): depth limit check BEFORE the push —
+            // unbounded recursion previously fell through to a raw wasm
+            // stack-overflow trap with no Python-level error. 1500 is
+            // safely under the measured host trap floor (>=3000 frames)
+            // and comfortably above deep-but-legitimate corpus recursion
+            // (CF013-style shapes, d8d15's 1500). CPython-exact message.
+            f.instruction(&Instruction::GlobalGet(g.frame_depth));
+            f.instruction(&Instruction::I32Const(1500));
+            f.instruction(&Instruction::I32GeU);
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::GlobalGet(
+                crate::types::exc_type_global("RecursionError").unwrap_or(0),
+            ));
+            lit_str(f, rec_msg.0, rec_msg.1);
+            f.instruction(&Instruction::ArrayNewFixed {
+                array_type_index: T_OBJ_ARR_RO,
+                array_size: 1,
+            });
+            f.instruction(&Instruction::Call(fx::FN_EXC_NEW));
+            f.instruction(&Instruction::RefCastNullable(hc(T_EXCEPTION)));
+            f.instruction(&Instruction::LocalSet(6));
+            f.instruction(&Instruction::LocalGet(6));
+            f.instruction(&Instruction::GlobalGet(g.frame_head));
+            f.instruction(&Instruction::StructSet {
+                struct_type_index: T_EXCEPTION,
+                field_index: F_EXC_TB,
+            });
+            f.instruction(&Instruction::LocalGet(6));
+            f.instruction(&Instruction::Throw(TAG_PYEXC));
+            f.instruction(&Instruction::End);
             f.instruction(&Instruction::LocalGet(0));
             f.instruction(&Instruction::LocalSet(3));
             // old head; NULL = empty stack (the RefCastNullable+sget would
