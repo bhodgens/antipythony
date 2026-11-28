@@ -96,6 +96,17 @@ used 7 and would have mis-typed).
   .out/.err/.rc/.meta; metas recorded by tests/tools/_gen_meta.py under
   CPython 3.14.7; CLW018 pins are OUR documented deterministic shapes, NOT
   CPython bytes — stated in the .py header).
+- Commits (fix-wasm-strplus):
+  - 12c6aaf fix(wasm): str+str / str*int binop arms + deterministic function
+    reprs — prelude.rs/emitter_state.rs/types.rs AND the lower.rs
+    print-scheme plumbing (globals G_PRINT_END/G_PRINT_DEPTH, PRINT_SAVES
+    save-stack, print arms, print_flush disjoint range). The concern split
+    between code commits is imperfect: the print scheme shared plumbing
+    files with the binop/repr work and rode the first commit; 12c6aaf's
+    message covers binop + repr; this record documents the actual layout.
+  - 47740ac fix(wasm): nested-print corruption via shared global cursor +
+    disjoint flush — full message + the RED corpus pins CLW013..CLW018.
+  - b251afd docs(wasm): this record.
 - Gates (first-hand, CARGO_TARGET_DIR=target-leaf-wasm-strplus):
   - classes_exceptions_wasm_gate: 1 passed / 0 failed (corpus 27 passed /
     0 failed incl. the 6 new)
