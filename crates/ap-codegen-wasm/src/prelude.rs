@@ -2881,6 +2881,41 @@ fn py_str(
             f.instruction(&Instruction::Call(fx::FN_EXC_MSG));
             f.instruction(&Instruction::Return);
             f.instruction(&Instruction::End);
+            // leaf wasm-strplus: function object (def / lambda / bound
+            // method) — print(<function>) used to fall through to the null
+            // return and the caller trapped on the null $str. DIVERGENCE
+            // recorded by design: CPython prints '<function NAME at 0xADDR>'
+            // / '<bound method X of <...>>' / '<built-in function X>' with
+            // runtime addresses; the wasm backend prints the deterministic
+            // no-address shapes '<function NAME>' / '<function NAME>' (a
+            // bound method keeps its $code name) so corpus pins stay
+            // byte-stable (slicing is unsupported on the wasm slice, so
+            // addresses cannot be stripped at pin time — see
+            // NEXT-WASM-STRPLUS.md).
+            f.instruction(&Instruction::LocalGet(2));
+            f.instruction(&Instruction::RefTestNullable(hc(T_FUNCTION)));
+            f.instruction(&Instruction::If(BlockType::Empty));
+            {
+                // "<function " + code.name + ">" via FN_STR_CAT (the
+                // tuple-arm call shape); $str acc local 6, tmp local 7.
+                let (lt_off, lt_len) = strings.push("<function ");
+                let (gt_off, gt_len) = strings.push(">");
+                push_str_literal_seg(f, lt_off, lt_len);
+                f.instruction(&Instruction::LocalSet(6));
+                lget_cast(f, 2, T_FUNCTION);
+                sget(f, T_FUNCTION, F_FN_CODE);
+                sget(f, T_CODE, F_CODE_NAME);
+                f.instruction(&Instruction::LocalSet(8));
+                f.instruction(&Instruction::LocalGet(6));
+                f.instruction(&Instruction::LocalGet(8));
+                f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+                f.instruction(&Instruction::LocalSet(6));
+                f.instruction(&Instruction::LocalGet(6));
+                push_str_literal_seg(f, gt_off, gt_len);
+                f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+                f.instruction(&Instruction::Return);
+            }
+            f.instruction(&Instruction::End);
             // other (bytes repr is V064's path via FN_BYTES_REPR — v1: raw)
             f.instruction(&Instruction::RefNull(hc(T_STR)));
         },
@@ -2974,29 +3009,26 @@ fn print_flush(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encode
             target: wasm_encoder::MemArgTarget::Memory(0),
             ordering: None,
         };
-        // iov1 = {buf: PRINT_BUF, len: end - PRINT_BUF} @ 0
+        // leaf wasm-strplus: fd_write with ONE iovec @ 8 = {buf: start,
+        // len: end - start + 1} (newline stored at [end]). The first iov
+        // slot @ 0 is ALSO filled with the same pair: wasmtime-wasi p1's
+        // fd_write probes the iovec array at BOTH the low scratch region
+        // and the passed pointer on this host build (observed: a flush
+        // whose iov words only sat at 8..16 emitted raw memory from 0 —
+        // the shim evidently read {mem[0], mem[4]} as {buf, len}); keeping
+        // 0..8 identical to 8..16 makes both reads agree.
         f.instruction(&Instruction::I32Const(0));
-        f.instruction(&Instruction::I32Const(fx::PRINT_BUF));
+        f.instruction(&Instruction::LocalGet(0));
         f.instruction(&Instruction::I32Store(m2()));
         f.instruction(&Instruction::I32Const(4));
         f.instruction(&Instruction::LocalGet(1));
         f.instruction(&Instruction::LocalGet(0));
         f.instruction(&Instruction::I32Sub);
+        f.instruction(&Instruction::I32Const(1));
+        f.instruction(&Instruction::I32Add);
         f.instruction(&Instruction::I32Store(m2()));
-        // iov2 = {buf: end, len: 1} @ 8 (newline)
-        f.instruction(&Instruction::LocalGet(1));
-        f.instruction(&Instruction::I32Const(10));
-        f.instruction(&Instruction::I32Store8(wasm_encoder::MemArg {
-            offset: 0,
-            align: 0,
-            target: wasm_encoder::MemArgTarget::Memory(0),
-            ordering: None,
-        }));
-        // Single-iov write: newline already stored at [end], so span
-        // buf..end+1 in ONE iovec (the 2-iov form dropped iov2 under
-        // wasmtime-wasi p1 - observed: stdout missing every newline).
         f.instruction(&Instruction::I32Const(8));
-        f.instruction(&Instruction::I32Const(fx::PRINT_BUF));
+        f.instruction(&Instruction::LocalGet(0));
         f.instruction(&Instruction::I32Store(m2()));
         f.instruction(&Instruction::I32Const(12));
         f.instruction(&Instruction::LocalGet(1));
@@ -3005,6 +3037,15 @@ fn print_flush(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encode
         f.instruction(&Instruction::I32Const(1));
         f.instruction(&Instruction::I32Add);
         f.instruction(&Instruction::I32Store(m2()));
+        // newline at [end]
+        f.instruction(&Instruction::LocalGet(1));
+        f.instruction(&Instruction::I32Const(10));
+        f.instruction(&Instruction::I32Store8(wasm_encoder::MemArg {
+            offset: 0,
+            align: 0,
+            target: wasm_encoder::MemArgTarget::Memory(0),
+            ordering: None,
+        }));
         f.instruction(&Instruction::I32Const(1));
         f.instruction(&Instruction::I32Const(8));
         f.instruction(&Instruction::I32Const(1));
@@ -3056,6 +3097,68 @@ fn binop(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::Cod
             f.instruction(&Instruction::If(BlockType::Empty));
             f.instruction(&Instruction::I32Const(0));
             f.instruction(&Instruction::LocalSet(5));
+            f.instruction(&Instruction::End);
+            // str (3) / str (3): str + str -> FN_STR_CAT. CPython str + str
+            // concatenates; every OTHER combination with a str operand raises
+            // TypeError — on this slice the non-str/str shapes fall through to
+            // the trailing Unreachable (loud trap; the TypeError raise rides
+            // the 03.05 EH slice — recorded divergence, see NEXT-WASM-STRPLUS).
+            f.instruction(&Instruction::LocalGet(6));
+            f.instruction(&Instruction::I32Const(3));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::I32Const(3));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::I32And);
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::I32Const(OPS::ADD));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::I32And);
+            // If(Empty) + Return: an if(result T) would push a PHANTOM T
+            // after its end (validation: the block result is always yielded,
+            // even when then/else never fall through), corrupting the stack
+            // for the arms below. With Empty the arm contributes nothing.
+            f.instruction(&Instruction::If(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+            f.instruction(&Instruction::Call(fx::FN_STR_CAT));
+            f.instruction(&Instruction::Return);
+            f.instruction(&Instruction::End);
+            // str * int: repetition ('ab' * 3). CPython str * non-int raises;
+            // the int operand has already been bool-normalized (True -> int).
+            // n <= 0 repeats to the EMPTY $str (CPython). Calls FN_STR_REPEAT
+            // (appended prelude driver).
+            f.instruction(&Instruction::LocalGet(6));
+            f.instruction(&Instruction::I32Const(3));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::I32And);
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::I32Const(OPS::MUL));
+            f.instruction(&Instruction::I32Eq);
+            f.instruction(&Instruction::I32And);
+            // If(Empty) + Return (same phantom-result reason as str+str)
+            f.instruction(&Instruction::If(BlockType::Empty));
+            // vb: $int -> i64 count (same smi/big split as the int arm)
+            f.instruction(&Instruction::LocalGet(4));
+            f.instruction(&Instruction::RefCastNullable(hc(T_INT)));
+            sget(f, T_INT, F_INT_KIND);
+            f.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+            lget_cast(f, 4, T_INT);
+            int_big(f);
+            f.instruction(&Instruction::Call(fx::FN_BIG_BITS));
+            f.instruction(&Instruction::Else);
+            lget_cast(f, 4, T_INT);
+            int_smi(f);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+            f.instruction(&Instruction::Call(fx::FN_STR_REPEAT));
+            f.instruction(&Instruction::Return);
             f.instruction(&Instruction::End);
             // int/int
             f.instruction(&Instruction::LocalGet(6));
@@ -3876,6 +3979,140 @@ fn big_cmp(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::C
             f.instruction(&Instruction::LocalGet(9));
             f.instruction(&Instruction::I32Sub);
             f.instruction(&Instruction::End);
+        },
+    );
+}
+
+// ===========================================================================
+// leaf wasm-strplus: str repetition driver. Emitted by lower.rs AFTER
+// emit_super_mro — NOT inside emit(): emit order IS index assignment and the
+// classes/generators block (fns 17..75) must never shift. FN_STR_REPEAT = 76
+// (the next slot after FN_BOUND_OBJ=75); FN_FIRST_USER moved 76 -> 77
+// (emitter_state.rs).
+// ===========================================================================
+
+/// str_repeat (FT_S_REPEAT): (n i64, s $str) -> $str — `'s' * n` (CPython
+/// str.__mul__). n <= 0 -> EMPTY $str (a negative repeat yields nothing).
+/// Result kind 0 (byte $str), length = len(s) * max(n, 0) — the latin1
+/// corpus slice; wide-$str repetition is a recorded gap.
+/// Local-grid contract (NEXT-WASM-SUPER): 2 params -> 1 pad entry, first
+/// REAL local is 3. Locals: 3=n(i64) 4=s($str) 5=ln 6=total 7=result
+/// $byte_arr 8=outer i 9=inner b 10=pad(i32).
+pub fn str_repeat(funcs: &mut wasm_encoder::FunctionSection, code: &mut wasm_encoder::CodeSection) {
+    add(
+        funcs,
+        code,
+        FT_S_REPEAT,
+        &[
+            // local-grid contract (NEXT-WASM-SUPER): 2 params (0 = n i64,
+            // 1 = s $str) -> 1 pad entry (2), first REAL local is 3.
+            // 3 = n (i64), 4 = s ($str), 5/6 = i32 (ln, total),
+            // 7 = result $byte_arr (NOT an oref: $byte_arr is a bare array
+            // type, no $pyobj subtype — the oref stash trick is illegal here),
+            // 8/9 = i32 (outer i, inner b).
+            (1, ValType::I64), // 2 = pad
+            (1, ValType::I64), // 3
+            (1, oref()),       // 4
+            (2, ValType::I32), // 5, 6
+            (
+                1,
+                ValType::Ref(wasm_encoder::RefType {
+                    nullable: true,
+                    heap_type: hc(T_BYTE_ARR),
+                }),
+            ), // 7
+            (2, ValType::I32), // 8, 9
+        ],
+        |f| {
+            f.instruction(&Instruction::LocalGet(1));
+            f.instruction(&Instruction::RefCastNullable(hc(T_STR)));
+            f.instruction(&Instruction::LocalSet(4));
+            f.instruction(&Instruction::LocalGet(0));
+            f.instruction(&Instruction::LocalSet(3));
+            // ln = len(s) — local 4 is an OREF stash: the $str reads go
+            // through lget_cast (cast-then-struct.get), never the raw local.
+            lget_cast(f, 4, T_STR);
+            sget(f, T_STR, F_STR_LEN);
+            f.instruction(&Instruction::LocalSet(5));
+            // n_cap = n <= 0 ? 0 : min(n, 0x7fff) — the corpus repeat counts are
+            // small; a cap keeps the buffer sane (CPython's huge-count
+            // MemoryError surface is out of slice, recorded divergence).
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I64Const(0));
+            f.instruction(&Instruction::I64LeS);
+            f.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+            f.instruction(&Instruction::I64Const(0));
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::I64Const(0x7fff));
+            f.instruction(&Instruction::I64GtU);
+            f.instruction(&Instruction::If(BlockType::Result(ValType::I64)));
+            f.instruction(&Instruction::I64Const(0x7fff));
+            f.instruction(&Instruction::Else);
+            f.instruction(&Instruction::LocalGet(3));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::End);
+            // total = ln * n_cap (i64 math, wrapped to i32 — both factors
+            // are capped small so the wrap is exact on the corpus slice)
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::I64ExtendI32U);
+            f.instruction(&Instruction::I64Mul);
+            f.instruction(&Instruction::I32WrapI64);
+            f.instruction(&Instruction::LocalSet(6));
+            // arr = byte_arr[total]
+            f.instruction(&Instruction::LocalGet(6));
+            f.instruction(&Instruction::ArrayNewDefault(T_BYTE_ARR));
+            f.instruction(&Instruction::LocalSet(7));
+            // for i in 0..total step ln: copy data[0..ln] to arr[i..i+ln]
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalSet(8));
+            f.instruction(&Instruction::Block(BlockType::Empty));
+            f.instruction(&Instruction::Loop(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::LocalGet(6));
+            f.instruction(&Instruction::I32GeU);
+            f.instruction(&Instruction::BrIf(1));
+            // inner: b in 0..ln
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalSet(9));
+            f.instruction(&Instruction::Block(BlockType::Empty));
+            f.instruction(&Instruction::Loop(BlockType::Empty));
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::I32GeU);
+            f.instruction(&Instruction::BrIf(1));
+            f.instruction(&Instruction::LocalGet(7));
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::I32Add);
+            lget_cast(f, 4, T_STR);
+            sget(f, T_STR, F_STR_DATA);
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::ArrayGetU(T_BYTE_ARR));
+            f.instruction(&Instruction::ArraySet(T_BYTE_ARR));
+            f.instruction(&Instruction::LocalGet(9));
+            f.instruction(&Instruction::I32Const(1));
+            f.instruction(&Instruction::I32Add);
+            f.instruction(&Instruction::LocalSet(9));
+            f.instruction(&Instruction::Br(0));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::LocalGet(8));
+            f.instruction(&Instruction::LocalGet(5));
+            f.instruction(&Instruction::I32Add);
+            f.instruction(&Instruction::LocalSet(8));
+            f.instruction(&Instruction::Br(0));
+            f.instruction(&Instruction::End);
+            f.instruction(&Instruction::End);
+            // $str build: (type, hash, kind, len, data) — kind 0, len = total.
+            // The data field is (ref null $byte_arr) — local 7 is an OREF
+            // stash, so it goes through RefCast at the struct.new site.
+            f.instruction(&Instruction::GlobalGet(g_str()));
+            f.instruction(&Instruction::I64Const(0));
+            f.instruction(&Instruction::I32Const(0));
+            f.instruction(&Instruction::LocalGet(6));
+            f.instruction(&Instruction::LocalGet(7));
+            f.instruction(&Instruction::StructNew(T_STR));
         },
     );
 }
