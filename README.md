@@ -97,23 +97,37 @@ Unboxed integer lists halve per-element memory (16B -> 8B).
 Full synthesis with sources and measurement conditions:
 `docs/benefits-vs-cpython.md`. Headlines (all byte-exact-gated):
 
-#### Primitive builtin throughput (primitive-perf campaign, 2026-11-24)
+#### Primitive builtin throughput (closing re-run: bytecode mode, 2026-11-28)
 
-Native builtin speed vs CPython 3.14.7, same machine (Mac M2 Ultra,
-release tier-0 tree-walker, best-of-5 min, 48 KiB + 1 MiB workloads,
-GB/s throughput). Source of truth: `docs/primitive-perf-report.md` +
-`tests/bench/primitive/bench_report.json` (64 rows); chart:
-`docs/primitive-perf-chart.svg`. Every optimized surface is gated
-byte-exact vs CPython (stdout AND exception text).
+Native builtin speed vs CPython 3.14.7, same machine (Mac M2 Ultra, release
+binary freshly built at `e00fcb4`, best-of-5 min, 48 KiB + 1 MiB workloads,
+GB/s throughput). The stored JSON was regenerated in **candidate bytecode
+mode** (`APX_TIER=bytecode`) — 64 rows, **28 PASS / 36 FAIL / 0 ERROR**.
+Source of truth: `tests/bench/primitive/bench_report.json`; the stale
+tree-walker-era narrative is in `docs/primitive-perf-report.md`. Charts:
+`docs/primitive-perf-chart.svg` and
+`docs/fast-path-speedup-vs-cpython.svg` (both regenerated from the JSON by
+the committed generators). Full method, gate status and honest gaps:
+`docs/fast-path-report.md`. Every surface is gated byte-exact vs CPython
+(stdout AND exception text) in both tree0 and bytecode modes.
+
+**Fast-path exit gate: PARITY NOT MET (reported, not papered over).** The
+simple mean ratio vs CPython is **3.292x** (>= 1.5x floor PASS; geomean
+1.180x), but all 18 walk-bound rows remain below 1.0x: dict.getitem
+0.205-0.268x, dict.build 0.181-0.192x, `list.sort` 0.112-0.168x,
+`sorted()` 0.811-0.849x, `str.join` 0.193-0.230x, `str.split` 0.451-0.509x,
+`json.loads` 0.289-0.509x. Caveat: most probe hot loops are module-level and
+never dispatch through bytecode (function-shaped helpers do — `[BC-STATS]
+execs=79` on P09); the default tier flip stays a USER GATE.
 
 **Antipythony faster than CPython:**
 
 | primitive | antipythony vs CPython |
 |---|---|
 | binascii.a2b_base64 | **13-20x faster** |
-| base64.b64encode | **14-24x faster** |
-| base64.b64decode | **17-25x faster** |
-| binascii.b2a_base64 | **11-12x faster** |
+| base64.b64encode | **13-24x faster** |
+| base64.b64decode | **17-24x faster** |
+| binascii.b2a_base64 | **10-12x faster** |
 | zlib.compress | **1.5-7.3x faster** |
 | str.find | **3.3-4.4x faster** |
 | str.upper | **2.9-4.1x faster** |
@@ -132,20 +146,23 @@ GC-registry bug); dict build/lookup on 32k int keys dropped from
 
 **Still slower than CPython (honest, with filed levers):**
 
-| primitive | vs CPython | known lever |
+| primitive | vs CPython (bytecode re-run) | known lever |
 |---|---|---|
-| dict.get (bound method) | 0.008-0.009x | BoundMethod mint ~1.5µs — lazy-attrs filed |
-| dict.build / getitem / iter (int keys) | 0.06-0.14x | tier-0 walk floor 190ns/step (tier-1 = Plan 02.05 territory) |
-| list.sort / sorted | 0.12-0.42x | homogeneous fast-path arm (audit Fix B, filed) |
-| str.join | 0.20-0.22x | homogeneous list-of-str bulk join (filed) |
-| json.loads | 0.31-0.46x | kernels already 1.4-2.2x faster; residual = GC registry insert ~985ns/container — batching/nursery filed |
-| str.split | 0.47-0.51x | per-piece allocation |
-| int.to_bytes | 0.76-0.80x | bulk limb emit (mirror of the from_bytes fix) |
-| int(str) at 4000 digits | 0.75x | CPython uses libmpdec subquadratic parse; chunked parse filed |
-| hex()/oct()/bin() | 0.79-0.83x | emit cost after O(n) limb fix |
-| hashlib.sha256 | 0.67-0.84x | OpenSSL crypto-extension backend class |
-| hashlib.md5 | 0.87-0.92x | no aarch64 hw path exists in any Rust crate |
-| str.replace (48 KiB) | 0.95x | small-size dispatch overhead |
+| dict.get (bound method) | 0.24-0.28x (was 0.01x tier0) | BoundMethod mint ~1.5µs; function-shaped helpers now bytecode-dispatched |
+| dict.build / getitem / iter (int keys) | 0.18-0.28x (was 0.06-0.14x) | tier-0 walk floor on module-level loops; module-level bytecode entry filed |
+| list.sort | 0.11-0.17x | homogeneous int-compare fast-path arm (filed) |
+| sorted(list[int]) | 0.81-0.85x | improved from 0.36-0.42x; still under 1.0x |
+| str.join | 0.19-0.23x | homogeneous list-of-str bulk join (filed) |
+| json.loads | 0.29-0.51x | registry insert ~985ns/container — batching/nursery filed |
+| str.split | 0.45-0.51x | per-piece allocation |
+| hex()/oct()/bin() | 0.78-0.79x | result-string/Value lifecycle after W7 GC changes |
+| hashlib.sha256 | 0.65-0.85x | OpenSSL crypto-extension backend class |
+| hashlib.md5 | 0.86-0.91x | no aarch64 hw path exists in any Rust crate |
+| str.replace (48 KiB) | 0.99x | small-size dispatch overhead |
+| zlib.decompress(level=6, 48 KiB) | 0.98x | run-to-run noise (1MiB arm 1.36x PASS) |
+
+(int.to_bytes now PASSES at 2.65-3.90x and int(str) @1MiB at 4.33x in the
+bytecode re-run — both were FAIL in the stale tree0 table.)
 
 (b64 encode/decode FAIL rows in the JSON are vs the upstream NEON PR
 #162443 line of 24/14 GB/s — measured on M5 Max hardware; on this M2
