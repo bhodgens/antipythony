@@ -36,10 +36,13 @@ GIL, uv-backed deps at build time. Byte-exact differential conformance vs CPytho
 - "Commit then implement" / "fix all" = pre-authorized per user convention.
 - Specs before code: nothing dispatches from Plans 01+ until 00.05 spec pack lands.
 - Repo gates run in CI, NOT git hooks. This machine's global
-  `core.hooksPath=~/.githooks` (LFS hooks only - verified: `git config
-  --get core.hooksPath`) silently disables repo-local hooks, so any future
-  repo hook is a no-op here. If hooks are ever wanted, onboarding must set
-  `git config core.hooksPath .githooks` per-repo. See docs/development.md.
+  `core.hooksPath=~/.githooks` (LFS hooks only) is overridden per-repo where
+  a repo sets `core.hooksPath .githooks` - antipythony DOES: repo-local
+  .githooks (pre-commit unsafe-gate + commit-msg) is ACTIVE and enforced here
+  (re-verified 2026-11-27: `git config --get core.hooksPath` = `.githooks`;
+  the pre-commit unsafe-gate blocked a commit until its documented
+  ALLOW_UNSAFE_COMMIT=1 + `[unsafe-ok: reason]` tag bypass was used).
+  See docs/development.md.
 - Machine load policy (binding for local gate runs): ONE heavy cargo test
   lane at a time on this host; parallel cargo builds during suites use
   CARGO_BUILD_JOBS=4. Cause: 2026-11-07 WindowServer watchdog stall from a
