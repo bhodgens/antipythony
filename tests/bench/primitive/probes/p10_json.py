@@ -1,6 +1,12 @@
 """P10: json.dumps / loads over a nested ~1MiB structure. JSON lines.
 
 Input size = the serialized JSON byte length; deterministic structure.
+
+Fast-path note: each timed workload is a NAMED MODULE-LEVEL function holding
+the measured call; lambda bodies bypass call_function/tier dispatch. Module
+globals carry the per-size inputs so the SAME source runs under CPython and
+antipythony with identical semantics. emit()'s protocol and row labels are
+unchanged.
 """
 import json
 import time
@@ -38,13 +44,27 @@ def make_struct(target_bytes):
     return obj
 
 
+# Per-size inputs; set by main() before each size's emits.
+_OBJ = None
+_PAYLOAD = None
+
+
+def json_dumps():
+    return json.dumps(_OBJ)
+
+
+def json_loads():
+    return json.loads(_PAYLOAD)
+
+
 def main():
+    global _OBJ, _PAYLOAD
     for n in SIZES:
-        obj = make_struct(n)
-        payload = json.dumps(obj)
-        nbytes = len(payload.encode("utf-8"))
-        emit("json.dumps", nbytes, lambda: json.dumps(obj))
-        emit("json.loads", nbytes, lambda: json.loads(payload))
+        _OBJ = make_struct(n)
+        _PAYLOAD = json.dumps(_OBJ)
+        nbytes = len(_PAYLOAD.encode("utf-8"))
+        emit("json.dumps", nbytes, json_dumps)
+        emit("json.loads", nbytes, json_loads)
 
 
 if __name__ == "__main__":
